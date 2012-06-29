@@ -4,7 +4,8 @@
             [clojure.java.io :as jio])
   (:use [clojure.math.combinatorics])
   (:import (org.lemurproject.galago.core.index IndexPartReader KeyIterator ValueIterator)
-           (org.lemurproject.galago.core.index.disk DiskIndex CountIndexReader$TermCountIterator)
+           (org.lemurproject.galago.core.index.disk
+            DiskIndex CountIndexReader$TermCountIterator WindowIndexReader$TermExtentIterator)
            (org.lemurproject.galago.tupleflow Utility))
   (:gen-class))
 
@@ -47,18 +48,32 @@
       (let [k (first rec)
             npairs (cross-counts bins rec)]
         (when (<= npairs upper)
-          (let [docs (map first (nth rec 2))]
-            (for [b docs a docs :while (< a b) :when (not= (get bins a) (get bins b))]
-              {[a b] [k total-freq]})))))))
+          (let [docs (nth rec 2)]
+            (for [b docs a docs
+                  :while (< (a 0) (b 0))
+                  :when (not= (get bins (a 0)) (get bins (b 0)))]
+              {[(a 0) (b 0)] [k total-freq (rest a) (rest b)]})))))))
 
-(defn value-iterator-seq
+(defn count-iterator-seq
   [^CountIndexReader$TermCountIterator vi]
   (lazy-seq
    (when-not (.isDone vi)
      (let [k (.currentCandidate vi)
            v (.count vi)]
        (.next vi)
-       (cons [k v] (value-iterator-seq vi))))))
+       (cons [k v] (count-iterator-seq vi))))))
+
+(defn extent-iterator-seq
+  [^WindowIndexReader$TermExtentIterator vi]
+  (lazy-seq
+   (when-not (.isDone vi)
+     (let [k (.currentCandidate vi)
+           v (.count vi)
+           ext (.extents vi)
+           ;; Realize pos now to capture iterator side effects
+           pos (vec (map #(.begin ext %) (range (.size ext))))]
+       (.next vi)
+       (cons [k v pos] (extent-iterator-seq vi))))))
 
 (defn dump-kl-index
   [^KeyIterator iter]
@@ -68,7 +83,9 @@
       (let [key (.getKeyString iter)
             vi (.getValueIterator iter)
             vcount (.totalEntries vi)
-            val (value-iterator-seq vi)]
+            val (if (isa? WindowIndexReader$TermExtentIterator (class vi))
+                  (extent-iterator-seq vi)
+                  (count-iterator-seq vi))]
         (.nextKey iter)
         [key vcount val])
       (dump-kl-index iter)))))
