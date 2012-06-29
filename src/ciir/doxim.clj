@@ -54,26 +54,31 @@
                   :when (not= (get bins (a 0)) (get bins (b 0)))]
               {[(a 0) (b 0)] [k total-freq (rest a) (rest b)]})))))))
 
-(defn count-iterator-seq
-  [^CountIndexReader$TermCountIterator vi]
-  (lazy-seq
-   (when-not (.isDone vi)
-     (let [k (.currentCandidate vi)
-           v (.count vi)]
-       (.next vi)
-       (cons [k v] (count-iterator-seq vi))))))
+(defprotocol LocalValueIterator
+  (value-iterator-seq [this]))
 
-(defn extent-iterator-seq
-  [^WindowIndexReader$TermExtentIterator vi]
-  (lazy-seq
-   (when-not (.isDone vi)
-     (let [k (.currentCandidate vi)
-           v (.count vi)
-           ext (.extents vi)
-           ;; Realize pos now to capture iterator side effects
-           pos (vec (map #(.begin ext %) (range (.size ext))))]
-       (.next vi)
-       (cons [k v pos] (extent-iterator-seq vi))))))
+(extend-type WindowIndexReader$TermExtentIterator
+  LocalValueIterator
+  (value-iterator-seq [this]
+    (lazy-seq
+     (when-not (.isDone this)
+       (let [k (.currentCandidate this)
+             v (.count this)
+             ext (.extents this)
+             ;; Realize pos now to capture iterator side effects
+             pos (vec (map #(.begin ext %) (range (.size ext))))]
+         (.next this)
+         (cons [k v pos] (value-iterator-seq this)))))))
+
+(extend-type CountIndexReader$TermCountIterator
+  LocalValueIterator
+  (value-iterator-seq [this]
+    (lazy-seq
+     (when-not (.isDone this)
+       (let [k (.currentCandidate this)
+             v (.count this)]
+         (.next this)
+         (cons [k v] (value-iterator-seq this)))))))
 
 (defn dump-kl-index
   [^KeyIterator iter]
@@ -83,9 +88,10 @@
       (let [key (.getKeyString iter)
             vi (.getValueIterator iter)
             vcount (.totalEntries vi)
-            val (if (isa? WindowIndexReader$TermExtentIterator (class vi))
-                  (extent-iterator-seq vi)
-                  (count-iterator-seq vi))]
+            val (value-iterator-seq vi)]
+            ;; val (if (isa? WindowIndexReader$TermExtentIterator (class vi))
+            ;;       (extent-iterator-seq vi)
+            ;;       (count-iterator-seq vi))]
         (.nextKey iter)
         [key vcount val])
       (dump-kl-index iter)))))
