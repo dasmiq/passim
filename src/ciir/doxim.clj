@@ -133,25 +133,52 @@
     (.getValueString iter)))
 
 (defn dump-pairs
-  [index-file series-map-file file-prefix max-series step stride]
+  [index-file series-map-file file-prefix file-suffix max-series step stride]
   (let [ireader (DiskIndex/openIndexPart index-file)
         ki (.getIterator ireader)
         series (read-series-map series-map-file)
         upper (/ (* max-series (dec max-series)) 2)]
     (dorun (repeatedly (* step stride) (fn [] (.nextKey ki))))
     (println "#" step stride (.getKeyString ki))
-    (with-open [out (jio/writer (str file-prefix step))]
+    (with-open [out (jio/writer (str file-prefix step file-suffix))]
       (binding [*out* out]
         (doseq [item (->> ki dump-kl-index (take stride) (match-pairs series upper))]
           (prn item))))))
+
+(defn score-pair
+  [s namei smeta]
+  (let [[[id1 id2] matches] (read-string (str "[" s "]"))
+        [s1 u1] (s/split (doc-name namei id1) #"_" 2)
+        [s2 u2] (s/split (doc-name namei id2) #"_" 2)
+        score (reduce + (map #(Math/log %) (map (partial / 76) (vals matches))))]
+    (s/join "," [score id1 id2 s1 s2
+                 (str "http://" u1) (str "http://" u2)
+                 (str "\"" (smeta s1) "\"")
+                 (str "\"" (smeta s2) "\"")
+                 (seq (interleave (keys matches) (vals matches)))])))
+
+(defn load-series-meta
+  [fname]
+  (->> fname jio/reader line-seq
+       (map #(let [fields (s/split % #"\t")]
+               [(nth fields 3) (nth fields 2)]))
+       (into {})))
+
+(defn dump-scores
+  [namef seriesf]
+  (let [namei (DiskIndex/openIndexPart namef)
+        smeta (load-series-meta seriesf)]
+    (doseq [line (line-seq (-> System/in java.io.InputStreamReader. java.io.BufferedReader.))]
+      (println (score-pair line namei smeta)))))
 
 (defn -main
   "I don't do a whole lot."
   [& args]
   (condp = (first args)
-    "pairs" (dump-pairs (second args) (nth args 2) (nth args 3)
-                        (Integer/parseInt (nth args 4)) (Integer/parseInt (nth args 5))
-                        (Integer/parseInt (nth args 6)))
+    "scores" (dump-scores (second args) (nth args 2))
+    "pairs" (dump-pairs (second args) (nth args 2) (nth args 3) (nth args 4)
+                        (Integer/parseInt (nth args 5)) (Integer/parseInt (nth args 6))
+                        (Integer/parseInt (nth args 7)))
     "counts" (->> (DiskIndex/openIndexPart (second args)) dump-index (map second) frequencies prn)
     "entries"  (->> (DiskIndex/openIndexPart (second args)) dump-index count prn)
     "total"  (->> (DiskIndex/openIndexPart (second args)) dump-index (rand-blat first 0.001) (map second) (reduce +) prn)
