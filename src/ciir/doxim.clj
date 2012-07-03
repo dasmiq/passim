@@ -89,9 +89,6 @@
             vi (.getValueIterator iter)
             vcount (.totalEntries vi)
             val (value-iterator-seq vi)]
-            ;; val (if (isa? WindowIndexReader$TermExtentIterator (class vi))
-            ;;       (extent-iterator-seq vi)
-            ;;       (count-iterator-seq vi))]
         (.nextKey iter)
         [key vcount val])
       (dump-kl-index iter)))))
@@ -168,17 +165,70 @@
         (doseq [item (->> ki dump-kl-index (take stride) (match-pairs series upper))]
           (prn item))))))
 
+(defn- read-match-data
+  [s]
+  (let [[ids data] (read-string (str "[" s "]"))
+        dmap
+        (->> data
+             (partition 4)
+             (map #(vector (first %) (rest %)))
+             (into {}))]
+    [ids dmap]))
+
+(defn- sort-matches
+  [matches side]
+  (sort
+   (mapcat #(for [position (second (nth (second %) (inc side)))]
+              (vector position (first %)))
+           matches)))
+
+(defn- bridge-gap
+  [max-gap [prev cur]]
+  (let [[prev-pos prev-string] prev
+        [cur-pos cur-string] cur
+        w (s/split cur-string #"~")
+        diff (- cur-pos prev-pos)]
+    (cond
+     (< diff 5) (drop (- 5 diff) w)
+     (< diff (+ max-gap 5)) (concat (repeat (- diff 5) ".") w)
+     :else (concat ["###"] w))))
+
+(defn- merge-matches
+  [matches max-gap]
+  (concat
+   (s/split (second (first matches)) #"~")
+   (->> matches
+        (partition 2 1)
+        (mapcat (partial bridge-gap max-gap)))))
+
+;; (partition-by (partial = "###"))
+;;      (map (partial s/join " "))))
+
+(defn- trailing-date
+  [s]
+  (second (re-find #"/([0-9]{8})[0-9][0-9]$" s)))
+
 (defn score-pair
   [s namei smeta]
-  (let [[[id1 id2] matches] (read-string (str "[" s "]"))
+  (let [[[id1 id2] matches] (read-match-data s)
         [s1 u1] (s/split (doc-name namei id1) #"_" 2)
         [s2 u2] (s/split (doc-name namei id2) #"_" 2)
-        score (reduce + (map #(Math/log %) (map (partial / 76) (vals matches))))]
-    (s/join "," [score id1 id2 s1 s2
-                 (str "http://" u1) (str "http://" u2)
-                 (str "\"" (smeta s1) "\"")
-                 (str "\"" (smeta s2) "\"")
-                 (seq (interleave (keys matches) (vals matches)))])))
+        text1 (merge-matches (sort-matches matches 0) 10)
+        text2 (merge-matches (sort-matches matches 1) 10)
+        nseries (count smeta)
+        score (reduce +
+                      (map #(Math/log %)
+                           (map (partial / nseries) (map first (vals matches)))))]
+    (s/join "\t" [score
+                  (trailing-date u1)
+                  (smeta s1)
+                  (str "http://" u1)
+                  (trailing-date u2)
+                  (smeta s2)
+                  (str "http://" u2)
+                  id1 id2 s1 s2
+                  (s/join " " text1)
+                  (s/join " " text2)])))
 
 (defn load-series-meta
   [fname]
