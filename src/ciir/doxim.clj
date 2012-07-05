@@ -264,28 +264,39 @@
 
 (defn format-cluster
   [cluster]
-  (s/join
-   "\n"
-   (sort 
-    (loop [seen {}
-           res []
-           members cluster]
-      (if-let [cur (first members)]
-        (let [id (:id cur)]
-          (recur (assoc seen id true)
-                 (if (seen id)
-                   res
-                   (conj res
-                         (s/join "\t" ((juxt :date :title :id :url :text) cur))))
-                 (next members)))
-        res)))))
+  (let [scores (->> cluster (map :score) set seq)]
+    [(/ (reduce + scores) (count scores))
+     (str "<table>\n<tr><th>Date</th><th>Title</th><th>id</th><th>Text</th></tr>\n<tr>"
+          (s/join
+           "</tr>\n<tr>"
+           (sort 
+            (loop [seen {}
+                   res []
+                   members cluster]
+              (if-let [cur (first members)]
+                (let [id (:id cur)]
+                  (recur (assoc seen id true)
+                         (if (seen id)
+                           res
+                           (conj res
+                                 (str "<td>"
+                                      (s/join
+                                       "</td>\t<td>"
+                                       [(:date cur)
+                                        (str "<a href=\"" (:url cur) "\">" (:title cur) "</a>")
+                                        (:id cur) (:text cur)])
+                                      "</td>")))
+                         (next members)))
+                res))))
+          "</tr>\n</table>")]))
 
 (defn complete-link-reducer
   [m line]
-  (let [[score date1 title1 url1 date2 title2 url2 sid1 sid2 series1 series2 text1 text2]
+  (let [[sscore date1 title1 url1 date2 title2 url2 sid1 sid2 series1 series2 text1 text2]
         (s/split line #"\t")
         id1 (Integer/parseInt sid1)
         id2 (Integer/parseInt sid2)
+        score (Double/parseDouble sscore)
         v1 (vocab-set text1)
         v2 (vocab-set text2)
         rec1 {:id id1 :text text1 :vocabulary v1 :date date1 :title title1 :url url1 :score score}
@@ -296,8 +307,8 @@
         clusters (set/union clusters1 clusters2)
         matches (when clusters
                   (set/select
-                   (partial cluster-matches m 0.8 v1)
-                   (set/select (partial cluster-matches m 0.8 v2) clusters)))
+                   (partial cluster-matches m 0.6 v1)
+                   (set/select (partial cluster-matches m 0.6 v2) clusters)))
         match (or (first matches) nextid)]
     ;; (println nextid)
     ;; Actually, we should merge clusters if there is more than one match
@@ -362,17 +373,16 @@
 
 (defn cluster-scores
   [lines]
-  (doseq [cluster
-          (->> lines
-               (reduce complete-link-reducer {})
-               :members
-               vals)]
-    (println (format-cluster cluster))))
-
-     ;; (s/join
-     ;;  "\n"
-     ;;  (sort (map #(s/join "\t" ((juxt :date :title :score :id :url :text) %)) cluster)))
-     ;; "\n")))
+  (println "<html>\n<head>\n<style>\ntd { vertical-align: top }\n</style>\n</head>\n<body>")
+  (doseq
+      [cluster
+       (->> lines
+            (reduce complete-link-reducer {})
+            :members
+            vals
+            (map format-cluster)
+            (sort #(compare %2 %1)))]
+    (println (str (first cluster) "<br />\n" (second cluster) "<hr />\n"))))
 
 (defn -main
   "I don't do a whole lot."
