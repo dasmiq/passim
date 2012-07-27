@@ -216,10 +216,14 @@
         [s2 u2] (s/split (doc-name namei id2) #"_" 2)
         text1 (merge-matches (sort-matches matches 0) 10)
         text2 (merge-matches (sort-matches matches 1) 10)
+        spanCounts (map count (partition-by (partial = "###") text1))
+        longSpan (/ (reduce max spanCounts) (reduce + spanCounts))
         nseries (count smeta)
-        score (reduce +
-                      (map #(Math/log %)
-                           (map (partial / nseries) (map first (vals matches)))))]
+        score (*
+               longSpan
+               (reduce +
+                       (map #(Math/log %)
+                            (map (partial / nseries) (map first (vals matches))))))]
     (s/join "\t" [score
                   (trailing-date u1)
                   (smeta s1)
@@ -265,7 +269,8 @@
 (defn format-cluster
   [cluster]
   (let [scores (->> cluster (map :score) set seq)]
-    [(/ (reduce + scores) (count scores))
+    [;;(count cluster)
+     (/ (reduce + scores) (count scores))
      (str "<table>\n<tr><th>Date</th><th>Title</th><th>id</th><th>Text</th></tr>\n<tr>"
           (s/join
            "</tr>\n<tr>"
