@@ -269,8 +269,8 @@
 (defn format-cluster
   [cluster]
   (let [scores (->> cluster (map :score) set seq)]
-    [;;(count cluster)
-     (/ (reduce + scores) (count scores))
+    [(->> cluster (map :id) set count)
+     ;;(/ (reduce + scores) (count scores))
      (str "<table>\n<tr><th>Date</th><th>Title</th><th>id</th><th>Text</th></tr>\n<tr>"
           (s/join
            "</tr>\n<tr>"
@@ -376,6 +376,11 @@
                (assoc-in [:text id1] text1)
                (assoc-in [:text id2] text2)))))
 
+(defn norep-cluster
+  [cluster]
+  (let [max-rep (->> cluster (map (juxt :id :title)) (into {}) vals frequencies vals (reduce max))]
+    (<= max-rep 1)))
+
 (defn cluster-scores
   [lines]
   (println "<html>\n<head>\n<style>\ntd { vertical-align: top }\n</style>\n</head>\n<body>")
@@ -385,6 +390,7 @@
             (reduce complete-link-reducer {})
             :members
             vals
+            (filter norep-cluster)
             (map format-cluster)
             (sort #(compare %2 %1)))]
     (println (str (first cluster) "<br />\n" (second cluster) "<hr />\n"))))
