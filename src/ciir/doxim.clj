@@ -271,29 +271,23 @@
   (let [scores (->> cluster (map :score) set seq)]
     [(->> cluster (map :id) set count)
      ;;(/ (reduce + scores) (count scores))
-     (str "<table>\n<tr><th>Date</th><th>Title</th><th>id</th><th>Text</th></tr>\n<tr>"
-          (s/join
-           "</tr>\n<tr>"
-           (sort 
-            (loop [seen {}
-                   res []
-                   members cluster]
-              (if-let [cur (first members)]
-                (let [id (:id cur)]
-                  (recur (assoc seen id true)
-                         (if (seen id)
-                           res
-                           (conj res
-                                 (str "<td>"
-                                      (s/join
-                                       "</td>\t<td>"
-                                       [(:date cur)
-                                        (str "<a href=\"" (:url cur) "\">" (:title cur) "</a>")
-                                        (:id cur) (:text cur)])
-                                      "</td>")))
-                         (next members)))
-                res))))
-          "</tr>\n</table>")]))
+     (->> cluster (map :id) set (s/join ":"))
+     (sort 
+      (loop [seen {}
+             res []
+             members cluster]
+        (if-let [cur (first members)]
+          (let [id (:id cur)]
+            (recur (assoc seen id true)
+                   (if (seen id)
+                     res
+                     (conj res
+                           (s/join
+                            "\t"
+                            [(:date cur) (:url cur) (:title cur)
+                             (:id cur) (:text cur)])))
+                   (next members)))
+          res)))]))
 
 (defn complete-link-reducer
   [m line]
@@ -383,7 +377,6 @@
 
 (defn cluster-scores
   [lines]
-  (println "<html>\n<head>\n<style>\ntd { vertical-align: top }\n</style>\n</head>\n<body>")
   (doseq
       [cluster
        (->> lines
@@ -391,9 +384,12 @@
             :members
             vals
             (filter norep-cluster)
-            (map format-cluster)
-            (sort #(compare %2 %1)))]
-    (println (str (first cluster) "<br />\n" (second cluster) "<hr />\n"))))
+            (map format-cluster))]
+    (let [prefix
+          (str (second cluster) "\t"
+               (first cluster) "\t")]
+      (print prefix)
+      (println (s/join (str "\n" prefix) (nth cluster 2))))))
 
 (defn -main
   "I don't do a whole lot."
