@@ -7,7 +7,9 @@
   (:import (org.lemurproject.galago.core.index IndexPartReader KeyIterator ValueIterator)
            (org.lemurproject.galago.core.index.disk
             DiskIndex CountIndexReader$TermCountIterator WindowIndexReader$TermExtentIterator)
-           (org.lemurproject.galago.tupleflow Utility))
+           (org.lemurproject.galago.core.parse Document)
+           (org.lemurproject.galago.core.retrieval Retrieval RetrievalFactory)
+           (org.lemurproject.galago.tupleflow Parameters Utility))
   (:gen-class))
 
 (set! *warn-on-reflection* true)
@@ -209,7 +211,169 @@
   [s]
   (second (re-find #"/([0-9]{8})[0-9][0-9]$" s)))
 
+(defn- unique-matches
+  "Remove repeated ngrams"
+  [matches]
+  (into {} (filter (fn [[k v]] (= 1 (first (second v)) (first (nth v 2)))) matches)))
+
+(defn- find-match-anchors
+  [matches]
+  (let [res (->> matches
+                 unique-matches
+                 vals
+                 (map rest)
+                 (map #(mapv (comp first second) %))
+                 sort
+                 vec)]
+    (when (not-empty res) res)))
+
+(defn largest-binary-search
+  [pred low high default]
+  (if (< high low)
+    default
+    (let [mid (+ low (int (/ (- high low) 2)))]
+      (cond (= mid low) (cond (pred high) high
+                              (pred low) low
+                              :else default)
+            (pred mid) (recur pred mid high default)
+            :else (recur pred low (dec mid) default)))))
+
+(defn longest-increasing-subsequence
+  "Output indices of the LIS"
+  [coll]
+  (when-let [s (vec coll)]
+    (let [n (count s)]
+      (loop [L 0
+             i 1
+             M (vec (take (inc n) (repeat 0)))
+             P (vec (take (inc n) (repeat 0)))]
+        (if (<= i n)
+          (let [cur (s (dec i))
+                j (largest-binary-search (fn [x] (< (s (dec (M (dec x)))) cur)) 1 L 0)
+                newP (if (> j 0) (assoc P (dec i) (M (dec j))) P)]
+            (if (or (= j L) (< cur (s (dec (M j)))))
+              (recur (long (max L (inc j)))
+                     (inc i)
+                     (assoc M j i)
+                     newP)
+              (recur L
+                     (inc i)
+                     M
+                     newP)))
+          ;; Traceback
+          (loop [res (list (dec (M (dec L))))]
+            (let [prev (P (first res))]
+              (if (> prev 0)
+                (recur (cons (dec prev) res))
+                (seq res)))))))))
+
+(def match-matrix (jaligner.matrix.MatrixGenerator/generate 2 -1))
+
+(defn- doc-words
+  [^Retrieval ri ^String dname ]
+  (vec (.terms (.getDocument ri dname (Parameters.)))))
+
+(defn- align-words
+  [start end w1 w2 gap-words]
+  (let [[s1 s2] (if (not-empty start)
+                  start
+                  [(max 0 (- (first end) gap-words))
+                   (max 0 (- (second end) gap-words))])
+        [e1 e2] (if (not-empty end)
+                  end
+                  [(min (dec (count w1)) (+ (first start) gap-words))
+                   (min (dec (count w2)) (+ (second start) gap-words))])
+        s1 (s/replace (s/join " " (subvec w1 s1 (inc e1))) #"[^a-zA-Z0-9 ]" "#")
+        s2 (s/replace (s/join " " (subvec w2 s2 (inc e2))) #"[^a-zA-Z0-9 ]" "#")
+        alg (jaligner.SmithWatermanGotoh/align
+             (jaligner.Sequence. s1) (jaligner.Sequence. s2) match-matrix 5 0.5)
+        out1 (String. (.getSequence1 alg))
+        out2 (String. (.getSequence2 alg))
+        os1 (.getStart1 alg)
+        os2 (.getStart2 alg)]
+    ;; (prn [os1 os2 out1 out2])
+    (when (and (or (empty? start) (= 0 os1 os2))
+               ;; Probably should count alignment without hyphen gaps
+               (or (empty? end) (and (<= (count s1) (+ os1 (count out1)))
+                                     (<= (count s2) (+ os2 (count out2))))))
+      [out1 out2])))
+
+(defn best-passages
+  [id1 id2 matches ^Retrieval ri]
+  (let [name1 (.getDocumentName ri id1)
+        name2 (.getDocumentName ri id2)
+        w1 (doc-words ri name1)
+        w2 (doc-words ri name2)
+        anch (or (find-match-anchors matches)
+                 (->> matches vals first rest (map second) (map first) vec vector))
+        lis (longest-increasing-subsequence (map second anch))
+        inc-anch (mapv #(get anch %) lis)
+        gap-words 100
+        gram 5
+        add-gram (partial + (dec gram))
+        trim-gram (fn [x] (s/replace x #"( [^ ]+){5}$" ""))
+        middles (mapcat
+                 (fn [[[s1 s2] [e1 e2]]]
+                   (if (> (max (- e1 s1) (- e2 s2)) 1)
+                     (if (and (> (- e1 s1) gap-words) (> (- e2 s2) gap-words))
+                       (list (align-words [s1 s2] [] w1 w2 gap-words)
+                             nil
+                             ;; shorten gap-words?
+                             (align-words [] [e1 e2] w1 w2 gap-words))
+                       (if-let [gap
+                                (align-words [s1 s2] [(add-gram e1) (add-gram e2)]
+                                             w1 w2 gap-words)]
+                         ;; Remove tacked-on trailing words
+                         (list (mapv trim-gram gap))
+                         (list [(s/join " " (subvec w1 s1 (+ s1 gram)))
+                                (s/join " " (subvec w2 s2 (+ s2 gram)))]
+                               nil)))
+                     (list [(w1 s1) (w2 s2)])))
+                 (partition 2 1 inc-anch))
+        ;; removing trailing tacked-on words
+        leading (when-let
+                    [res (align-words [] (mapv add-gram (first inc-anch)) w1 w2 gap-words)]
+                  (list (mapv trim-gram res)))
+        trailing (when-let
+                     [res (align-words (nth inc-anch (dec (count inc-anch))) [] w1 w2 gap-words)]
+                   (list res))]
+    ;; (prn inc-anch)
+    ;; (prn (concat leading middles trailing))
+    (remove nil?
+            (for [span (partition-by nil? (concat leading middles trailing))]
+              (when (first span)
+                [(s/join " " (map first span))
+                 (s/join " " (map second span))])))))
+
+(defn maxer
+  [f]
+  (fn [a b] (< (f a) (f b)) b a))
+
 (defn score-pair
+  [^String s ^Retrieval ri smeta]
+  (let [[[id1 id2] matches] (read-match-data s)
+        name1 (.getDocumentName ri id1)
+        name2 (.getDocumentName ri id2)
+        [s1 u1] (s/split name1 #"_" 2)
+        [s2 u2] (s/split name2 #"_" 2)
+        passages (best-passages id1 id2 matches ri)
+        pass (if (empty? passages) ["" ""] (reduce (maxer (comp count #(s/replace % "-" "") s/trim first)) passages))
+        nseries (count smeta)
+        idf (reduce +
+                    (map #(Math/log %)
+                         (map (partial / nseries) (map first (vals matches)))))]
+    (s/join "\t" [(-> pass first s/trim (s/split #" ") count)
+                  (trailing-date u1)
+                  (smeta s1)
+                  (str "http://" u1)
+                  (trailing-date u2)
+                  (smeta s2)
+                  (str "http://" u2)
+                  id1 id2 s1 s2
+                  (-> pass first s/trim)
+                  (-> pass second s/trim)])))
+
+(defn old-score-pair
   [s namei smeta]
   (let [[[id1 id2] matches] (read-match-data s)
         [s1 u1] (s/split (doc-name namei id1) #"_" 2)
@@ -243,11 +407,11 @@
        (into {})))
 
 (defn dump-scores
-  [namef seriesf]
-  (let [namei (DiskIndex/openIndexPart namef)
+  [^String idx seriesf]
+  (let [ri (RetrievalFactory/instance idx (Parameters.))
         smeta (load-series-meta seriesf)]
     (doseq [line (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq)]
-      (println (score-pair line namei smeta)))))
+      (println (score-pair line ri smeta)))))
 
 (defn- vocab-set
   [s]
@@ -291,11 +455,13 @@
 
 (defn complete-link-reducer
   [m line]
-  (let [[sscore date1 title1 url1 date2 title2 url2 sid1 sid2 series1 series2 text1 text2]
-        (s/split line #"\t")
+  (let [[sscore date1 title1 url1 date2 title2 url2 sid1 sid2 series1 series2 raw1 raw2]
+        (s/split line #"\t" 13)
         id1 (Integer/parseInt sid1)
         id2 (Integer/parseInt sid2)
         score (Double/parseDouble sscore)
+        text1 (s/replace raw1 "-" "")
+        text2 (s/replace raw2 "-" "")
         v1 (vocab-set text1)
         v2 (vocab-set text2)
         rec1 {:id id1 :text text1 :vocabulary v1 :date date1 :title title1 :url url1 :score score}
