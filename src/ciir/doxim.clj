@@ -421,7 +421,7 @@
   [set1 set2]
   (/ (count (set/intersection set1 set2)) (count (set/union set1 set2))))
 
-(defn cluster-matches
+(defn complete-cluster-matches
   [m thresh voc id]
   (let [members (get-in m [:members id])]
     (= (count members)
@@ -429,6 +429,15 @@
         (filter
          #(> (jaccard voc (:vocabulary %)) thresh)
          members)))))
+
+(defn single-cluster-matches
+  [m thresh voc id]
+  (let [members (get-in m [:members id])]
+    (<= 1
+        (count
+         (filter
+          #(> (jaccard voc (:vocabulary %)) thresh)
+          members)))))
 
 (defn format-cluster
   [cluster]
@@ -453,7 +462,53 @@
                    (next members)))
           res)))]))
 
-(defn complete-link-reducer
+(defn greedy-cluster-reducer
+  [match-fn m line]
+  (let [[sscore date1 title1 url1 date2 title2 url2 sid1 sid2 series1 series2 raw1 raw2]
+        (s/split line #"\t" 13)
+        id1 (Integer/parseInt sid1)
+        id2 (Integer/parseInt sid2)
+        score (Double/parseDouble sscore)
+        text1 (s/replace raw1 "-" "")
+        text2 (s/replace raw2 "-" "")
+        v1 (vocab-set text1)
+        v2 (vocab-set text2)
+        rec1 {:id id1 :text text1 :vocabulary v1 :date date1 :title title1 :url url1 :score score}
+        rec2 {:id id2 :text text2 :vocabulary v2 :date date2 :title title2 :url url2 :score score}
+        nextid (inc (get m :top 0))
+        clusters1 (get-in m [:clusters id1] #{})
+        clusters2 (get-in m [:clusters id2] #{})
+        matches (match-fn m clusters1 clusters2 rec1 rec2)
+        match (or (first matches) nextid)]
+    (assoc
+        (if (> (count matches) 1)
+          (let [others (rest matches)
+                orecs (map (partial get (:members m)) others)
+                newrec (merge {id1 rec1 id2 rec2} (reduce merge orecs) (get-in m [:members match]))
+                docs (keys newrec)
+                newidx
+                (into
+                 {} (map
+                     vector docs
+                     (map #(conj (apply disj (get (:clusters m) % #{}) others) match) docs)))]
+            ;; (println match "\t" others)
+            ;; (println id1 "clusters1:" clusters1)
+            ;; (println id2 "clusters2:" clusters2)
+            ;; (println "docs:" docs)
+            ;; (println "newidx:" newidx)
+            ;; Need to dissociate the old cluster numbers from
+            ;; *all* documents, not just id1 and id2
+            ;; To test, take the first 877
+            (-> m
+                (assoc-in [:members match] newrec)
+                (assoc :clusters (merge (:clusters m) newidx))))
+          (-> m
+              (assoc-in [:members match] (merge {id1 rec1 id2 rec2} (get-in m [:members match]))
+              (assoc-in [:clusters id1] (conj clusters1 match))
+              (assoc-in [:clusters id2] (conj clusters2 match)))))
+      :top nextid)))
+
+(defn single-link-reducer
   [m line]
   (let [[sscore date1 title1 url1 date2 title2 url2 sid1 sid2 series1 series2 raw1 raw2]
         (s/split line #"\t" 13)
@@ -471,9 +526,9 @@
         clusters2 (get-in m [:clusters id2] #{})
         clusters (set/union clusters1 clusters2)
         matches (when clusters
-                  (set/select
-                   (partial cluster-matches m 0.6 v1)
-                   (set/select (partial cluster-matches m 0.6 v2) clusters)))
+                  (set/union
+                   (set/select (partial single-cluster-matches m 0.6 v1) clusters1)
+                   (set/select (partial single-cluster-matches m 0.6 v2) clusters2)))
         match (or (first matches) nextid)]
     ;; (println nextid)
     ;; Actually, we should merge clusters if there is more than one match
@@ -507,35 +562,6 @@
               (assoc-in [:clusters id2] (conj clusters2 match))))
       :top nextid)))
 
-(defn single-link-reducer
-  [m line]
-  (let [[score date1 title1 url1 date2 title2 url2 sid1 sid2 series1 series2 text1 text2]
-        (s/split line #"\t")
-        id1 (Integer/parseInt sid1)
-        id2 (Integer/parseInt sid2)
-        cluster1 (get-in m [:cluster id1])
-        cluster2 (get-in m [:cluster id2])]
-    (cond
-     (and cluster1 cluster2) (reduce
-                              #(assoc-in %1 [:cluster %2] cluster1)
-                              (assoc-in m [:members cluster1] (set/union (get-in m [:members cluster1])
-                                                                         (get-in m [:members cluster2])))
-                              (get-in m [:members cluster2]))
-     cluster1 (-> m
-                  (assoc-in [:members cluster1] (conj (get-in m [:members cluster1]) id2))
-                  (assoc-in [:cluster id2] cluster1)
-                  (assoc-in [:text id2] text2))
-     cluster2 (-> m
-                  (assoc-in [:members cluster2] (conj (get-in m [:members cluster2]) id1))
-                  (assoc-in [:cluster id1] cluster2)
-                  (assoc-in [:text id1] text1))
-     :else (-> m
-               (assoc-in [:members id1] #{id1 id2})
-               (assoc-in [:cluster id1] id1)
-               (assoc-in [:cluster id2] id1)
-               (assoc-in [:text id1] text1)
-               (assoc-in [:text id2] text2)))))
-
 (defn norep-cluster
   [cluster]
   (let [max-rep (->> cluster (map (juxt :id :title)) (into {}) vals frequencies vals (reduce max))]
@@ -546,7 +572,7 @@
   (doseq
       [cluster
        (->> lines
-            (reduce complete-link-reducer {})
+            (reduce single-link-reducer {})
             :members
             vals
             (filter norep-cluster)
