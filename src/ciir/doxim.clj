@@ -439,28 +439,17 @@
           #(> (jaccard voc (:vocabulary %)) thresh)
           members)))))
 
-(defn format-cluster
-  [cluster]
-  (let [scores (->> cluster (map :score) set seq)]
-    [(->> cluster (map :id) set count)
-     ;;(/ (reduce + scores) (count scores))
-     (->> cluster (map :id) set (s/join ":"))
-     (sort 
-      (loop [seen {}
-             res []
-             members cluster]
-        (if-let [cur (first members)]
-          (let [id (:id cur)]
-            (recur (assoc seen id true)
-                   (if (seen id)
-                     res
-                     (conj res
-                           (s/join
-                            "\t"
-                            [(:date cur) (:url cur) (:title cur)
-                             (:id cur) (:text cur)])))
-                   (next members)))
-          res)))]))
+(defn single-link-matches
+  [thresh m clusters1 clusters2 rec1 rec2]
+  (let [id1 (:id rec1)
+        id2 (:id rec2)
+        v1 (:vocabulary rec1)
+        v2 (:vocabulary rec2)]
+    (set/union
+     (set
+      (filter #(> (jaccard v1 (get-in m [:members % id1 :vocabulary])) thresh) clusters1))
+     (set
+      (filter #(> (jaccard v2 (get-in m [:members % id2 :vocabulary])) thresh) clusters2)))))
 
 (defn greedy-cluster-reducer
   [match-fn m line]
@@ -500,12 +489,14 @@
             ;; *all* documents, not just id1 and id2
             ;; To test, take the first 877
             (-> m
+                ;; need to dissoc old members entries
+                (assoc :members (apply dissoc (:members m) others))
                 (assoc-in [:members match] newrec)
                 (assoc :clusters (merge (:clusters m) newidx))))
           (-> m
-              (assoc-in [:members match] (merge {id1 rec1 id2 rec2} (get-in m [:members match]))
+              (assoc-in [:members match] (merge {id1 rec1 id2 rec2} (get-in m [:members match])))
               (assoc-in [:clusters id1] (conj clusters1 match))
-              (assoc-in [:clusters id2] (conj clusters2 match)))))
+              (assoc-in [:clusters id2] (conj clusters2 match))))
       :top nextid)))
 
 (defn single-link-reducer
@@ -562,9 +553,30 @@
               (assoc-in [:clusters id2] (conj clusters2 match))))
       :top nextid)))
 
+;; FIX clusters with duplicate IDs
+(defn format-cluster
+  [cluster]
+  (let [scores (->> cluster (map :score) set seq)]
+    [(->> cluster (map :id) set count)
+     ;;(/ (reduce + scores) (count scores))
+     (->> cluster (map :id) (s/join ":"))
+     (sort 
+      (map
+       #(s/join
+         "\t"
+         ((juxt :date :url :title :id :text) %))
+       cluster))]))
+
 (defn norep-cluster
   [cluster]
-  (let [max-rep (->> cluster (map (juxt :id :title)) (into {}) vals frequencies vals (reduce max))]
+  (let [max-rep
+        (->> cluster
+             (map (juxt :id :title))
+             (into {})
+             vals
+             frequencies
+             vals
+             (reduce max))]
     (<= max-rep 1)))
 
 (defn cluster-scores
@@ -572,16 +584,17 @@
   (doseq
       [cluster
        (->> lines
-            (reduce single-link-reducer {})
+            (reduce (partial greedy-cluster-reducer (partial single-link-matches 0.6)) {})
             :members
             vals
+            (map vals)
             (filter norep-cluster)
             (map format-cluster))]
     (let [prefix
           (str (second cluster) "\t"
                (first cluster) "\t")]
-      (print prefix)
-      (println (s/join (str "\n" prefix) (nth cluster 2))))))
+      (doseq [text (nth cluster 2)]
+        (println (str prefix text))))))
 
 (defn -main
   "I don't do a whole lot."
