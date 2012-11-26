@@ -1,6 +1,7 @@
 (ns ciir.doxim
   (:require [clojure.string :as s]
             [clojure.set :as set]
+            [clojure.data.csv :as csv]
             [clojure.java.shell :as sh]
             [clojure.java.io :as jio])
   (:use [clojure.math.combinatorics])
@@ -13,6 +14,12 @@
   (:gen-class))
 
 (set! *warn-on-reflection* true)
+
+(defn bill-doc
+  [v]
+  (str "<DOC>\n<DOCNO> " (second v) "/" (first v) " </DOCNO>\n<TEXT>\n"
+       (s/replace (nth v 4) "\r\n" "\n")
+       "</TEXT>\n</DOC>\n"))
 
 (defn doc-series
   [docid]
@@ -66,11 +73,11 @@
     (lazy-seq
      (when-not (.isDone this)
        (let [k (.currentCandidate this)
-             v (.count this)
-             ext (.extents this)
+             ext (.getData this)
+             v (.size ext)
              ;; Realize pos now to capture iterator side effects
              pos (vec (map #(.begin ext %) (range (.size ext))))]
-         (.next this)
+         (.movePast this k)
          (cons [k v pos] (value-iterator-seq this)))))))
 
 (extend-type CountIndexReader$TermCountIterator
@@ -80,7 +87,7 @@
      (when-not (.isDone this)
        (let [k (.currentCandidate this)
              v (.count this)]
-         (.next this)
+         (.movePast this k)
          (cons [k v] (value-iterator-seq this)))))))
 
 (defn dump-kl-index
@@ -311,7 +318,7 @@
         gap-words 100
         gram 5
         add-gram (partial + (dec gram))
-        trim-gram (fn [x] (s/replace x #"( [^ ]+){5}$" ""))
+        trim-gram (fn [x] (s/replace x #"[^ ]+( [^ ]+){4}$" ""))
         middles (mapcat
                  (fn [[[s1 s2] [e1 e2]]]
                    (if (> (max (- e1 s1) (- e2 s2)) 1)
@@ -354,8 +361,8 @@
   (let [[[id1 id2] matches] (read-match-data s)
         name1 (.getDocumentName ri id1)
         name2 (.getDocumentName ri id2)
-        [s1 u1] (s/split name1 #"_" 2)
-        [s2 u2] (s/split name2 #"_" 2)
+        [s1 u1] (s/split name1 #"[/_]" 2)
+        [s2 u2] (s/split name2 #"[/_]" 2)
         passages (best-passages id1 id2 matches ri)
         pass (if (empty? passages) ["" ""] (reduce (maxer (comp count #(s/replace % "-" "") s/trim first)) passages))
         nseries (count smeta)
@@ -372,32 +379,6 @@
                   id1 id2 s1 s2
                   (-> pass first s/trim)
                   (-> pass second s/trim)])))
-
-(defn old-score-pair
-  [s namei smeta]
-  (let [[[id1 id2] matches] (read-match-data s)
-        [s1 u1] (s/split (doc-name namei id1) #"_" 2)
-        [s2 u2] (s/split (doc-name namei id2) #"_" 2)
-        text1 (merge-matches (sort-matches matches 0) 10)
-        text2 (merge-matches (sort-matches matches 1) 10)
-        spanCounts (map count (partition-by (partial = "###") text1))
-        longSpan (/ (reduce max spanCounts) (reduce + spanCounts))
-        nseries (count smeta)
-        score (*
-               longSpan
-               (reduce +
-                       (map #(Math/log %)
-                            (map (partial / nseries) (map first (vals matches))))))]
-    (s/join "\t" [score
-                  (trailing-date u1)
-                  (smeta s1)
-                  (str "http://" u1)
-                  (trailing-date u2)
-                  (smeta s2)
-                  (str "http://" u2)
-                  id1 id2 s1 s2
-                  (s/join " " text1)
-                  (s/join " " text2)])))
 
 (defn load-series-meta
   [fname]
@@ -499,61 +480,6 @@
               (assoc-in [:clusters id2] (conj clusters2 match))))
       :top nextid)))
 
-(defn single-link-reducer
-  [m line]
-  (let [[sscore date1 title1 url1 date2 title2 url2 sid1 sid2 series1 series2 raw1 raw2]
-        (s/split line #"\t" 13)
-        id1 (Integer/parseInt sid1)
-        id2 (Integer/parseInt sid2)
-        score (Double/parseDouble sscore)
-        text1 (s/replace raw1 "-" "")
-        text2 (s/replace raw2 "-" "")
-        v1 (vocab-set text1)
-        v2 (vocab-set text2)
-        rec1 {:id id1 :text text1 :vocabulary v1 :date date1 :title title1 :url url1 :score score}
-        rec2 {:id id2 :text text2 :vocabulary v2 :date date2 :title title2 :url url2 :score score}
-        nextid (inc (get m :top 0))
-        clusters1 (get-in m [:clusters id1] #{})
-        clusters2 (get-in m [:clusters id2] #{})
-        clusters (set/union clusters1 clusters2)
-        matches (when clusters
-                  (set/union
-                   (set/select (partial single-cluster-matches m 0.6 v1) clusters1)
-                   (set/select (partial single-cluster-matches m 0.6 v2) clusters2)))
-        match (or (first matches) nextid)]
-    ;; (println nextid)
-    ;; Actually, we should merge clusters if there is more than one match
-    (assoc
-        (if (> (count matches) 1)
-          (let [others (rest matches)
-                orecs (map (partial get (:members m)) others)
-                newrec (set/union (reduce set/union (get-in m [:members match]) orecs)
-                                  #{rec1 rec2})
-                docs (->> newrec (map :id) set seq)
-                newidx
-                (into
-                 {} (map
-                     vector docs
-                     (map #(conj (apply disj (get (:clusters m) % #{}) others) match) docs)))]
-            ;; (println match "\t" others)
-            ;; (println id1 "clusters1:" clusters1)
-            ;; (println id2 "clusters2:" clusters2)
-            ;; (println "docs:" docs)
-            ;; (println "newidx:" newidx)
-            ;; Need to dissociate the old cluster numbers from
-            ;; *all* documents, not just id1 and id2
-            ;; To test, take the first 877
-            (-> m
-                (assoc-in [:members match] newrec)
-                (assoc :clusters (merge (:clusters m) newidx))))
-          (-> m
-              (assoc-in [:members match] (set/union (get-in m [:members match])
-                                                    #{rec1 rec2}))
-              (assoc-in [:clusters id1] (conj clusters1 match))
-              (assoc-in [:clusters id2] (conj clusters2 match))))
-      :top nextid)))
-
-;; FIX clusters with duplicate IDs
 (defn format-cluster
   [cluster]
   (let [scores (->> cluster (map :score) set seq)]
