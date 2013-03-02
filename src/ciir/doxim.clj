@@ -337,6 +337,16 @@
   [^Retrieval ri ^String dname ]
   (vec (.terms (.getDocument ri dname (Parameters.)))))
 
+(defn- space-count
+  [^String s]
+  (count (re-seq #" " s)))
+
+(defn- spacel?
+  [^String s]
+  (= " " (subs s 0 1)))
+
+(defrecord Alignment [sequence1 sequence2 start1 start2 end1 end2])
+
 (defn- align-words
   [start end w1 w2 gap-words]
   (let [[s1 s2] (if (not-empty start)
@@ -347,10 +357,10 @@
                   end
                   [(min (dec (count w1)) (+ (first start) gap-words))
                    (min (dec (count w2)) (+ (second start) gap-words))])
-        s1 (s/replace (s/join " " (subvec w1 s1 (inc e1))) #"[^a-zA-Z0-9 ]" "#")
-        s2 (s/replace (s/join " " (subvec w2 s2 (inc e2))) #"[^a-zA-Z0-9 ]" "#")
+        c1 (s/replace (s/join " " (subvec w1 s1 (inc e1))) #"[^a-zA-Z0-9 ]" "#")
+        c2 (s/replace (s/join " " (subvec w2 s2 (inc e2))) #"[^a-zA-Z0-9 ]" "#")
         alg (jaligner.SmithWatermanGotoh/align
-             (jaligner.Sequence. s1) (jaligner.Sequence. s2) match-matrix 5 0.5)
+             (jaligner.Sequence. c1) (jaligner.Sequence. c2) match-matrix 5 0.5)
         out1 (String. (.getSequence1 alg))
         out2 (String. (.getSequence2 alg))
         os1 (.getStart1 alg)
@@ -358,9 +368,39 @@
     ;; (prn [os1 os2 out1 out2])
     (when (and (or (empty? start) (= 0 os1 os2))
                ;; Probably should count alignment without hyphen gaps
-               (or (empty? end) (and (<= (count s1) (+ os1 (count out1)))
-                                     (<= (count s2) (+ os2 (count out2))))))
-      [out1 out2])))
+               (or (empty? end) (and (<= (count c1) (+ os1 (count out1)))
+                                     (<= (count c2) (+ os2 (count out2))))))
+      (let [sword1 (+ s1 (space-count (subs c1 0 os1))
+                      (if (spacel? out1) 1 0))
+            sword2 (+ s2 (space-count (subs c2 0 os2))
+                      (if (spacel? out2) 1 0))]
+        (Alignment. out1 out2
+                    sword1 sword2
+                    (+ sword1 1 (space-count (s/trim out1)))
+                    (+ sword2 1 (space-count (s/trim out2))))))))
+
+(defn- word-offsets
+  [words]
+  (loop [pos (inc (count (first words)))
+         offs [0]
+         cur (rest words)]
+    (if (empty? cur)
+      offs
+      (recur (+ pos 1 (count (first cur))) (conj offs pos) (rest cur)))))
+
+(defn- increasing-matches
+  [matches]
+  (let [lis (longest-increasing-subsequence (map second matches))]
+    (mapv (partial get matches) lis)))
+
+(defn- trim-gram
+  [^Alignment alg]
+  (let [re #"[^ ]+( [^ ]+){4}$"]
+    (assoc alg
+      :end1 (- (:end1 alg) 4)
+      :end2 (- (:end2 alg) 4)
+      :sequence1 (s/replace (:sequence1 alg) re "")
+      :sequence2 (s/replace (:sequence2 alg) re ""))))
 
 (defn best-passages
   [w1 w2 matches]
@@ -368,11 +408,9 @@
     (let [gram 5
           ;; (find-hapax-anchors (partition gram 1 w1) (partition gram 1 w2))
           ;; (->> matches vals first rest (map second) (map first) vec vector))
-          lis (longest-increasing-subsequence (map second anch))
-          inc-anch (mapv #(get anch %) lis)
+          inc-anch (increasing-matches anch)
           gap-words 100
           add-gram (partial + (dec gram))
-          trim-gram (fn [x] (s/replace x #"[^ ]+( [^ ]+){4}$" ""))
           middles (mapcat
                    (fn [[[s1 s2] [e1 e2]]]
                      (if (> (max (- e1 s1) (- e2 s2)) 1)
@@ -385,16 +423,18 @@
                                   (align-words [s1 s2] [(add-gram e1) (add-gram e2)]
                                                w1 w2 gap-words)]
                            ;; Remove tacked-on trailing words
-                           (list (mapv trim-gram gap))
-                           (list [(s/join " " (subvec w1 s1 (+ s1 gram)))
-                                  (s/join " " (subvec w2 s2 (+ s2 gram)))]
-                                 nil)))
-                       (list [(w1 s1) (w2 s2)])))
+                           (list (trim-gram gap))
+                           (list
+                            (Alignment. (s/join " " (subvec w1 s1 (+ s1 gram)))
+                                        (s/join " " (subvec w2 s2 (+ s2 gram)))
+                                        s1 s2 (+ s1 gram) (+ s2 gram))
+                            nil)))
+                       (list (Alignment. (w1 s1) (w2 s2) s1 s2 (inc s1) (inc s2)))))
                    (partition 2 1 inc-anch))
           ;; removing trailing tacked-on words
           leading (when-let
                       [res (align-words [] (mapv add-gram (first inc-anch)) w1 w2 gap-words)]
-                    (list (mapv trim-gram res)))
+                    (list (trim-gram res)))
           ;; Problem: not properly anchored at the left edge
           trailing (when-let
                        [res (align-words (nth inc-anch (dec (count inc-anch))) [] w1 w2 gap-words)]
@@ -404,8 +444,13 @@
       (remove nil?
               (for [span (partition-by nil? (concat leading middles trailing))]
                 (when (first span)
-                  [(s/join " " (map (comp s/trim first) span))
-                   (s/join " " (map (comp s/trim second) span))]))))))
+                  (let [vspan (vec span)
+                        head (first vspan)
+                        tail (peek vspan)]
+                    (Alignment.
+                     (s/join " " (map (comp s/trim :sequence1) vspan))
+                     (s/join " " (map (comp s/trim :sequence2) vspan))
+                     (:start1 head) (:start2 head) (:end1 tail) (:end2 tail)))))))))
 
 (defn maxer
   [f]
@@ -419,20 +464,24 @@
         words1 (doc-words ri name1)
         words2 (doc-words ri name2)
         passages (best-passages words1 words2 matches)
-        pass (if (empty? passages) ["" ""] (reduce (maxer (comp count #(s/replace % "-" "") s/trim first)) passages))
+        pass (if (empty? passages)
+               (Alignment. "" "" 0 0 0 0)
+               (reduce (maxer #(- (:end1 %) (:start1 %))) passages))
         ;; nseries (count smeta)
         ;; idf (reduce +
         ;;             (map #(Math/log %)
         ;;                  (map (partial / nseries) (map first (vals matches)))))
-        match-len1 (-> pass first s/trim (s/replace "-" "") (s/split #"[ ]+") count)
-        match-len2 (-> pass second s/trim (s/replace "-" "") (s/split #"[ ]+") count)]
+        match-len1 (- (:end1 pass) (:start1 pass))
+        match-len2 (- (:end2 pass) (:start2 pass))]
     (when (>= match-len1 5)
       (s/join "\t" [match-len1
                     (float (/ match-len1 (count words1)))
                     (float (/ match-len2 (count words2)))
                     id1 id2 name1 name2
-                    (-> pass first s/trim)
-                    (-> pass second s/trim)]))))
+                    (:start1 pass) (:end1 pass)
+                    (:start2 pass) (:end2 pass)
+                    (-> pass :sequence1 s/trim)
+                    (-> pass :sequence2 s/trim)]))))
 
 (defn load-series-meta
   [fname]
@@ -440,6 +489,9 @@
        (map #(let [fields (s/split % #"\t")]
                [(nth fields 3) (nth fields 2)]))
        (into {})))
+
+;; (def ri (RetrievalFactory/instance "/Users/dasmith/locca/ab/build/idx" (Parameters.)))
+;; (def qwe (line-seq (jio/reader "/Users/dasmith/locca/ab/build/pairs/pall.1k")))
 
 (defn dump-scores
   [^String idx]
@@ -488,8 +540,8 @@
 
 (defn greedy-cluster-reducer
   [match-fn m line]
-  (let [[sscore prop1 prop2 sid1 sid2 name1 name2 raw1 raw2]
-        (s/split line #"\t" 9)
+  (let [[sscore prop1 prop2 sid1 sid2 name1 name2 s1 w1 s2 e2 raw1 raw2]
+        (s/split line #"\t" 13)
         id1 (Integer/parseInt sid1)
         id2 (Integer/parseInt sid2)
         score (Double/parseDouble sscore)
@@ -581,8 +633,8 @@
   [lines]
   (let [dict (set (line-seq (jio/reader "/usr/share/dict/words")))]
     (doseq [line lines]
-      (let [[sscore prop1 prop2 sid1 sid2 name1 name2 raw1 raw2]
-            (s/split line #"\t" 9)
+      (let [[sscore prop1 prop2 sid1 sid2 name1 name2 s1 e1 s2 e2 raw1 raw2]
+            (s/split line #"\t" 13)
             date1 (Long/parseLong (trailing-date name1))
             date2 (Long/parseLong (trailing-date name2))
             diffs (word-substitutions dict raw1 raw2)]
