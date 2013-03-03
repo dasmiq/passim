@@ -221,7 +221,7 @@
 
 (defn- trailing-date
   [s]
-  (second (re-find #"/([0-9]{8})[0-9][0-9]$" s)))
+  (second (re-find #"/([0-9]{4}-[0-9][0-9]-[0-9][0-9])" s)))
 
 (defn- spair
   [s]
@@ -635,8 +635,8 @@
     (doseq [line lines]
       (let [[sscore prop1 prop2 sid1 sid2 name1 name2 s1 e1 s2 e2 raw1 raw2]
             (s/split line #"\t" 13)
-            date1 (Long/parseLong (trailing-date name1))
-            date2 (Long/parseLong (trailing-date name2))
+            date1 (trailing-date name1)
+            date2 (trailing-date name2)
             diffs (word-substitutions dict raw1 raw2)]
         (when (> (count diffs) 0)
           (doseq [diff diffs]
@@ -645,7 +645,7 @@
               (println
                (s/join
                 "\t"
-                (if (< date1 date2)
+                (if (< (compare date1 date2) 0)
                   [date1 date2 o1 o2 name1 name2]
                   [date2 date1 o2 o1 name2 name1]))))))))))
 
