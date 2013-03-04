@@ -334,7 +334,7 @@
 (def match-matrix (jaligner.matrix.MatrixGenerator/generate 2 -1))
 
 (defn- doc-words
-  [^Retrieval ri ^String dname ]
+  [^Retrieval ri ^String dname]
   (vec (.terms (.getDocument ri dname (Parameters.)))))
 
 (defn- space-count
@@ -532,13 +532,11 @@
         e1 ^long (:end rec1)
         s2 ^long (:start rec2)
         e2 ^long (:end rec2)
-        len1 (- e1 s1)
-        len2 (- e2 s2)
+        len1 (double (- e1 s1))
+        len2 (double (- e2 s2))
         shorter (double (min len1 len2))]
-    ;; (prn rec1)
-    ;; (prn rec2)
-    ;; (prn (- (min e1 e2) (max s1 s2)))
-    (/ (max 0 (- (min e1 e2) (max s1 s2))) shorter)))
+    (/ (max 0 (- (min e1 e2) (max s1 s2)))
+       (max len1 len2))))
 
 (defn single-link-matches
   [match-fn thresh m clusters1 clusters2 rec1 rec2]
@@ -596,18 +594,24 @@
               (assoc-in [:clusters id2] (conj clusters2 match))))
       :top nextid)))
 
+(defn- cluster-member-text
+  [^Retrieval ri rec]
+  (s/join " " (subvec (doc-words ri (:name rec)) (:start rec) (:end rec))))
+
 (defn format-cluster
-  [cluster]
+  [^Retrieval ri cluster]
   (let [scores (->> cluster (map :score) set seq)
         docs (->> cluster (map :name))]
     [(->> docs set count)
      ;;(/ (reduce + scores) (count scores))
-     (s/join ":" docs)
+     (s/join ":" (sort-by doc-date docs))
      (sort 
       (map
        #(s/join
          "\t"
-         ((juxt (comp doc-date :name) :name :series :id :start :end :text) %))
+         ((juxt (comp doc-date :name) :name :series :id :start :end
+                (partial cluster-member-text ri))
+          %))
        cluster))]))
 
 (defn norep-cluster
@@ -624,23 +628,24 @@
     (<= max-rep 1)))
 
 (defn cluster-scores
-  [lines]
-  (doseq
-      [cluster
-       (->> lines
-            (reduce (partial greedy-cluster-reducer
-                             (partial single-link-matches span-overlap 0.5))
-                    {})
-            :members
-            vals
-            (map vals)
-            (filter norep-cluster)
-            (map format-cluster))]
-    (let [prefix
-          (str (second cluster) "\t"
-               (first cluster) "\t")]
-      (doseq [text (nth cluster 2)]
-        (println (str prefix text))))))
+  [^String idx lines]
+  (let [ri (RetrievalFactory/instance idx (Parameters.))]
+    (doseq
+        [cluster
+         (->> lines
+              (reduce (partial greedy-cluster-reducer
+                               (partial single-link-matches span-overlap 0.5))
+                      {})
+              :members
+              vals
+              (map vals)
+              (filter norep-cluster)
+              (map (partial format-cluster ri)))]
+      (let [prefix
+            (str (second cluster) "\t"
+                 (first cluster) "\t")]
+        (doseq [text (nth cluster 2)]
+          (println (str prefix text)))))))
 
 (defn diff-words
   [lines]
@@ -667,6 +672,7 @@
   [& args]
   (condp = (first args)
     "cluster" (cluster-scores
+               (second args)
                (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq))
     "diffs" (diff-words
              (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq))
