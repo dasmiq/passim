@@ -22,9 +22,17 @@
        (s/replace (nth v 4) "\r\n" "\n")
        "</TEXT>\n</DOC>\n"))
 
+(defn- doc-id-parts
+  [docid]
+  (s/split docid #"[_/]" 2))
+
 (defn doc-series
   [docid]
-  (first (s/split docid #"[_/]" 2)))
+  (first (doc-id-parts docid)))
+
+(defn doc-date
+  [docid]
+  (second (doc-id-parts docid)))
 
 (defn doc-series-pair
   [[no id]]
@@ -214,14 +222,6 @@
 
 ;; (partition-by (partial = "###"))
 ;;      (map (partial s/join " "))))
-
-(defn- trailing-digits
-  [s]
-  (second (re-find #"([0-9]+)$" s)))
-
-(defn- trailing-date
-  [s]
-  (second (re-find #"/([0-9]{4}-[0-9][0-9]-[0-9][0-9])" s)))
 
 (defn- spair
   [s]
@@ -526,31 +526,41 @@
           #(> (jaccard voc (:vocabulary %)) thresh)
           members)))))
 
+(defn span-overlap
+  [rec1 rec2]
+  (let [s1 ^long (:start rec1)
+        e1 ^long (:end rec1)
+        s2 ^long (:start rec2)
+        e2 ^long (:end rec2)
+        len1 (- e1 s1)
+        len2 (- e2 s2)
+        shorter (double (min len1 len2))]
+    ;; (prn rec1)
+    ;; (prn rec2)
+    ;; (prn (- (min e1 e2) (max s1 s2)))
+    (/ (max 0 (- (min e1 e2) (max s1 s2))) shorter)))
+
 (defn single-link-matches
-  [thresh m clusters1 clusters2 rec1 rec2]
+  [match-fn thresh m clusters1 clusters2 rec1 rec2]
   (let [id1 (:id rec1)
-        id2 (:id rec2)
-        v1 (:vocabulary rec1)
-        v2 (:vocabulary rec2)]
+        id2 (:id rec2)]
     (set/union
      (set
-      (filter #(> (jaccard v1 (get-in m [:members % id1 :vocabulary])) thresh) clusters1))
+      (filter #(>= (match-fn rec1 (get-in m [:members % id1])) thresh) clusters1))
      (set
-      (filter #(> (jaccard v2 (get-in m [:members % id2 :vocabulary])) thresh) clusters2)))))
+      (filter #(>= (match-fn rec2 (get-in m [:members % id2])) thresh) clusters2)))))
 
 (defn greedy-cluster-reducer
   [match-fn m line]
-  (let [[sscore prop1 prop2 sid1 sid2 name1 name2 s1 w1 s2 e2 raw1 raw2]
+  (let [[sscore prop1 prop2 sid1 sid2 name1 name2 s1 e1 s2 e2 raw1 raw2]
         (s/split line #"\t" 13)
         id1 (Integer/parseInt sid1)
         id2 (Integer/parseInt sid2)
         score (Double/parseDouble sscore)
-        text1 (s/replace raw1 "-" "")
-        text2 (s/replace raw2 "-" "")
-        v1 (vocab-set text1)
-        v2 (vocab-set text2)
-        rec1 {:id id1 :text raw1 :vocabulary v1 :name name1 :series (doc-series name1) :score score}
-        rec2 {:id id2 :text raw2 :vocabulary v2 :name name2 :series (doc-series name2) :score score}
+        rec1 {:id id1 :name name1 :series (doc-series name1) :score score
+              :start (Long/parseLong s1) :end (Long/parseLong e1) :text nil}
+        rec2 {:id id2 :name name2 :series (doc-series name2) :score score
+              :start (Long/parseLong s2) :end (Long/parseLong e2) :text nil}
         nextid (inc (get m :top 0))
         clusters1 (get-in m [:clusters id1] #{})
         clusters2 (get-in m [:clusters id2] #{})
@@ -588,15 +598,16 @@
 
 (defn format-cluster
   [cluster]
-  (let [scores (->> cluster (map :score) set seq)]
-    [(->> cluster (map :id) set count)
+  (let [scores (->> cluster (map :score) set seq)
+        docs (->> cluster (map :name))]
+    [(->> docs set count)
      ;;(/ (reduce + scores) (count scores))
-     (->> cluster (map :id) (s/join ":"))
+     (s/join ":" docs)
      (sort 
       (map
        #(s/join
          "\t"
-         ((juxt (comp trailing-digits :name) :name :series :id :text) %))
+         ((juxt (comp doc-date :name) :name :series :id :start :end :text) %))
        cluster))]))
 
 (defn norep-cluster
@@ -617,7 +628,9 @@
   (doseq
       [cluster
        (->> lines
-            (reduce (partial greedy-cluster-reducer (partial single-link-matches 0.6)) {})
+            (reduce (partial greedy-cluster-reducer
+                             (partial single-link-matches span-overlap 0.5))
+                    {})
             :members
             vals
             (map vals)
@@ -635,8 +648,8 @@
     (doseq [line lines]
       (let [[sscore prop1 prop2 sid1 sid2 name1 name2 s1 e1 s2 e2 raw1 raw2]
             (s/split line #"\t" 13)
-            date1 (trailing-date name1)
-            date2 (trailing-date name2)
+            date1 (doc-date name1)
+            date2 (doc-date name2)
             diffs (word-substitutions dict raw1 raw2)]
         (when (> (count diffs) 0)
           (doseq [diff diffs]
