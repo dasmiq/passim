@@ -16,6 +16,9 @@
 
 (set! *warn-on-reflection* true)
 
+(def default-max-rep 4)                         ; magic number
+(def default-overlap 0.5)
+
 (defn bill-doc
   [v]
   (str "<DOC>\n<DOCNO> " (second v) "/" (first v) " </DOCNO>\n<TEXT>\n"
@@ -230,28 +233,27 @@
 (defn word-substitutions
   [dict s1 s2]
   (->> (map vector (seq s1) (seq s2))
-       (partition-by (partial = [\space \space]))
-       (remove (partial = '([\space \space])))
+       (partition-by #{[\space \space]})
+       (remove #{'([\space \space])})
        (map vec)
        (partition 4 1)
-       (remove #(some (partial = \space) (flatten %)))
+       (remove #(some #{\space} (flatten %)))
        (map #(map spair %))
        (filter
         (fn [x]
-          (let [m (map (partial apply =) x)
-                w1 (s/replace (first (nth x 2)) "-" "")
-                w2 (s/replace (second (nth x 2)) "-" "")
-                diffs (remove (partial apply =) (map vector (seq (first (nth x 2))) (seq (second (nth x 2)))))]
-            (and (first m) (second m) (not (nth m 2)) (nth m 3) ; (nth m 4)
+          (let [m (map (partial apply =) x)]
+            (when (and (first m) (second m) (not (nth m 2)) (nth m 3)) ; (nth m 4)
+              (let [w1 (s/replace (first (nth x 2)) "-" "")
+                    w2 (s/replace (second (nth x 2)) "-" "")
+                    ] ;;diffs (remove (partial apply =) (map vector (seq (first (nth x 2))) (seq (second (nth x 2)))))]
+                (and
                  (> (count w1) 7)
                  (> (count w2) 7)
                  ;; Require edit distance > 1?
-                 (> (count diffs) 1)
+                 ;; (> (count diffs) 1)
                  ;; (not (prn diffs))
                  (dict w1)
-                 (dict w2)
-                 ))))
-       ))
+                 (dict w2)))))))))
 
 (defn hapax-positions
   "Returns map of hapax terms to their positions in sequence"
@@ -490,6 +492,12 @@
                [(nth fields 3) (nth fields 2)]))
        (into {})))
 
+(defn load-tab-map
+  [fname]
+  (->> fname jio/reader line-seq
+       (map #(s/split % #"\t" 2))
+       (into {})))
+
 ;; (def ri (RetrievalFactory/instance "/Users/dasmith/locca/ab/build/idx" (Parameters.)))
 ;; (def qwe (line-seq (jio/reader "/Users/dasmith/locca/ab/build/pairs/pall.1k")))
 
@@ -598,8 +606,8 @@
   [^Retrieval ri rec]
   (s/join " " (subvec (doc-words ri (:name rec)) (:start rec) (:end rec))))
 
-(defn format-cluster
-  [^Retrieval ri cluster]
+(defn dump-cluster
+  [cluster]
   (let [scores (->> cluster (map :score) set seq)
         docs (->> cluster (map :name))]
     [(->> docs set count)
@@ -609,14 +617,13 @@
       (map
        #(s/join
          "\t"
-         ((juxt (comp doc-date :name) :name :series :id :start :end
-                (partial cluster-member-text ri))
+         ((juxt (comp doc-date :name) :series :name :start :end)
           %))
        cluster))]))
 
 (defn norep-cluster
   [cluster]
-  (let [max-rep
+  (let [top-rep
         (->> cluster
              ;; NB: Not unique series, but same series with multiple IDs.
              (map (juxt :id :series))
@@ -625,27 +632,44 @@
              frequencies
              vals
              (reduce max))]
-    (<= max-rep 1)))
+    (<= top-rep default-max-rep)))
 
 (defn cluster-scores
-  [^String idx lines]
-  (let [ri (RetrievalFactory/instance idx (Parameters.))]
-    (doseq
-        [cluster
-         (->> lines
-              (reduce (partial greedy-cluster-reducer
-                               (partial single-link-matches span-overlap 0.5))
-                      {})
-              :members
-              vals
-              (map vals)
-              (filter norep-cluster)
-              (map (partial format-cluster ri)))]
-      (let [prefix
-            (str (second cluster) "\t"
-                 (first cluster) "\t")]
-        (doseq [text (nth cluster 2)]
-          (println (str prefix text)))))))
+  [overlap lines]
+  (doseq
+      [cluster
+       (->> lines
+            (reduce (partial greedy-cluster-reducer
+                             (partial single-link-matches span-overlap overlap))
+                    {})
+            :members
+            vals
+            (map vals)
+            (filter norep-cluster)
+            (map dump-cluster))]
+    (let [prefix
+          (str (second cluster) "\t"
+               (first cluster) "\t")]
+      (doseq [text (nth cluster 2)]
+        (println (str prefix text))))))
+
+(defn format-cluster
+  [^String idx ^String meta-file lines]
+  (let [ri (RetrievalFactory/instance idx (Parameters.))
+        title (load-tab-map meta-file)]
+    (doseq [line lines]
+      (let [[id size date series name sstart send]
+            (s/split line #"\t")
+            start (Long/parseLong sstart)
+            end (Long/parseLong send)]
+        (println
+         (s/join "\t"
+                 [id size date
+                  (title series)
+                  (str "http://chroniclingamerica.loc.gov/lccn/" name)
+                  sstart send
+                  (s/join " " (subvec (doc-words ri name) start end))]))))))
+                 
 
 (defn diff-words
   [lines]
@@ -671,8 +695,12 @@
   "I don't do a whole lot."
   [& args]
   (condp = (first args)
+    "format-cluster" (format-cluster
+                      (second args)
+                      (nth args 2)
+                      (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq))
     "cluster" (cluster-scores
-               (second args)
+               (Double/parseDouble (second args))
                (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq))
     "diffs" (diff-words
              (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq))
