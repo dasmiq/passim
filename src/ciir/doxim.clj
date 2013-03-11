@@ -223,9 +223,6 @@
         (partition 2 1)
         (mapcat (partial bridge-gap max-gap)))))
 
-;; (partition-by (partial = "###"))
-;;      (map (partial s/join " "))))
-
 (defn- spair
   [s]
   (vector (apply str (map first s)) (apply str (map second s))))
@@ -242,7 +239,7 @@
        (filter
         (fn [x]
           (let [m (map (partial apply =) x)]
-            (when (and (first m) (second m) (not (nth m 2)) (nth m 3)) ; (nth m 4)
+            (when (and (first m) (second m) (not (nth m 2)) (nth m 3))
               (let [w1 (s/replace (first (nth x 2)) "-" "")
                     w2 (s/replace (second (nth x 2)) "-" "")
                     ] ;;diffs (remove (partial apply =) (map vector (seq (first (nth x 2))) (seq (second (nth x 2)))))]
