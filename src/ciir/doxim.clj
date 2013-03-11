@@ -688,8 +688,8 @@
                (s/join
                 "\t"
                 (if (< (compare date1 date2) 0)
-                  [date1 date2 o1 o2 name1 name2]
-                  [date2 date1 o2 o1 name2 name1]))))))))))
+                  [sscore date1 date2 o1 o2 name1 name2]
+                  [sscore date2 date1 o2 o1 name2 name1]))))))))))
 
 (defn -main
   "I don't do a whole lot."
