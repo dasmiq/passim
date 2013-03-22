@@ -228,29 +228,32 @@
   (vector (apply str (map first s)) (apply str (map second s))))
 
 (defn word-substitutions
-  [dict s1 s2]
-  (->> (map vector (seq s1) (seq s2))
-       (partition-by #{[\space \space]})
-       (remove #{'([\space \space])})
-       (map vec)
-       (partition 4 1)
-       (remove #(some #{\space} (flatten %)))
-       (map #(map spair %))
-       (filter
-        (fn [x]
-          (let [m (map (partial apply =) x)]
-            (when (and (first m) (second m) (not (nth m 2)) (nth m 3))
-              (let [w1 (s/replace (first (nth x 2)) "-" "")
-                    w2 (s/replace (second (nth x 2)) "-" "")
-                    ] ;;diffs (remove (partial apply =) (map vector (seq (first (nth x 2))) (seq (second (nth x 2)))))]
-                (and
-                 (> (count w1) 7)
-                 (> (count w2) 7)
-                 ;; Require edit distance > 1?
-                 ;; (> (count diffs) 1)
-                 ;; (not (prn diffs))
-                 (dict w1)
-                 (dict w2)))))))))
+  [gram dict s1 s2]
+  (let [target (- gram 2)]
+    (->> (map vector (seq s1) (seq s2))
+         (partition-by #{[\space \space]})
+         (remove #{'([\space \space])})
+         (map vec)
+         (partition gram 1)
+         (remove #(some #{\space} (flatten %)))
+         (map #(map spair %))
+         (filter
+          (fn [x]
+            (let [m (mapv (partial apply =) x)]
+              (when (and (not (nth m target))
+                         (= 1 (count (remove identity m))))
+                ;;(when (and (first m) (second m) (not (nth m 2)) (nth m 3))
+                (let [w1 (s/replace (first (nth x target)) "-" "")
+                      w2 (s/replace (second (nth x target)) "-" "")
+                      ] ;;diffs (remove (partial apply =) (map vector (seq (first (nth x 2))) (seq (second (nth x 2)))))]
+                  (and
+                   (> (count w1) 7)
+                   (> (count w2) 7)
+                   ;; Require edit distance > 1?
+                   ;; (> (count diffs) 1)
+                   ;; (not (prn diffs))
+                   (dict w1)
+                   (dict w2))))))))))
 
 (defn hapax-positions
   "Returns map of hapax terms to their positions in sequence"
@@ -669,14 +672,14 @@
                  
 
 (defn diff-words
-  [lines]
+  [gram lines]
   (let [dict (set (line-seq (jio/reader "/usr/share/dict/words")))]
     (doseq [line lines]
       (let [[sscore prop1 prop2 sid1 sid2 name1 name2 s1 e1 s2 e2 raw1 raw2]
             (s/split line #"\t" 13)
             date1 (doc-date name1)
             date2 (doc-date name2)
-            diffs (word-substitutions dict raw1 raw2)]
+            diffs (word-substitutions gram dict raw1 raw2)]
         (when (> (count diffs) 0)
           (doseq [diff diffs]
             (let [o1 (s/join " " (map first diff))
@@ -700,6 +703,7 @@
                (Double/parseDouble (second args))
                (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq))
     "diffs" (diff-words
+             (Long/parseLong (second args))
              (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq))
     "scores" (dump-scores (second args))
     "pairs" (dump-pairs (second args) (nth args 2) (nth args 3) (nth args 4)
