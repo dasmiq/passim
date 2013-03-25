@@ -74,7 +74,7 @@
             (for [b docs a docs
                   :while (< (a 0) (b 0))
                   :when (not= (get bins (a 0)) (get bins (b 0)))]
-              {[(a 0) (b 0)] [k total-freq (rest a) (rest b)]})))))))
+              {[(a 0) (b 0)] ["" total-freq (rest a) (rest b)]})))))))
 
 (defprotocol LocalValueIterator
   (value-iterator-seq [this]))
@@ -175,34 +175,20 @@
     (.getValueString iter)))
 
 (defn dump-pairs
-  [index-file series-map-file file-prefix file-suffix max-series step stride]
+  [index-file series-map-file max-series step stride]
   (let [ireader (DiskIndex/openIndexPart index-file)
         ki (.getIterator ireader)
         series (read-series-map series-map-file)
         upper (/ (* max-series (dec max-series)) 2)]
     (dorun (repeatedly (* step stride) (fn [] (.nextKey ki))))
     (println "#" step stride (.getKeyString ki))
-    (with-open [out (jio/writer (str file-prefix step file-suffix))]
-      (binding [*out* out]
-        (doseq [item (->> ki dump-kl-index (take stride) (match-pairs series upper))]
-          (prn item))))))
+    (doseq [item (->> ki dump-kl-index (take stride) (match-pairs series upper))]
+      (prn item))))
 
 (defn- read-match-data
   [s]
-  (let [[ids data] (read-string (str "[" s "]"))
-        dmap
-        (->> data
-             (partition 4)
-             (map #(vector (first %) (rest %)))
-             (into {}))]
-    [ids dmap]))
-
-(defn- sort-matches
-  [matches side]
-  (sort
-   (mapcat #(for [position (second (nth (second %) (inc side)))]
-              (vector position (first %)))
-           matches)))
+  (let [[ids data] (read-string (str "[" s "]"))]
+    [ids (vec (partition 4 data))]))
 
 (defn- bridge-gap
   [max-gap [prev cur]]
@@ -276,18 +262,14 @@
    sort
    vec))
 
-(defn- unique-matches
-  "Remove repeated ngrams"
-  [matches]
-  (into {} (filter (fn [[k v]] (= 1 (first (second v)) (first (nth v 2)))) matches)))
-
 (defn- find-match-anchors
   [matches]
   (let [res (->> matches
-                 unique-matches
-                 vals
-                 (map rest)
-                 (map #(mapv (comp first second) %))
+                 (map
+                  (fn [[gram df p1 p2]]
+                    (when (= 1 (first p1) (first p2))
+                      (vector (first (second p1)) (first (second p2))))))
+                 (remove nil?)
                  sort
                  vec)]
     (when (not-empty res) res)))
@@ -621,6 +603,8 @@
           %))
        cluster))]))
 
+;; Rather than norep, maybe we should look at the proportion
+;; contributed by one paper?
 (defn norep-cluster
   [cluster]
   (let [top-rep
@@ -706,9 +690,9 @@
              (Long/parseLong (second args))
              (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq))
     "scores" (dump-scores (second args))
-    "pairs" (dump-pairs (second args) (nth args 2) (nth args 3) (nth args 4)
-                        (Integer/parseInt (nth args 5)) (Integer/parseInt (nth args 6))
-                        (Integer/parseInt (nth args 7)))
+    "pairs" (dump-pairs (second args) (nth args 2)
+                        (Integer/parseInt (nth args 3)) (Integer/parseInt (nth args 4))
+                        (Integer/parseInt (nth args 5)))
     "counts" (->> (DiskIndex/openIndexPart (second args)) dump-index (map second) frequencies prn)
     "entries"  (->> (DiskIndex/openIndexPart (second args)) dump-index count prn)
     "total"  (->> (DiskIndex/openIndexPart (second args)) dump-index (rand-blat first 0.001) (map second) (reduce +) prn)
