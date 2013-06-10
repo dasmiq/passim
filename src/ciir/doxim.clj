@@ -17,7 +17,6 @@
 (set! *warn-on-reflection* true)
 
 (def default-max-rep 4)                         ; magic number
-(def default-overlap 0.5)
 
 (defn bill-doc
   [v]
@@ -190,25 +189,6 @@
   (let [[ids data] (read-string (str "[" s "]"))]
     [ids (vec (partition 4 data))]))
 
-(defn- bridge-gap
-  [max-gap [prev cur]]
-  (let [[prev-pos prev-string] prev
-        [cur-pos cur-string] cur
-        w (s/split cur-string #"~")
-        diff (- cur-pos prev-pos)]
-    (cond
-     (< diff 5) (drop (- 5 diff) w)
-     (< diff (+ max-gap 5)) (concat (repeat (- diff 5) ".") w)
-     :else (concat ["###"] w))))
-
-(defn- merge-matches
-  [matches max-gap]
-  (concat
-   (s/split (second (first matches)) #"~")
-   (->> matches
-        (partition 2 1)
-        (mapcat (partial bridge-gap max-gap)))))
-
 (defn- spair
   [s]
   (vector (apply str (map first s)) (apply str (map second s))))
@@ -378,18 +358,18 @@
     (mapv (partial get matches) lis)))
 
 (defn- trim-gram
-  [^Alignment alg]
-  (let [re #"[^ ]+( [^ ]+){4}$"]
+  [^Alignment alg ^long gram]
+  (let [m1 (dec gram)]
     (assoc alg
-      :end1 (- (:end1 alg) 4)
-      :end2 (- (:end2 alg) 4)
-      :sequence1 (s/replace (:sequence1 alg) re "")
-      :sequence2 (s/replace (:sequence2 alg) re ""))))
+      :end1 (- (:end1 alg) m1)
+      :end2 (- (:end2 alg) m1)
+      :sequence1 (s/join " " (drop-last gram (s/split (:sequence1 alg) #" ")))
+      :sequence2 (s/join " " (drop-last gram (s/split (:sequence2 alg) #" "))))))
 
 (defn best-passages
-  [w1 w2 matches]
+  [w1 w2 matches gram]
   (when-let [anch (find-match-anchors matches)]
-    (let [gram 5
+    (let [
           ;; (find-hapax-anchors (partition gram 1 w1) (partition gram 1 w2))
           ;; (->> matches vals first rest (map second) (map first) vec vector))
           inc-anch (increasing-matches anch)
@@ -407,7 +387,7 @@
                                   (align-words [s1 s2] [(add-gram e1) (add-gram e2)]
                                                w1 w2 gap-words)]
                            ;; Remove tacked-on trailing words
-                           (list (trim-gram gap))
+                           (list (trim-gram gap gram))
                            (list
                             (Alignment. (s/join " " (subvec w1 s1 (+ s1 gram)))
                                         (s/join " " (subvec w2 s2 (+ s2 gram)))
@@ -418,7 +398,7 @@
           ;; removing trailing tacked-on words
           leading (when-let
                       [res (align-words [] (mapv add-gram (first inc-anch)) w1 w2 gap-words)]
-                    (list (trim-gram res)))
+                    (list (trim-gram res gram)))
           ;; Problem: not properly anchored at the left edge
           trailing (when-let
                        [res (align-words (nth inc-anch (dec (count inc-anch))) [] w1 w2 gap-words)]
@@ -441,13 +421,13 @@
   (fn [a b] (< (f a) (f b)) b a))
 
 (defn score-pair
-  [^String s ^Retrieval ri]
+  [^String s ^Retrieval ri ^long gram]
   (let [[[id1 id2] matches] (read-match-data s)
         name1 (.getDocumentName ri (int id1))
         name2 (.getDocumentName ri (int id2))
         words1 (doc-words ri name1)
         words2 (doc-words ri name2)
-        passages (best-passages words1 words2 matches)
+        passages (best-passages words1 words2 matches gram)
         pass (if (empty? passages)
                (Alignment. "" "" 0 0 0 0)
                (reduce (maxer #(- (:end1 %) (:start1 %))) passages))
@@ -457,7 +437,7 @@
         ;;                  (map (partial / nseries) (map first (vals matches)))))
         match-len1 (- (:end1 pass) (:start1 pass))
         match-len2 (- (:end2 pass) (:start2 pass))]
-    (when (>= match-len1 5)
+    (when (>= match-len1 gram)
       (s/join "\t" [match-len1
                     (float (/ match-len1 (count words1)))
                     (float (/ match-len2 (count words2)))
@@ -484,10 +464,10 @@
 ;; (def qwe (line-seq (jio/reader "/Users/dasmith/locca/ab/build/pairs/pall.1k")))
 
 (defn dump-scores
-  [^String idx]
+  [^String idx gram]
   (let [ri (RetrievalFactory/instance idx (Parameters.))]
     (doseq [line (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq)]
-      (when-let [out (score-pair line ri)]
+      (when-let [out (score-pair line ri gram)]
         (println out)))))
 
 (defn- vocab-set
@@ -689,7 +669,7 @@
     "diffs" (diff-words
              (Long/parseLong (second args))
              (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq))
-    "scores" (dump-scores (second args))
+    "scores" (dump-scores (second args) (Integer/parseInt (nth args 2)))
     "pairs" (dump-pairs (second args) (nth args 2)
                         (Integer/parseInt (nth args 3)) (Integer/parseInt (nth args 4))
                         (Integer/parseInt (nth args 5)))
