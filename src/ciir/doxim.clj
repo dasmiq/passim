@@ -11,6 +11,8 @@
             DiskIndex CountIndexReader$TermCountIterator WindowIndexReader$WindowExtentIterator)
            (org.lemurproject.galago.core.parse Document)
            (org.lemurproject.galago.core.retrieval Retrieval RetrievalFactory)
+           (org.lemurproject.galago.core.retrieval.processing ScoringContext)
+           (org.lemurproject.galago.core.retrieval.iterator MovableExtentIterator)
            (org.lemurproject.galago.tupleflow Parameters Utility))
   (:gen-class))
 
@@ -78,18 +80,19 @@
 (defprotocol LocalValueIterator
   (value-iterator-seq [this]))
 
-(extend-type WindowIndexReader$WindowExtentIterator
+(extend-type MovableExtentIterator
   LocalValueIterator
   (value-iterator-seq [this]
     (lazy-seq
      (when-not (.isDone this)
-       (let [k (.currentCandidate this)
-             ext (.getData this)
-             v (.size ext)
-             ;; Realize pos now to capture iterator side effects
-             pos (vec (map #(.begin ext %) (range (.size ext))))]
-         (.movePast this k)
-         (cons [k v pos] (value-iterator-seq this)))))))
+       (let [k (.currentCandidate this)]
+         (set! (.document (.getContext this)) k)
+         (let [ext (.extents this)
+               v (.size ext)
+               ;; Realize pos now to capture iterator side effects
+               pos (mapv #(.begin ext %) (range v))]
+           (.movePast this k)
+           (cons [k v pos] (value-iterator-seq this))))))))
 
 (extend-type CountIndexReader$TermCountIterator
   LocalValueIterator
@@ -107,7 +110,7 @@
    (when-not (.isDone iter)
      (cons
       (let [key (.getKeyString iter)
-            vi (.getValueIterator iter)
+            vi (doto (.getValueIterator iter) (.setContext (ScoringContext.)))
             vcount (.totalEntries vi)
             val (value-iterator-seq vi)]
         (.nextKey iter)
