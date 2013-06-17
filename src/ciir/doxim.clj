@@ -65,17 +65,19 @@
        (reduce +)))
 
 (defn cross-pairs
-  [bins upper rec]
+  [bins upper max-df rec]
   (let [total-freq (second rec)]
     (when (<= total-freq upper)
       (let [k (first rec)
             npairs (cross-counts bins rec)]
         (when (<= npairs upper)
           (let [docs (nth rec 2)]
-            (for [b docs a docs
-                  :while (< (a 0) (b 0))
-                  :when (not= (get bins (a 0)) (get bins (b 0)))]
-              {[(a 0) (b 0)] ["" total-freq (rest a) (rest b)]})))))))
+            (for [[bid & brest] docs [aid & arest] docs
+                  :while (< aid bid)
+                  :when (and (not= (get bins aid) (get bins bid))
+                             (<= (first arest) max-df)
+                             (<= (first brest) max-df))]
+              {[aid bid] ["" total-freq arest brest]})))))))
 
 (defprotocol LocalValueIterator
   (value-iterator-seq [this]))
@@ -153,10 +155,13 @@
    coll))
 
 (defn match-pairs
-  [bins upper recs]
-  (->> recs
-       (filter #(re-find #"^[a-z~]+$" (first %)))
-       (mapcat (partial cross-pairs bins upper))))
+  [bins upper max-df modp recs]
+  (->>
+   (if (> modp 1)
+     (filter #(= 0 (mod (.hashCode ^String (first %)) modp)) recs)
+     recs)
+   (filter #(re-find #"^[a-z~]+$" (first %)))
+   (mapcat (partial cross-pairs bins upper max-df))))
 
 ;; (reduce (partial merge-with #(conj %1 (first %2))) {})))
 
@@ -177,14 +182,18 @@
     (.getValueString iter)))
 
 (defn dump-pairs
-  [index-file series-map-file max-series step stride]
+  [index-file series-map-file max-series max-df modp modrec step stride]
   (let [ireader (DiskIndex/openIndexPart index-file)
         ki (.getIterator ireader)
         series (read-series-map series-map-file)
         upper (/ (* max-series (dec max-series)) 2)]
     (dorun (repeatedly (* step stride) (fn [] (.nextKey ki))))
-    (println "#" step stride (.getKeyString ki))
-    (doseq [item (->> ki dump-kl-index (take stride) (match-pairs series upper))]
+    ;; (println "#" step stride (.getKeyString ki))
+    (doseq [item (->> ki dump-kl-index (take stride)
+                      (match-pairs series upper max-df modp)
+                      (filter (if (<= modrec 1)
+                                (fn [r] true)
+                                (fn [r] (= 0 (mod (hash r) modrec))))))]
       (prn item))))
 
 (defn- read-match-data
@@ -660,27 +669,28 @@
 
 (defn -main
   "I don't do a whole lot."
-  [& args]
-  (condp = (first args)
+  [cmd & args]
+  (condp = cmd
     "format-cluster" (format-cluster
+                      (first args)
                       (second args)
-                      (nth args 2)
                       (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq))
     "cluster" (cluster-scores
-               (Double/parseDouble (second args))
+               (Double/parseDouble (first args))
                (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq))
     "diffs" (diff-words
-             (Long/parseLong (second args))
+             (Long/parseLong (first args))
              (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq))
-    "scores" (dump-scores (second args) (Integer/parseInt (nth args 2)))
-    "pairs" (dump-pairs (second args) (nth args 2)
-                        (Integer/parseInt (nth args 3)) (Integer/parseInt (nth args 4))
-                        (Integer/parseInt (nth args 5)))
-    "counts" (->> (DiskIndex/openIndexPart (second args)) dump-index (map second) frequencies prn)
-    "entries"  (->> (DiskIndex/openIndexPart (second args)) dump-index count prn)
-    "total"  (->> (DiskIndex/openIndexPart (second args)) dump-index (rand-blat first 0.001) (map second) (reduce +) prn)
+    "scores" (dump-scores (first args) (Integer/parseInt (second args)))
+    "pairs" (dump-pairs (first args) (second args)
+                        (Integer/parseInt (nth args 2)) (Integer/parseInt (nth args 3))
+                        (Integer/parseInt (nth args 4)) (Integer/parseInt (nth args 5))
+                        (Integer/parseInt (nth args 6)) (Integer/parseInt (nth args 7)))
+    "counts" (->> (DiskIndex/openIndexPart (first args)) dump-index (map second) frequencies prn)
+    "entries"  (->> (DiskIndex/openIndexPart (first args)) dump-index count prn)
+    "total"  (->> (DiskIndex/openIndexPart (first args)) dump-index (rand-blat first 0.001) (map second) (reduce +) prn)
     "dump" (doseq
-               [s (->> (DiskIndex/openIndexPart (second args)) dump-index)]
+               [s (->> (DiskIndex/openIndexPart (first args)) dump-index)]
              (println s))
-    "easy-dump" (kv-dump (DiskIndex/openIndexPart (second args)))
-    (println "Unexpected command:" (first args))))
+    "easy-dump" (kv-dump (DiskIndex/openIndexPart (first args)))
+    (println "Unexpected command:" cmd)))
