@@ -7,6 +7,8 @@
   (:use [clojure.math.combinatorics]
         [ciir.utils])
   (:import (org.lemurproject.galago.core.index IndexPartReader KeyIterator ValueIterator)
+           (org.lemurproject.galago.core.index.corpus CorpusReader
+                                                      DocumentReader$DocumentIterator)
            (org.lemurproject.galago.core.index.disk
             DiskIndex CountIndexReader$TermCountIterator WindowIndexReader$WindowExtentIterator)
            (org.lemurproject.galago.core.parse Document)
@@ -77,7 +79,7 @@
                   :when (and (not= (get bins aid) (get bins bid))
                              (<= (first arest) max-df)
                              (<= (first brest) max-df))]
-              {[aid bid] ["" total-freq arest brest]})))))))
+              {[aid bid] [k total-freq arest brest]})))))))
 
 (defprotocol LocalValueIterator
   (value-iterator-seq [this]))
@@ -131,8 +133,10 @@
       (dump-kv-index iter)))))
 
 (defn dump-index
-  [^IndexPartReader ireader]
-  (let [ki ^KeyIterator (.getIterator ireader)]
+  [index-file]
+  ;;[^IndexPartReader ireader]
+  (let [ireader ^IndexPartReader (DiskIndex/openIndexPart index-file)
+        ki ^KeyIterator (.getIterator ireader)]
     (condp #(isa? %2 %1) (class ireader)
       org.lemurproject.galago.core.index.KeyListReader (dump-kl-index ki)
       org.lemurproject.galago.core.index.KeyValueReader (dump-kv-index ki))))
@@ -154,27 +158,6 @@
       true)
    coll))
 
-(defn match-pairs
-  [bins upper max-df modp recs]
-  (->>
-   (if (> modp 1)
-     (filter #(= 0 (mod (.hashCode ^String (first %)) modp)) recs)
-     recs)
-   (filter #(re-find #"^[a-z~]+$" (first %)))
-   (mapcat (partial cross-pairs bins upper max-df))))
-
-;; (reduce (partial merge-with #(conj %1 (first %2))) {})))
-
-(defn batch-blat
-  [f pref size coll]
-  (count
-   (map-indexed
-    #(with-open [out (jio/writer (str pref %1))]
-       (binding [*out* out]
-         (doseq [item (f %2)]
-           (prn item))))
-    (partition size coll))))
-
 (defn doc-name
   [^IndexPartReader ireader id]
   (let [iter (.getIterator ireader)]
@@ -182,19 +165,89 @@
     (.getValueString iter)))
 
 (defn dump-pairs
-  [index-file series-map-file max-series max-df modp modrec step stride]
+  [index-file series-map-file stop-file max-series max-df modp modrec step stride]
   (let [ireader (DiskIndex/openIndexPart index-file)
         ki (.getIterator ireader)
         series (read-series-map series-map-file)
+        stops (-> stop-file slurp (s/split #"\n") set (disj ""))
         upper (/ (* max-series (dec max-series)) 2)]
     (dorun (repeatedly (* step stride) (fn [] (.nextKey ki))))
     ;; (println "#" step stride (.getKeyString ki))
     (doseq [item (->> ki dump-kl-index (take stride)
-                      (match-pairs series upper max-df modp)
+                      (filter (if (<= modp 1)
+                                (fn [r] true)
+                                (fn [r] (= 0 (.hashCode ^String (first r)) modp))))
+                      ;; (filter #(re-find #"^[a-z~]+$" (first %)))
+                      ;; (filter #(re-find #"[a-z]{3}" (first %)))
+                      ;; (filter #(re-find #"[^~]{5}.*~.*[^~]{5}" (first %)))
+                      (remove (if (empty? stops)
+                                (fn [r] false)
+                                (fn [r] (some stops (s/split (first r) #"~")))))
+                      (mapcat (partial cross-pairs series upper max-df))
                       (filter (if (<= modrec 1)
                                 (fn [r] true)
                                 (fn [r] (= 0 (mod (hash r) modrec))))))]
       (prn item))))
+
+(defn dump-corpus
+  [^String corpus-file]
+  (let [di (.getIterator (CorpusReader. corpus-file))
+        params (Parameters.)]
+    (letfn [(doc-stream [^DocumentReader$DocumentIterator iter]
+              (lazy-seq
+               (when-not (.isDone iter)
+                 (cons
+                  [(Utility/toInt (.getKey iter))
+                   (vec (.terms (.getDocument iter params)))]
+                  (do
+                    (.nextKey iter)
+                    (doc-stream iter))))))]
+      (doc-stream di))))
+
+(defn- vappend
+  [x y]
+  (conj x (first y)))
+
+(defn gap-postings
+  [gap term-filter doc]
+  (let [[id terms] doc
+        len (count terms)]
+    (into
+     {}
+     (map
+      (fn [[k v]]
+        (vector
+         k [(vector id (count v) (vec v))]))
+      (loop [i 0
+             j (+ i (dec gap))
+             posts {}]
+        (if (>= j len)
+          posts
+          (recur (inc i)
+                 (inc j)
+                 (if (and (term-filter (terms i))
+                          (term-filter (terms j)))
+                   (merge-with vappend posts
+                               {(str (terms i) "~" (terms j)) [i]})
+                   posts))))))))
+
+(defn- get-vocab
+  [postings-file min-df max-df]
+  (->> postings-file dump-index ;;(take 100000)
+       (filter #(let [df (second %)]
+                  (and (>= df min-df) (<= df max-df))))
+       (map first)
+       set))
+
+(defn index-gaps
+  [corpus-file postings-file gap min-df max-df step stride]
+  (let [support (get-vocab postings-file min-df max-df)]
+    (doseq [rec
+            (->> corpus-file dump-corpus
+                 (drop (* step stride)) (take stride)
+                 (map (partial gap-postings gap support))
+                 (reduce (partial merge-with vappend)))]
+      (prn rec))))
 
 (defn- read-match-data
   [s]
@@ -682,15 +735,19 @@
              (Long/parseLong (first args))
              (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq))
     "scores" (dump-scores (first args) (Integer/parseInt (second args)))
-    "pairs" (dump-pairs (first args) (second args)
+    "pairs" (dump-pairs (first args) (second args) (nth args 2)
+                        (Integer/parseInt (nth args 3)) (Integer/parseInt (nth args 4))
+                        (Integer/parseInt (nth args 5)) (Integer/parseInt (nth args 6))
+                        (Integer/parseInt (nth args 7)) (Integer/parseInt (nth args 8)))
+    "gaps" (index-gaps (first args) (second args)
                         (Integer/parseInt (nth args 2)) (Integer/parseInt (nth args 3))
                         (Integer/parseInt (nth args 4)) (Integer/parseInt (nth args 5))
-                        (Integer/parseInt (nth args 6)) (Integer/parseInt (nth args 7)))
-    "counts" (->> (DiskIndex/openIndexPart (first args)) dump-index (map second) frequencies prn)
-    "entries"  (->> (DiskIndex/openIndexPart (first args)) dump-index count prn)
-    "total"  (->> (DiskIndex/openIndexPart (first args)) dump-index (rand-blat first 0.001) (map second) (reduce +) prn)
+                        (Integer/parseInt (nth args 6)))                       
+    "counts" (->> (first args) dump-index (map second) frequencies prn)
+    "entries"  (->> (first args) dump-index count prn)
+    "total"  (->> (first args) dump-index (rand-blat first 0.001) (map second) (reduce +) prn)
     "dump" (doseq
-               [s (->> (DiskIndex/openIndexPart (first args)) dump-index)]
+               [s (->> (first args) dump-index)]
              (println s))
     "easy-dump" (kv-dump (DiskIndex/openIndexPart (first args)))
     (println "Unexpected command:" cmd)))
