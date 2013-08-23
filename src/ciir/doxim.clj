@@ -79,7 +79,7 @@
                   :when (and (not= (get bins aid) (get bins bid))
                              (<= (first arest) max-df)
                              (<= (first brest) max-df))]
-              {[aid bid] [k total-freq arest brest]})))))))
+              {[aid bid] ["" total-freq arest brest]})))))))
 
 (defprotocol LocalValueIterator
   (value-iterator-seq [this]))
@@ -174,9 +174,10 @@
     (dorun (repeatedly (* step stride) (fn [] (.nextKey ki))))
     ;; (println "#" step stride (.getKeyString ki))
     (doseq [item (->> ki dump-kl-index (take stride)
+                      ;; When upgrading to clojure 1.5.1, we can use the simpler cond->> below.
                       (filter (if (<= modp 1)
                                 (fn [r] true)
-                                (fn [r] (= 0 (.hashCode ^String (first r)) modp))))
+                                (fn [r] (= 0 (mod (.hashCode ^String (first r)) modp)))))
                       ;; (filter #(re-find #"^[a-z~]+$" (first %)))
                       ;; (filter #(re-find #"[a-z]{3}" (first %)))
                       ;; (filter #(re-find #"[^~]{5}.*~.*[^~]{5}" (first %)))
@@ -485,6 +486,20 @@
   [f]
   (fn [a b] (< (f a) (f b)) b a))
 
+(defn- alignment-stats
+  [^Alignment alg]
+  (let [pairs (partition 2 (interleave (:sequence1 alg) (:sequence2 alg)))
+        gaps (concat (re-seq #"\-+" (:sequence1 alg))
+                     (re-seq #"\-+" (:sequence2 alg)))
+        nmatches (count (filter (partial apply =) pairs))
+        ngaps (count gaps)]
+    [nmatches ngaps
+     (+ (* 2 nmatches)
+        (* -1 (count (filter (fn [[a b]] (and (not= a b) (not= a \-) (not= b \-))) pairs)))
+        (* -5 ngaps)
+        (* -0.5 (reduce + (map (comp dec count) gaps))))]
+    ))
+
 (defn score-pair
   [^String s ^Retrieval ri ^long gram]
   (let [[[id1 id2] matches] (read-match-data s)
@@ -503,14 +518,15 @@
         match-len1 (- (:end1 pass) (:start1 pass))
         match-len2 (- (:end2 pass) (:start2 pass))]
     (when (>= match-len1 gram)
-      (s/join "\t" [match-len1
-                    (float (/ match-len1 (count words1)))
-                    (float (/ match-len2 (count words2)))
-                    id1 id2 name1 name2
-                    (:start1 pass) (:end1 pass)
-                    (:start2 pass) (:end2 pass)
-                    (-> pass :sequence1 s/trim)
-                    (-> pass :sequence2 s/trim)]))))
+      (s/join "\t" (concat [match-len1
+                            (float (/ match-len1 (count words1)))
+                            (float (/ match-len2 (count words2)))]
+                           (alignment-stats pass)
+                           [id1 id2 name1 name2
+                            (:start1 pass) (:end1 pass)
+                            (:start2 pass) (:end2 pass)
+                            (-> pass :sequence1 s/trim)
+                            (-> pass :sequence2 s/trim)])))))
 
 (defn load-series-meta
   [fname]
@@ -585,8 +601,8 @@
 
 (defn greedy-cluster-reducer
   [match-fn m line]
-  (let [[sscore prop1 prop2 sid1 sid2 name1 name2 s1 e1 s2 e2 raw1 raw2]
-        (s/split line #"\t" 13)
+  (let [[sscore prop1 prop2 matches gaps ascore sid1 sid2 name1 name2 s1 e1 s2 e2 raw1 raw2]
+        (s/split line #"\t")
         id1 (Integer/parseInt sid1)
         id2 (Integer/parseInt sid2)
         score (Double/parseDouble sscore)
@@ -704,8 +720,8 @@
   [gram lines]
   (let [dict (set (line-seq (jio/reader "/usr/share/dict/words")))]
     (doseq [line lines]
-      (let [[sscore prop1 prop2 sid1 sid2 name1 name2 s1 e1 s2 e2 raw1 raw2]
-            (s/split line #"\t" 13)
+      (let [[sscore prop1 prop2 matches gaps ascore sid1 sid2 name1 name2 s1 e1 s2 e2 raw1 raw2]
+            (s/split line #"\t")
             date1 (doc-date name1)
             date2 (doc-date name2)
             diffs (word-substitutions gram dict raw1 raw2)]
