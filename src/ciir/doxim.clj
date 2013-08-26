@@ -6,15 +6,15 @@
             [clojure.java.io :as jio])
   (:use [clojure.math.combinatorics]
         [ciir.utils])
-  (:import (org.lemurproject.galago.core.index IndexPartReader KeyIterator ValueIterator)
+  (:import (org.lemurproject.galago.core.index IndexPartReader KeyIterator)
            (org.lemurproject.galago.core.index.corpus CorpusReader
                                                       DocumentReader$DocumentIterator)
            (org.lemurproject.galago.core.index.disk
-            DiskIndex CountIndexReader$TermCountIterator WindowIndexReader$WindowExtentIterator)
-           (org.lemurproject.galago.core.parse Document)
+            DiskIndex CountIndexReader$KeyIterator WindowIndexReader$KeyIterator)
+           (org.lemurproject.galago.core.parse Document Document$DocumentComponents)
            (org.lemurproject.galago.core.retrieval Retrieval RetrievalFactory)
            (org.lemurproject.galago.core.retrieval.processing ScoringContext)
-           (org.lemurproject.galago.core.retrieval.iterator MovableExtentIterator)
+           (org.lemurproject.galago.core.retrieval.iterator ExtentIterator CountIterator)
            (org.lemurproject.galago.tupleflow Parameters Utility))
   (:gen-class))
 
@@ -84,27 +84,26 @@
 (defprotocol LocalValueIterator
   (value-iterator-seq [this]))
 
-(extend-type MovableExtentIterator
+(extend-type ExtentIterator
   LocalValueIterator
   (value-iterator-seq [this]
     (lazy-seq
      (when-not (.isDone this)
        (let [k (.currentCandidate this)]
-         (set! (.document (.getContext this)) k)
-         (let [ext (.extents this)
+         (let [ext (.extents this (ScoringContext. k))
                v (.size ext)
                ;; Realize pos now to capture iterator side effects
                pos (mapv #(.begin ext %) (range v))]
            (.movePast this k)
            (cons [k v pos] (value-iterator-seq this))))))))
 
-(extend-type CountIndexReader$TermCountIterator
+(extend-type CountIterator
   LocalValueIterator
   (value-iterator-seq [this]
     (lazy-seq
      (when-not (.isDone this)
        (let [k (.currentCandidate this)
-             v (.count this)]
+             v (.count this (ScoringContext. k))]
          (.movePast this k)
          (cons [k v] (value-iterator-seq this)))))))
 
@@ -114,7 +113,7 @@
    (when-not (.isDone iter)
      (cons
       (let [key (.getKeyString iter)
-            vi (doto (.getValueIterator iter) (.setContext (ScoringContext.)))
+            vi (.getValueIterator iter)
             vcount (.totalEntries vi)
             val (value-iterator-seq vi)]
         (.nextKey iter)
@@ -365,7 +364,7 @@
 
 (defn- doc-words
   [^Retrieval ri ^String dname]
-  (vec (.terms (.getDocument ri dname (Parameters.)))))
+  (vec (.terms (.getDocument ri dname (Document$DocumentComponents. true true true)))))
 
 (defn- space-count
   [^String s]
