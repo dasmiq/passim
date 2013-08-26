@@ -3,9 +3,9 @@
             [clojure.set :as set]
             [clojure.data.csv :as csv]
             [clojure.java.shell :as sh]
-            [clojure.java.io :as jio])
-  (:use [clojure.math.combinatorics]
-        [ciir.utils])
+            [clojure.java.io :as jio]
+            [ciir.utils :refer :all]
+            [clojure.math.combinatorics :refer [combinations]])
   (:import (org.lemurproject.galago.core.index IndexPartReader KeyIterator)
            (org.lemurproject.galago.core.index.corpus CorpusReader
                                                       DocumentReader$DocumentIterator)
