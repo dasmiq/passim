@@ -157,12 +157,6 @@
       true)
    coll))
 
-(defn doc-name
-  [^IndexPartReader ireader id]
-  (let [iter (.getIterator ireader)]
-    (.skipToKey iter (Utility/fromInt id))
-    (.getValueString iter)))
-
 (defn dump-pairs
   [index-file series-map-file stop-file max-series max-df modp modrec step stride]
   (let [ireader (DiskIndex/openIndexPart index-file)
@@ -286,6 +280,17 @@
                    (dict w1)
                    (dict w2))))))))))
 
+(defn index-positions
+  "Returns map of terms to their positions in sequence"
+  [s]
+  (->> s
+       (map-indexed vector)
+       (reduce
+        (fn [map [pos word]]
+          (merge-with (comp vec concat) map {word [pos]}))
+        {})
+       (into {})))
+
 (defn hapax-positions
   "Returns map of hapax terms to their positions in sequence"
   [s]
@@ -374,6 +379,10 @@
   [^String s]
   (= " " (subs s 0 1)))
 
+(defn- join-alnum-tokens
+  [toks]
+  (s/replace (s/join " " toks) #"[^a-zA-Z0-9 ]" "#"))
+
 (defrecord Alignment [sequence1 sequence2 start1 start2 end1 end2])
 
 (defn- align-words
@@ -386,8 +395,8 @@
                   end
                   [(min (dec (count w1)) (+ (first start) gap-words))
                    (min (dec (count w2)) (+ (second start) gap-words))])
-        c1 (s/replace (s/join " " (subvec w1 s1 (inc e1))) #"[^a-zA-Z0-9 ]" "#")
-        c2 (s/replace (s/join " " (subvec w2 s2 (inc e2))) #"[^a-zA-Z0-9 ]" "#")
+        c1 (join-alnum-tokens (subvec w1 s1 (inc e1)))
+        c2 (join-alnum-tokens (subvec w2 s2 (inc e2)))
         alg (jaligner.SmithWatermanGotoh/align
              (jaligner.Sequence. c1) (jaligner.Sequence. c2) match-matrix 5 0.5)
         out1 (String. (.getSequence1 alg))
@@ -734,6 +743,122 @@
                 (if (< (compare date1 date2) 0)
                   [sscore date1 date2 o1 o2 name1 name2]
                   [sscore date2 date1 o2 o1 name2 name1]))))))))))
+
+(defn index-tokens
+  [docs gram]
+  (letfn [(tokenize [x]
+            (-> x
+                s/lower-case
+                (s/replace #"[^a-z ]" " ")
+                s/trim
+                (s/split #"[ ]+")))]
+    (let [names (mapv first docs)
+          toks (map (comp tokenize second) docs)
+          idx (apply concat (map-indexed (fn [pos words] (map #(vector % pos) words)) toks))
+          words (mapv first idx)
+          ]
+      {:names names
+       :positions (mapv second idx)
+       :words words
+       :terms (->> words
+                   (partition gram 1)
+                   (map #(s/join "~" %))
+                   vec)})))
+
+(defn term-hits
+  [^KeyIterator ki max-count terms]
+  (let [bad-docs #{0}]
+    (.reset ki)
+    (reduce
+     (fn [m term]
+       (.skipToKey ki (Utility/fromString term))
+       (if (= (.getKeyString ki) term)
+         (let [vi (.getValueIterator ki)]
+           (if (<= (.totalEntries vi) max-count)
+             (assoc m term (vec (remove bad-docs (map first (value-iterator-seq vi)))))
+             m))
+         m))
+     {}
+     (sort terms))))
+
+(defn load-tsv
+  [fname]
+  (map #(s/split % #"\t") (s/split (slurp fname) #"\n")))
+
+;; We should include the canonical texts themselves in the index so
+;; that their ngrams show up as occurring at least once.  We should
+;; therefore also remove hits to these texts from the results below.
+(defn quoted-passages
+  [docs gram ^KeyIterator ki ^Retrieval ri]
+  (let [max-count 1000
+        max-gap 200
+        idx (index-tokens docs gram)
+        term-pos (index-positions (:terms idx))
+        term-count (count (:terms idx))
+        hits
+        (->> term-pos
+             keys
+             (term-hits ki max-count)
+             (reduce
+              (fn [m [t d]]
+                (merge-with
+                 (comp vec concat) m
+                 (into {} (map #(vector % (term-pos t)) d))))
+              {})
+             (reduce-kv
+              (fn [m k v]
+                (assoc m (.getDocumentName ri (int k)) (vec (sort v))))
+              {}))
+        spans
+        (map (fn [[page thits]]
+               [page
+                (map #(let [pos (mapv first %)]
+                        [(first pos) (last pos)])
+                     (partition-when
+                      (fn [[s e]] (> (- e s) max-gap))
+                      (partition 2 1 [-1] thits)))])
+             hits)]
+    (mapcat (fn [[page s]]
+           (let [pterms (doc-words ri page)
+                 qwe (.getDocument ri page (Document$DocumentComponents. true true true))
+                 c2 (join-alnum-tokens pterms)
+                 pseq (jaligner.Sequence. c2)
+                 ]
+             (map (fn [[s e]]
+                    (let [s1 (max 0 (- s 50))
+                          c1 (join-alnum-tokens
+                              (subvec (:words idx)
+                                      s1
+                                      (min (dec term-count) (+ e 50))))
+                          alg (jaligner.SmithWatermanGotoh/align
+                               (jaligner.Sequence. c1)
+                               pseq
+                               match-matrix 5 0.5)
+                          out1 (String. (.getSequence1 alg))
+                          out2 (String. (.getSequence2 alg))
+                          os1 (.getStart1 alg)
+                          os2 (.getStart2 alg)
+                          sword1 (+ s1 (space-count (subs c1 0 os1))
+                                    (if (spacel? out1) 1 0))
+                          sword2 (+ 0 (space-count (subs c2 0 os2))
+                                    (if (spacel? out2) 1 0))
+                          eword1 (+ sword1 1 (space-count (s/trim out1)))
+                          eword2 (+ sword2 1 (space-count (s/trim out2)))]
+                      (println page)
+                      (println (subvec (:words idx) sword1 eword1))
+                      (println (map #(get (:names idx) %) (distinct (subvec (:positions idx) sword1 eword1))))
+                      ;;(println sword2 eword2)
+                      (println (s/replace (s/replace (s/replace (subs (.text qwe) (.get (.termCharBegin qwe) sword2) (.get (.termCharEnd qwe) (dec eword2))) #"<lb>" "\n") #"<w [^>]*>" "") #"</w>" ""))
+                      (println out1)
+                      (println out2)
+                      [page
+                       ;;(Alignment. out1 out2 sword1 sword2 eword1 eword2)
+                       ]
+                    ))
+                  s)
+             ))
+            (sort spans))
+    ))
 
 (defn -main
   "I don't do a whole lot."
