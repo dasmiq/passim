@@ -785,6 +785,27 @@
   [fname]
   (map #(s/split % #"\t") (s/split (slurp fname) #"\n")))
 
+(defn doc-passage
+  [d start end]
+  (let [len (count (.terms d))
+        soff (if (> start 0)
+               (+ 5 (.get (.termCharEnd d) (dec start)))
+               0)
+        eoff (+ 4 (.get (.termCharEnd d) (dec end)))
+        raw (subs (.text d) soff eoff)
+        coords (re-seq #" coords=\"([0-9]+),([0-9]+),([0-9]+),([0-9]+)" raw)
+        x (->> coords (map #(Integer/parseInt (nth % 1))) (reduce min))
+        y (->> coords (map #(Integer/parseInt (nth % 4))) (reduce min))
+        w (- (->> coords (map #(Integer/parseInt (nth % 3))) (reduce max)) x)
+        h (- (->> coords (map #(Integer/parseInt (nth % 2))) (reduce max)) y)]
+    {:text
+     (-> raw
+         (s/replace #"<lb>" "\n")
+         (s/replace #"</?[A-Za-z][^>]*>" ""))
+     :bbox
+     [x y w h]
+     }))
+
 ;; We should include the canonical texts themselves in the index so
 ;; that their ngrams show up as occurring at least once.  We should
 ;; therefore also remove hits to these texts from the results below.
@@ -805,60 +826,63 @@
                  (comp vec concat) m
                  (into {} (map #(vector % (term-pos t)) d))))
               {})
-             (reduce-kv
-              (fn [m k v]
-                (assoc m (.getDocumentName ri (int k)) (vec (sort v))))
-              {}))
-        spans
-        (map (fn [[page thits]]
-               [page
-                (map #(let [pos (mapv first %)]
-                        [(first pos) (last pos)])
-                     (partition-when
-                      (fn [[s e]] (> (- e s) max-gap))
-                      (partition 2 1 [-1] thits)))])
-             hits)]
-    (mapcat (fn [[page s]]
-           (let [pterms (doc-words ri page)
-                 qwe (.getDocument ri page (Document$DocumentComponents. true true true))
-                 c2 (join-alnum-tokens pterms)
-                 pseq (jaligner.Sequence. c2)
-                 ]
-             (map (fn [[s e]]
-                    (let [s1 (max 0 (- s 50))
-                          c1 (join-alnum-tokens
-                              (subvec (:words idx)
-                                      s1
-                                      (min (dec term-count) (+ e 50))))
-                          alg (jaligner.SmithWatermanGotoh/align
-                               (jaligner.Sequence. c1)
-                               pseq
-                               match-matrix 5 0.5)
-                          out1 (String. (.getSequence1 alg))
-                          out2 (String. (.getSequence2 alg))
-                          os1 (.getStart1 alg)
-                          os2 (.getStart2 alg)
-                          sword1 (+ s1 (space-count (subs c1 0 os1))
-                                    (if (spacel? out1) 1 0))
-                          sword2 (+ 0 (space-count (subs c2 0 os2))
-                                    (if (spacel? out2) 1 0))
-                          eword1 (+ sword1 1 (space-count (s/trim out1)))
-                          eword2 (+ sword2 1 (space-count (s/trim out2)))]
-                      (println page)
-                      (println (subvec (:words idx) sword1 eword1))
-                      (println (map #(get (:names idx) %) (distinct (subvec (:positions idx) sword1 eword1))))
-                      ;;(println sword2 eword2)
-                      (println (s/replace (s/replace (s/replace (subs (.text qwe) (.get (.termCharBegin qwe) sword2) (.get (.termCharEnd qwe) (dec eword2))) #"<lb>" "\n") #"<w [^>]*>" "") #"</w>" ""))
-                      (println out1)
-                      (println out2)
-                      [page
-                       ;;(Alignment. out1 out2 sword1 sword2 eword1 eword2)
-                       ]
-                    ))
-                  s)
-             ))
-            (sort spans))
-    ))
+             (map
+              (fn [[k v]]
+                [(.getDocumentName ri (int k)) (vec (sort v))]))
+             (map
+              (fn [[page thits]]
+                [page
+                 (map #(let [pos (mapv first %)]
+                         [(first pos) (last pos)])
+                      (partition-when
+                       (fn [[s e]] (> (- e s) max-gap))
+                       (partition 2 1 [-1] thits)))]))
+             sort
+             (mapcat
+              (fn [[page s]]
+                (let [pterms (doc-words ri page)
+                      doc-data (.getDocument ri page (Document$DocumentComponents. true true true))
+                      c2 (join-alnum-tokens pterms)
+                      pseq (jaligner.Sequence. c2)]
+                  (map (fn [[s e]]
+                         (let [s1 (max 0 (- s 50))
+                               c1 (join-alnum-tokens
+                                   (subvec (:words idx)
+                                           s1
+                                           (min (dec term-count) (+ e 50))))
+                               alg (jaligner.SmithWatermanGotoh/align
+                                    (jaligner.Sequence. c1)
+                                    pseq
+                                    match-matrix 5 0.5)
+                               out1 (String. (.getSequence1 alg))
+                               out2 (String. (.getSequence2 alg))
+                               os1 (.getStart1 alg)
+                               os2 (.getStart2 alg)
+                               sword1 (+ s1 (space-count (subs c1 0 os1))
+                                         (if (spacel? out1) 1 0))
+                               sword2 (+ 0 (space-count (subs c2 0 os2))
+                                         (if (spacel? out2) 1 0))
+                               eword1 (+ sword1 1 (space-count (s/trim out1)))
+                               eword2 (+ sword2 1 (space-count (s/trim out2)))]
+                           [page
+                            (s/join " " (subvec (:words idx) sword1 eword1))
+                            (mapv #(get (:names idx) %) (distinct (subvec (:positions idx) sword1 eword1)))
+                            (doc-passage doc-data sword2 eword2)
+                            out1
+                            out2]))
+                       s)))))]
+    (doseq [x hits]
+      (println (s/join "\n" x))) 
+    nil))
+
+;; http://www.archive.org/download/aliceinwonderlan00carriala/page/n14_x100_y100_w100_h100.jpg
+;; http://www.archive.org/download/firsteditionoftr00shakuoft/page/n72_x1186_y361_w400_h40.jpg
+;; http://www.archive.org/download/firsteditionoftr00shakuoft/page/n71_x384_y1801_w1357_h406.jpg
+;; http://www.archive.org/download/firsteditionoftr00shakuoft/page/n70_x210_y1725_w1361_h617.jpg
+
+;; http://www.europeana-newspapers.eu/
+;; http://www.impact-project.eu/
+;; http://www.loc.gov/standards/alto/techcenter/elementSet/index.php
 
 (defn -main
   "I don't do a whole lot."
@@ -891,3 +915,7 @@
              (println s))
     "easy-dump" (kv-dump (DiskIndex/openIndexPart (first args)))
     (println "Unexpected command:" cmd)))
+
+
+;; congress.gov : does it have unsuccessful bills? I think yes.
+;; id.loc.gov : authority lists, e.g. name authority file, place names
