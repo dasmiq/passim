@@ -11,7 +11,7 @@
                                                       DocumentReader$DocumentIterator)
            (org.lemurproject.galago.core.index.disk
             DiskIndex CountIndexReader$KeyIterator WindowIndexReader$KeyIterator)
-           (org.lemurproject.galago.core.parse Document Document$DocumentComponents)
+           (org.lemurproject.galago.core.parse Document Document$DocumentComponents TagTokenizer)
            (org.lemurproject.galago.core.retrieval Retrieval RetrievalFactory)
            (org.lemurproject.galago.core.retrieval.processing ScoringContext)
            (org.lemurproject.galago.core.retrieval.iterator ExtentIterator CountIterator)
@@ -744,26 +744,25 @@
                   [sscore date1 date2 o1 o2 name1 name2]
                   [sscore date2 date1 o2 o1 name2 name1]))))))))))
 
+(defn galago-tokens
+  [^String s]
+  (let [d (Document. "foo" s)]
+    (.tokenize (TagTokenizer.) d)
+    (.terms d)))
+
 (defn index-tokens
   [docs gram]
-  (letfn [(tokenize [x]
-            (-> x
-                s/lower-case
-                (s/replace #"[^a-z ]" " ")
-                s/trim
-                (s/split #"[ ]+")))]
-    (let [names (mapv first docs)
-          toks (map (comp tokenize second) docs)
-          idx (apply concat (map-indexed (fn [pos words] (map #(vector % pos) words)) toks))
-          words (mapv first idx)
-          ]
-      {:names names
-       :positions (mapv second idx)
-       :words words
-       :terms (->> words
-                   (partition gram 1)
-                   (map #(s/join "~" %))
-                   vec)})))
+  (let [names (mapv first docs)
+        toks (map (comp galago-tokens second) docs)
+        idx (apply concat (map-indexed (fn [pos words] (map #(vector % pos) words)) toks))
+        words (mapv first idx)]
+    {:names names
+     :positions (mapv second idx)
+     :words words
+     :terms (->> words
+                 (partition gram 1)
+                 (map #(s/join "~" %))
+                 vec)}))
 
 (defn term-hits
   [^KeyIterator ki max-count terms]
@@ -786,8 +785,9 @@
   (map #(s/split % #"\t") (s/split (slurp fname) #"\n")))
 
 (defn doc-passage
-  [d start end]
-  (let [len (count (.terms d))
+  [^Document d start end]
+  (let [[id n] (doc-id-parts (.name d))
+        len (count (.terms d))
         soff (if (> start 0)
                (+ 5 (.get (.termCharEnd d) (dec start)))
                0)
@@ -798,12 +798,17 @@
         y (->> coords (map #(Integer/parseInt (nth % 4))) (reduce min))
         w (- (->> coords (map #(Integer/parseInt (nth % 3))) (reduce max)) x)
         h (- (->> coords (map #(Integer/parseInt (nth % 2))) (reduce max)) y)]
-    {:text
+    {:id id
+     :n n
+     :text
      (-> raw
          (s/replace #"<lb>" "\n")
          (s/replace #"</?[A-Za-z][^>]*>" ""))
      :bbox
      [x y w h]
+     :url
+     (str "http://www.archive.org/download/" id "/page/n" (dec (Integer/parseInt n))
+          (format "_x%d_y%d_w%d_h%d.jpg" x y w h))
      }))
 
 ;; We should include the canonical texts themselves in the index so
@@ -919,3 +924,7 @@
 
 ;; congress.gov : does it have unsuccessful bills? I think yes.
 ;; id.loc.gov : authority lists, e.g. name authority file, place names
+
+;; SJ: new people at wikisource?
+
+;; hackathon sketch projects
