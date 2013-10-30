@@ -811,6 +811,55 @@
           (format "_x%d_y%d_w%d_h%d.jpg" x y w h))
      }))
 
+(defn proc-aligned-doc
+  [out1 out2 idx sword1 eword1 ^Document doc sword2 eword2]
+  (let [[id n] (doc-id-parts (.name doc))
+        w1 (:words idx)
+        raw (.text doc)
+        terms (.terms doc)
+        tce (.termCharEnd doc)]
+    ;;(println (s/join " " (subvec w1 sword1 eword1)))
+    (loop [res []
+           c1 (seq (s/trimr out1))
+           c2 (seq (s/trimr out2))
+           s1 sword1
+           s2 sword2]
+      (if (and (not-empty c1) (not-empty c2))
+        (let [f1 (first c1)
+              f2 (first c2)]
+          (recur
+           ;; Maybe we should record words even when just the
+           ;; canonical text has a word break. This would
+           ;; allow... There is a bug below, which I think ultimately
+           ;; comes from the book indexing code: galago tokenizes too
+           ;; much.
+           (if (and (= \space f1) (= \space f2))
+             (let [soff (if (> s2 0)
+                          (+ 5 (.get tce (dec s2)))
+                          0)
+                   eoff (+ 4 (.get tce s2))
+                   raw (subs (.text doc) soff eoff)
+                   coords (re-seq #" coords=\"([0-9]+),([0-9]+),([0-9]+),([0-9]+)" raw)
+                   x1 (->> coords (map #(Integer/parseInt (nth % 1))) (reduce min 1000))
+                   y1 (->> coords (map #(Integer/parseInt (nth % 4))) (reduce min 1000))
+                   x2 (->> coords (map #(Integer/parseInt (nth % 3))) (reduce max 0))
+                   y2 (->> coords (map #(Integer/parseInt (nth % 2))) (reduce max 0))]
+               (conj res
+                     {:id id
+                      :n n
+                      :s1 s1
+                      :s2 s2
+                      :w1 (w1 s1)
+                      :w2 (.get terms s2)
+                      :bbox [x1 y1 x2 y2]
+                      :cite (-> s1 ((:positions idx)) ((:names idx)))}))
+             res)
+           (rest c1)
+           (rest c2)
+           (if (= \space f1) (inc s1) s1)
+           (if (= \space f2) (inc s2) s2)))
+        res))))
+
 ;; We should include the canonical texts themselves in the index so
 ;; that their ngrams show up as occurring at least once.  We should
 ;; therefore also remove hits to these texts from the results below.
@@ -869,15 +918,19 @@
                                          (if (spacel? out2) 1 0))
                                eword1 (+ sword1 1 (space-count (s/trim out1)))
                                eword2 (+ sword2 1 (space-count (s/trim out2)))]
-                           [page
-                            (s/join " " (subvec (:words idx) sword1 eword1))
-                            (mapv #(get (:names idx) %) (distinct (subvec (:positions idx) sword1 eword1)))
+                           (merge
                             (doc-passage doc-data sword2 eword2)
-                            out1
-                            out2]))
+                            {:canonical (s/join " " (subvec (:words idx) sword1 eword1))
+                             :page page
+                             :cites
+                             (mapv #(get (:names idx) %) (distinct (subvec (:positions idx) sword1 eword1)))
+                             :words
+                             ;;[]})))
+                       (proc-aligned-doc
+                       out1 out2 idx sword1 eword1 doc-data sword2 eword2)})))
                        s)))))]
     (doseq [x hits]
-      (println (s/join "\n" x))) 
+      (println (:cites x)))
     nil))
 
 ;; http://www.archive.org/download/aliceinwonderlan00carriala/page/n14_x100_y100_w100_h100.jpg
