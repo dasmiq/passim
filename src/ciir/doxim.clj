@@ -766,20 +766,19 @@
                  vec)}))
 
 (defn term-hits
-  [^KeyIterator ki max-count terms]
-  (let [bad-docs #{0}]
-    (.reset ki)
-    (reduce
-     (fn [m term]
-       (.skipToKey ki (Utility/fromString term))
-       (if (= (.getKeyString ki) term)
-         (let [vi (.getValueIterator ki)]
-           (if (<= (.totalEntries vi) max-count)
-             (assoc m term (vec (remove bad-docs (map first (value-iterator-seq vi)))))
-             m))
-         m))
-     {}
-     (sort terms))))
+  [^KeyIterator ki max-count bad-docs terms]
+  (.reset ki)
+  (reduce
+   (fn [m term]
+     (.skipToKey ki (Utility/fromString term))
+     (if (= (.getKeyString ki) term)
+       (let [vi (.getValueIterator ki)]
+         (if (<= (.totalEntries vi) max-count)
+           (assoc m term (vec (remove bad-docs (map first (value-iterator-seq vi)))))
+           m))
+       m))
+   {}
+   (sort terms)))
 
 (defn load-tsv
   [fname]
@@ -865,8 +864,9 @@
 ;; that their ngrams show up as occurring at least once.  We should
 ;; therefore also remove hits to these texts from the results below.
 (defn quoted-passages
-  [docs gram ^KeyIterator ki ^Retrieval ri]
-  (let [max-count 1000
+  [docs bad-docs ^KeyIterator ki ^Retrieval ri]
+  (let [gram 5
+        max-count 1000
         max-gap 200
         idx (index-tokens docs gram)
         term-pos (index-positions (:terms idx))
@@ -874,12 +874,13 @@
         hits
         (->> term-pos
              keys
-             (term-hits ki max-count)
+             (term-hits ki max-count bad-docs)
              (reduce
               (fn [m [t d]]
-                (merge-with
-                 (comp vec concat) m
-                 (into {} (map #(vector % (term-pos t)) d))))
+                (let [tf (count d)]
+                  (merge-with
+                   (comp vec concat) m
+                   (into {} (map #(vector % (term-pos t)) d)))))
               {})
              (map
               (fn [[k v]]
@@ -924,21 +925,26 @@
                             {:canonical (s/join " " (subvec (:words idx) sword1 eword1))
                              :cites
                              (mapv #(get (:names idx) %) (distinct (subvec (:positions idx) sword1 eword1)))
-                             :words
-                             (proc-aligned-doc
-                              out1 out2 idx sword1 eword1 doc-data sword2 eword2)
+                             ;; :words
+                             ;; (proc-aligned-doc
+                             ;;  out1 out2 idx sword1 eword1 doc-data sword2 eword2)
                              :page page})))
                        s)))))]
     hits))
 
 (defn dump-quotes
   [^String idx tfiles]
-  (let [ki (.getIterator (DiskIndex/openIndexPart idx))
-        ri (RetrievalFactory/instance (.getParent (java.io.File. idx)) (Parameters.))]
+  (let [dir (.getParent (java.io.File. idx))
+        bad-docs (->> (jio/file dir "names") str dump-index
+                      (filter #(re-find #"^urn:cts:" (second %)))
+                      (map #(Long/parseLong (first %)))
+                      set)
+        ki (.getIterator (DiskIndex/openIndexPart idx))
+        ri (RetrievalFactory/instance dir (Parameters.))]
     (doseq [f tfiles
-            q (-> (if (= "-" f) (System/in) f)
+            q (-> (if (= "-" f) *in* f)
                   load-tsv
-                  (quoted-passages 5 ki ri))]
+                  (quoted-passages bad-docs ki ri))]
       (json/pprint q)
       (println))))
 
