@@ -2,6 +2,7 @@
   (:require [clojure.string :as s]
             [clojure.set :as set]
             [clojure.data.csv :as csv]
+            [clojure.data.json :as json]
             [clojure.java.shell :as sh]
             [clojure.java.io :as jio]
             [ciir.utils :refer :all]
@@ -921,17 +922,25 @@
                            (merge
                             (doc-passage doc-data sword2 eword2)
                             {:canonical (s/join " " (subvec (:words idx) sword1 eword1))
-                             :page page
                              :cites
                              (mapv #(get (:names idx) %) (distinct (subvec (:positions idx) sword1 eword1)))
                              :words
-                             ;;[]})))
-                       (proc-aligned-doc
-                       out1 out2 idx sword1 eword1 doc-data sword2 eword2)})))
+                             (proc-aligned-doc
+                              out1 out2 idx sword1 eword1 doc-data sword2 eword2)
+                             :page page})))
                        s)))))]
-    (doseq [x hits]
-      (println (:cites x)))
-    nil))
+    hits))
+
+(defn dump-quotes
+  [^String idx tfiles]
+  (let [ki (.getIterator (DiskIndex/openIndexPart idx))
+        ri (RetrievalFactory/instance (.getParent (java.io.File. idx)) (Parameters.))]
+    (doseq [f tfiles
+            q (-> (if (= "-" f) (System/in) f)
+                  load-tsv
+                  (quoted-passages 5 ki ri))]
+      (json/pprint q)
+      (println))))
 
 ;; http://www.archive.org/download/aliceinwonderlan00carriala/page/n14_x100_y100_w100_h100.jpg
 ;; http://www.archive.org/download/firsteditionoftr00shakuoft/page/n72_x1186_y361_w400_h40.jpg
@@ -961,6 +970,7 @@
                         (Integer/parseInt (nth args 3)) (Integer/parseInt (nth args 4))
                         (Integer/parseInt (nth args 5)) (Integer/parseInt (nth args 6))
                         (Integer/parseInt (nth args 7)) (Integer/parseInt (nth args 8)))
+    "quotes" (dump-quotes (first args) (rest args))
     "gaps" (index-gaps (first args) (second args)
                         (Integer/parseInt (nth args 2)) (Integer/parseInt (nth args 3))
                         (Integer/parseInt (nth args 4)) (Integer/parseInt (nth args 5))
