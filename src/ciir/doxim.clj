@@ -871,36 +871,48 @@
         idx (index-tokens docs gram)
         term-pos (index-positions (:terms idx))
         term-count (count (:terms idx))
-        hits
+        page-hits
         (->> term-pos
              keys
              (term-hits ki max-count bad-docs)
              (reduce
               (fn [m [t d]]
-                (let [tf (count d)]
+                (let [tf (count d)
+                      pos (mapv #(vector % tf) (term-pos t))]
                   (merge-with
                    (comp vec concat) m
-                   (into {} (map #(vector % (term-pos t)) d)))))
+                   (into {} (map #(vector % pos) d)))))
               {})
              (map
               (fn [[k v]]
-                [(.getDocumentName ri (int k)) (vec (sort v))]))
+                [(.getDocumentName ri (int k)) (vec (sort v))])))
+        book-hits (frequencies (map (comp first doc-id-parts first) page-hits))
+        hits (->> page-hits
              (map
               (fn [[page thits]]
-                [page
-                 (map #(let [pos (mapv first %)]
-                         [(first pos) (last pos)])
-                      (partition-when
-                       (fn [[s e]] (> (- e s) max-gap))
-                       (partition 2 1 [-1] thits)))]))
+                (let [matches
+                      (map #(mapv first %)
+                           (partition-when
+                            (fn [[[s _] [e _]]] (> (- e s) max-gap))
+                            (partition 2 1 [[-1 0]] thits)))]
+                  [page
+                   (map #(let [pos (mapv first %)]
+                           [(first pos) (peek pos)
+                            (->> % (map second) count)
+                            ;; (->> % (map second) (map (fn [x] (Math/log (inc (/ 1 x))))) (reduce +))
+                            ])
+                        matches)])))
              sort
+             ;; We keep a single record for each page, with multiple
+             ;; spans, so we can save time and look up the text for a
+             ;; page once.
              (mapcat
-              (fn [[page s]]
+              (fn [[page spans]]
                 (let [pterms (doc-words ri page)
                       doc-data (.getDocument ri page (Document$DocumentComponents. true true true))
                       c2 (join-alnum-tokens pterms)
                       pseq (jaligner.Sequence. c2)]
-                  (map (fn [[s e]]
+                  (map (fn [[s e score]]
                          (let [s1 (max 0 (- s 50))
                                c1 (join-alnum-tokens
                                    (subvec (:words idx)
@@ -923,13 +935,14 @@
                            (merge
                             (doc-passage doc-data sword2 eword2)
                             {:canonical (s/join " " (subvec (:words idx) sword1 eword1))
+                             :score score
                              :cites
                              (mapv #(get (:names idx) %) (distinct (subvec (:positions idx) sword1 eword1)))
                              ;; :words
                              ;; (proc-aligned-doc
                              ;;  out1 out2 idx sword1 eword1 doc-data sword2 eword2)
                              :page page})))
-                       s)))))]
+                       spans)))))]
     hits))
 
 (defn dump-quotes
