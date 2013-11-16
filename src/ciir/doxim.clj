@@ -167,21 +167,12 @@
         upper (/ (* max-series (dec max-series)) 2)]
     (dorun (repeatedly (* step stride) (fn [] (.nextKey ki))))
     ;; (println "#" step stride (.getKeyString ki))
-    (doseq [item (->> ki dump-kl-index (take stride)
-                      ;; When upgrading to clojure 1.5.1, we can use the simpler cond->> below.
-                      (filter (if (<= modp 1)
-                                (fn [r] true)
-                                (fn [r] (= 0 (mod (.hashCode ^String (first r)) modp)))))
-                      ;; (filter #(re-find #"^[a-z~]+$" (first %)))
-                      ;; (filter #(re-find #"[a-z]{3}" (first %)))
-                      ;; (filter #(re-find #"[^~]{5}.*~.*[^~]{5}" (first %)))
-                      (remove (if (empty? stops)
-                                (fn [r] false)
-                                (fn [r] (some stops (s/split (first r) #"~")))))
-                      (mapcat (partial cross-pairs series upper max-df))
-                      (filter (if (<= modrec 1)
-                                (fn [r] true)
-                                (fn [r] (= 0 (mod (hash r) modrec))))))]
+    (doseq [item (cond->>
+                  (->> ki dump-kl-index (take stride))
+                  (> modp 1) (filter #(= 0 (mod (.hashCode ^String (first %)) modp)))
+                  (not-empty stops) (remove #(some stops (s/split (first %) #"~")))
+                  true (mapcat (partial cross-pairs series upper max-df))
+                  (> modrec 1) (filter #(= 0 (mod (hash %) modrec))))]
       (prn item))))
 
 (defn dump-corpus
