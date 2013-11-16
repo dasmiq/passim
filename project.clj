@@ -11,5 +11,6 @@
 		 [ciir/utils "1.0.0-SNAPSHOT"]                 
                  [jaligner "1.0"]
                  [org.lemurproject.galago/core "3.5"]]
+  :source-paths ["src/main/clojure"]
   :aot [ciir.doxim]
   :main ciir.doxim)
