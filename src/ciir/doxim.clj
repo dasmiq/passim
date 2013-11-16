@@ -368,9 +368,18 @@
 
 (def match-matrix (jaligner.matrix.MatrixGenerator/generate 2 -1))
 
+(defn- ^Document get-index-doc
+  [^Retrieval ri ^String dname]
+  (.getDocument ri dname (Document$DocumentComponents. true true true)))
+
 (defn- doc-words
   [^Retrieval ri ^String dname]
-  (vec (.terms (.getDocument ri dname (Document$DocumentComponents. true true true)))))
+  (vec (.terms (get-index-doc ri dname))))
+
+(defn- doc-text
+  [ri dname start end]
+  (let [d (get-index-doc ri dname)]
+    (subs (.text d) (.get (.termCharBegin d) start) (.get (.termCharEnd d) (dec end)))))
 
 (defn- space-count
   [^String s]
@@ -586,6 +595,14 @@
           #(> (jaccard voc (:vocabulary %)) thresh)
           members)))))
 
+(defn absolute-overlap
+  [rec1 rec2]
+  (let [s1 ^long (:start rec1)
+        e1 ^long (:end rec1)
+        s2 ^long (:start rec2)
+        e2 ^long (:end rec2)]
+    (- (min e1 e2) (max s1 s2))))
+
 (defn span-overlap
   [rec1 rec2]
   (let [s1 ^long (:start rec1)
@@ -673,33 +690,38 @@
           %))
        cluster))]))
 
+(defn top-rep-cluster
+  [cluster]
+  (->> cluster
+       ;; NB: Not unique series, but same series with multiple IDs.
+       (map (juxt :id :series))
+       (into {})
+       vals
+       frequencies
+       vals
+       (reduce max)))
+
 ;; Rather than norep, maybe we should look at the proportion
 ;; contributed by one paper?
 (defn norep-cluster
   [cluster]
-  (let [top-rep
-        (->> cluster
-             ;; NB: Not unique series, but same series with multiple IDs.
-             (map (juxt :id :series))
-             (into {})
-             vals
-             frequencies
-             vals
-             (reduce max))]
+  (let [top-rep (top-rep-cluster cluster)]
     (<= top-rep default-max-rep)))
 
 (defn cluster-scores
-  [overlap lines]
+  [overlap max-proportion lines]
   (doseq
       [cluster
        (->> lines
             (reduce (partial greedy-cluster-reducer
-                             (partial single-link-matches span-overlap overlap))
+                             ;; (partial single-link-matches span-overlap 0.5))
+                             (partial single-link-matches absolute-overlap overlap))
                     {})
             :members
             vals
             (map vals)
             (filter norep-cluster)
+            ;; (remove #(> (double (/ (top-rep-cluster %) (count %))) max-proportion))
             (map dump-cluster))]
     (let [prefix
           (str (second cluster) "\t"
@@ -722,7 +744,8 @@
                   (title series)
                   (str "http://chroniclingamerica.loc.gov/lccn/" name)
                   sstart send
-                  (s/join " " (subvec (doc-words ri name) start end))]))))))
+                  (s/replace (doc-text ri name start end)
+                             #"\n" "<br/>")]))))))
                  
 
 (defn diff-words
@@ -898,8 +921,8 @@
                   [page
                    (map #(let [pos (mapv first %)]
                            [(first pos) (peek pos)
-                            (->> % (map second) count)
-                            ;; (->> % (map second) (map (fn [x] (Math/log (inc (/ 1 x))))) (reduce +))
+                            ;;(->> % (map second) count)
+                            (->> % (map second) (map (fn [x] (Math/log (inc (/ 1 x))))) (reduce +))
                             ])
                         matches)])))
              sort
@@ -980,6 +1003,7 @@
                       (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq))
     "cluster" (cluster-scores
                (Double/parseDouble (first args))
+               (Double/parseDouble (second args))
                (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq))
     "diffs" (diff-words
              (Long/parseLong (first args))
