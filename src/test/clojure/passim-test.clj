@@ -1,6 +1,6 @@
-(ns ciir.doxim.core-test
+(ns passim-test
   (:use clojure.test
-        doxim.core))
+        passim))
 
 (deftest a-test
   (testing "FIXME, I fail."

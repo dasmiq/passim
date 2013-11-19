@@ -1,5 +1,5 @@
-(defproject ciir/doxim "0.1.0-SNAPSHOT"
-  :description "FIXME: write description"
+(defproject passim "0.1.0-SNAPSHOT"
+  :description "Detect and align similar passages"
   :jvm-opts ["-Dfile.encoding=UTF-8" "-Xmx1900m"]
   :url "http://example.com/FIXME"
   :license {:name "Eclipse Public License"
@@ -12,5 +12,6 @@
                  [jaligner "1.0"]
                  [org.lemurproject.galago/core "3.5"]]
   :source-paths ["src/main/clojure"]
-  :aot [ciir.doxim]
-  :main ciir.doxim)
+  :aot [passim]
+  :main passim)
+

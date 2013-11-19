@@ -1,4 +1,4 @@
-(ns ciir.doxim
+(ns passim
   (:require [clojure.string :as s]
             [clojure.set :as set]
             [clojure.data.csv :as csv]
@@ -975,17 +975,8 @@
       (json/pprint q)
       (println))))
 
-;; http://www.archive.org/download/aliceinwonderlan00carriala/page/n14_x100_y100_w100_h100.jpg
-;; http://www.archive.org/download/firsteditionoftr00shakuoft/page/n72_x1186_y361_w400_h40.jpg
-;; http://www.archive.org/download/firsteditionoftr00shakuoft/page/n71_x384_y1801_w1357_h406.jpg
-;; http://www.archive.org/download/firsteditionoftr00shakuoft/page/n70_x210_y1725_w1361_h617.jpg
-
-;; http://www.europeana-newspapers.eu/
-;; http://www.impact-project.eu/
-;; http://www.loc.gov/standards/alto/techcenter/elementSet/index.php
-
 (defn -main
-  "I don't do a whole lot."
+  "Detect and align similar passages"
   [cmd & args]
   (condp = cmd
     "format-cluster" (format-cluster
@@ -1017,11 +1008,3 @@
              (println s))
     "easy-dump" (kv-dump (DiskIndex/openIndexPart (first args)))
     (println "Unexpected command:" cmd)))
-
-
-;; congress.gov : does it have unsuccessful bills? I think yes.
-;; id.loc.gov : authority lists, e.g. name authority file, place names
-
-;; SJ: new people at wikisource?
-
-;; hackathon sketch projects
