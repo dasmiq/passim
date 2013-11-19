@@ -43,11 +43,7 @@ public class ClipboardHandlerFactory {
      */
     public static ClipboardHandler getClipboardHandler( ) {
     	if (instance == null) {
-    		 if (Commons.isJnlp()) {
-    		 	instance = new ClipboardHandlerJNLP();
-    		 } else {
-    		 	instance = new ClipboardHandlerAWT();
-    		 }
+	    instance = new ClipboardHandlerAWT();
     	}
     	return instance;
     }

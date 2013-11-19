@@ -33,7 +33,7 @@ import javax.swing.JFileChooser;
  */
 
 public class FileChooserTrusted extends FileChooser {
-    private static final Logger logger = Logger.getLogger(FileChooserJNLP.class.getName());
+    private static final Logger logger = Logger.getLogger(FileChooserTrusted.class.getName());
     
 	/**
 	 * Shows a dialog to select a file.

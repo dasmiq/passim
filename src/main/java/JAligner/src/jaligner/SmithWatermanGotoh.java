@@ -19,6 +19,7 @@ package jaligner;
 import jaligner.matrix.Matrix;
 
 import java.util.logging.Logger;
+import java.util.logging.Level;
 
 /**
  * An implementation of the Smith-Waterman algorithm with Gotoh's improvement
@@ -81,6 +82,7 @@ public final class SmithWatermanGotoh {
 	 */
 	public static Alignment align(Sequence s1, Sequence s2, Matrix matrix,
 			float o, float e) {
+	        logger.setLevel(Level.WARNING);
 		logger.info("Started...");
 		long start = System.currentTimeMillis();
 		float[][] scores = matrix.getScores();

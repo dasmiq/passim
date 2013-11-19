@@ -43,11 +43,7 @@ public class FileChooserFactory {
      */
     public static FileChooser getFileChooser( ) {
     	if (instance == null) {
-    		 if (Commons.isJnlp()) {
-    		 	instance = new FileChooserJNLP();
-    		 } else {
-    		 	instance = new FileChooserTrusted();
-    		 }
+	    instance = new FileChooserTrusted();
     	}
     	return instance;
     }
