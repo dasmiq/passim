@@ -12,6 +12,7 @@
                  [org.lemurproject.galago/core "3.5"]]
   :source-paths ["src/main/clojure"]
   :java-source-paths ["src/main/java"]
+  :plugins [[lein-bin "0.3.4"]]
   :aot [passim]
   :main passim)
 
