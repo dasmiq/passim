@@ -9,9 +9,9 @@
                  [org.clojure/data.json "0.2.3"]
                  [org.clojure/math.combinatorics "0.0.4"]
 		 [ciir/utils "1.0.0-SNAPSHOT"]                 
-                 [jaligner "1.0"]
                  [org.lemurproject.galago/core "3.5"]]
   :source-paths ["src/main/clojure"]
+  :java-source-paths ["src/main/java"]
   :aot [passim]
   :main passim)
 

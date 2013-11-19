@@ -1,0 +1,51 @@
+<project name="jaligner" default="build" basedir=".">
+	<property file="build.properties" />
+	<target name="clean" description="Delete the build directory">
+		<delete dir="${build.dir}" />
+	</target>
+	<target name="init" depends="clean">
+		<echo>JAVA_HOME: ${java.home}</echo>
+		<tstamp />
+		<mkdir dir="${build.dir}" />
+	</target>
+	<target name="compile" depends="init" description="Compile source code">
+		<javac srcdir="${src.dir}" destdir="${build.dir}" debug="${debug}" optimize="${optimize}" deprecation="${deprecation}" classpath="${class.path}" includeantruntime="false">
+			<include name="**/*.java" />
+		</javac>
+	</target>
+	<target name="resources" depends="init" description="Copy non-source code under the build directory">
+		<copy todir="${build.dir}/jaligner/example/sequences">
+			<fileset dir="src/jaligner/example/sequences">
+			</fileset>
+		</copy>
+		<copy todir="${build.dir}/jaligner/matrix/matrices">
+			<fileset dir="src/jaligner/matrix/matrices">
+			</fileset>
+		</copy>
+		<copy todir="${build.dir}/jaligner/ui/images/gifs">
+			<fileset dir="src/jaligner/ui/images/gifs">
+			</fileset>
+		</copy>
+	</target>
+	<target name="jar" depends="compile,resources">
+		<jar jarfile="${project.name}.jar" basedir="${build.dir}">
+			<manifest>
+				<attribute name="Main-Class" value="jaligner.ui.AlignCommandLine" />
+				<attribute name="Created-At" value="${DSTAMP}${TSTAMP}" />
+			</manifest>
+		</jar>
+	</target>
+	<target name="build" depends="jar,clean" description="Build jar file" />
+	<target name="export" depends="" description="Export source code from CVS repository">
+		<delete dir="${src.dir}" />
+		<cvs cvsRoot="${cvs.root}" command="${export.command}" />
+	</target>
+	<target name="run" depends="jar">
+		<java jar="jaligner.jar" classpath="${class.path}" fork="true" />
+	</target>
+	<target name="javadoc" depends="init" description="Generate API Javadocs">
+		<mkdir dir="${javadoc.dir}" />
+		<javadoc packagenames="${packagename}.*" sourcepath="src" destdir="${javadoc.dir}" author="${javadoc.author}" version="${javadoc.version}" use="${javadoc.use}" private="${javadoc.private}" windowtitle="${javadoc.window.title}" doctitle="${javadoc.doc.title}" header="${javadoc.header}" footer="${javadoc.footer}" bottom="${javadoc.bottom}" stylesheetfile="${javadoc.style}" classpath="${class.path}">
+		</javadoc>
+	</target>
+</project>
