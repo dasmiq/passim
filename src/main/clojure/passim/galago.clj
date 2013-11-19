@@ -3,6 +3,8 @@
            (org.lemurproject.galago.core.index.corpus CorpusReader
                                                       DocumentReader$DocumentIterator)
            (org.lemurproject.galago.core.index.disk DiskIndex)
+           (org.lemurproject.galago.core.parse Document Document$DocumentComponents TagTokenizer)
+           (org.lemurproject.galago.core.retrieval Retrieval RetrievalFactory)
            (org.lemurproject.galago.core.retrieval.iterator ExtentIterator CountIterator)
            (org.lemurproject.galago.core.retrieval.processing ScoringContext)
            (org.lemurproject.galago.tupleflow Parameters Utility)))
@@ -86,3 +88,22 @@
                     (.nextKey iter)
                     (doc-stream iter))))))]
       (doc-stream di))))
+
+(defn galago-tokenize
+  [^String s]
+  (let [d (Document. "foo" s)]
+    (.tokenize (TagTokenizer.) d)
+    (.terms d)))
+
+(defn ^Document get-index-doc
+  [^Retrieval ri ^String dname]
+  (.getDocument ri dname (Document$DocumentComponents. true true true)))
+
+(defn doc-words
+  [^Retrieval ri ^String dname]
+  (vec (.terms (get-index-doc ri dname))))
+
+(defn doc-text
+  [ri dname start end]
+  (let [d (get-index-doc ri dname)]
+    (subs (.text d) (.get (.termCharBegin d) start) (.get (.termCharEnd d) (dec end)))))

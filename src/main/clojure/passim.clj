@@ -10,7 +10,7 @@
             [clojure.math.combinatorics :refer [combinations]])
   (:import (org.lemurproject.galago.core.index IndexPartReader KeyIterator)
            (org.lemurproject.galago.core.index.disk DiskIndex)
-           (org.lemurproject.galago.core.parse Document Document$DocumentComponents TagTokenizer)
+           (org.lemurproject.galago.core.parse Document)
            (org.lemurproject.galago.core.retrieval Retrieval RetrievalFactory)
            (org.lemurproject.galago.tupleflow Parameters Utility))
   (:gen-class))
@@ -273,19 +273,6 @@
                 (seq res)))))))))
 
 (def match-matrix (jaligner.matrix.MatrixGenerator/generate 2 -1))
-
-(defn- ^Document get-index-doc
-  [^Retrieval ri ^String dname]
-  (.getDocument ri dname (Document$DocumentComponents. true true true)))
-
-(defn- doc-words
-  [^Retrieval ri ^String dname]
-  (vec (.terms (get-index-doc ri dname))))
-
-(defn- doc-text
-  [ri dname start end]
-  (let [d (get-index-doc ri dname)]
-    (subs (.text d) (.get (.termCharBegin d) start) (.get (.termCharEnd d) (dec end)))))
 
 (defn- space-count
   [^String s]
@@ -674,16 +661,10 @@
                   [sscore date1 date2 o1 o2 name1 name2]
                   [sscore date2 date1 o2 o1 name2 name1]))))))))))
 
-(defn galago-tokens
-  [^String s]
-  (let [d (Document. "foo" s)]
-    (.tokenize (TagTokenizer.) d)
-    (.terms d)))
-
 (defn index-tokens
   [docs gram]
   (let [names (mapv first docs)
-        toks (map (comp galago-tokens second) docs)
+        toks (map (comp galago-tokenize second) docs)
         idx (apply concat (map-indexed (fn [pos words] (map #(vector % pos) words)) toks))
         words (mapv first idx)]
     {:names names
@@ -838,7 +819,7 @@
              (mapcat
               (fn [[page spans]]
                 (let [pterms (doc-words ri page)
-                      doc-data (.getDocument ri page (Document$DocumentComponents. true true true))
+                      doc-data (get-index-doc ri page)
                       c2 (join-alnum-tokens pterms)
                       pseq (jaligner.Sequence. c2)]
                   (map (fn [[s e score]]
