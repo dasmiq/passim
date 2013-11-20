@@ -135,9 +135,8 @@
 ;; that their ngrams show up as occurring at least once.  We should
 ;; therefore also remove hits to these texts from the results below.
 (defn quoted-passages
-  [docs bad-docs ^KeyIterator ki ^Retrieval ri]
-  (let [gram 5
-        max-count 1000
+  [docs gram bad-docs ^KeyIterator ki ^Retrieval ri]
+  (let [max-count 1000
         max-gap 200
         idx (index-tokens docs gram)
         term-pos (index-positions (:terms idx))
@@ -223,11 +222,13 @@
                       (filter #(re-find #"^urn:cts:" (second %)))
                       (map #(Long/parseLong (first %)))
                       set)
-        ki (.getIterator (DiskIndex/openIndexPart idx))
+        di (DiskIndex/openIndexPart idx)
+        gram (.get (.getManifest di) "n" 5)
+        ki (.getIterator di)
         ri (RetrievalFactory/instance dir (Parameters.))]
     (doseq [f tfiles
             q (-> (if (= "-" f) *in* f)
                   load-tsv
-                  (quoted-passages bad-docs ki ri))]
+                  (quoted-passages gram bad-docs ki ri))]
       (json/pprint q :escape-slash false)
       (println))))
