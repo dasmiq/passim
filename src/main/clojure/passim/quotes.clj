@@ -5,7 +5,8 @@
             [ciir.utils :refer :all]
             [passim.utils :refer :all]
             [passim.galago :refer :all])
-  (:import (org.lemurproject.galago.core.index IndexPartReader KeyIterator)
+  (:import (passim.utils Alignment)
+           (org.lemurproject.galago.core.index IndexPartReader KeyIterator)
            (org.lemurproject.galago.core.index.disk DiskIndex)
            (org.lemurproject.galago.core.parse Document)
            (org.lemurproject.galago.core.retrieval Retrieval RetrievalFactory)
@@ -204,13 +205,14 @@
                                eword2 (+ sword2 1 (space-count (s/trim out2)))]
                            (merge
                             (doc-passage doc-data sword2 eword2)
+                            (alignment-stats (Alignment. out1 out2 sword1 sword2 eword1 eword2))
                             {:canonical (s/join " " (subvec (:words idx) sword1 eword1))
                              :score score
                              :cites
                              (mapv #(get (:names idx) %) (distinct (subvec (:positions idx) sword1 eword1)))
-                             ;; :words
-                             ;; (proc-aligned-doc
-                             ;;  out1 out2 idx sword1 eword1 doc-data sword2 eword2)
+                             :words
+                             (proc-aligned-doc
+                              out1 out2 idx sword1 eword1 doc-data sword2 eword2)
                              :page page})))
                        spans)))))]
     hits))

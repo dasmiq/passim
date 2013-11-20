@@ -373,7 +373,7 @@
       (s/join "\t" (concat [match-len1
                             (float (/ match-len1 (count words1)))
                             (float (/ match-len2 (count words2)))]
-                           (alignment-stats pass)
+                           ((juxt :matches :gaps :swscore) (alignment-stats pass))
                            [id1 id2 name1 name2
                             (:start1 pass) (:end1 pass)
                             (:start2 pass) (:end2 pass)
