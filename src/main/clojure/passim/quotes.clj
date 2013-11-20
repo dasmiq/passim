@@ -229,5 +229,5 @@
             q (-> (if (= "-" f) *in* f)
                   load-tsv
                   (quoted-passages bad-docs ki ri))]
-      (json/pprint q)
+      (json/pprint q :escape-slash false)
       (println))))
