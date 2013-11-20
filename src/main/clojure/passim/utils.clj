@@ -31,3 +31,22 @@
 
 (def match-matrix (jaligner.matrix.MatrixGenerator/generate 2 -1))
 
+(defrecord Alignment [sequence1 sequence2 start1 start2 end1 end2])
+
+(defn maxer
+  [f]
+  (fn [a b] (< (f a) (f b)) b a))
+
+(defn- alignment-stats
+  [^Alignment alg]
+  (let [pairs (partition 2 (interleave (:sequence1 alg) (:sequence2 alg)))
+        gaps (concat (re-seq #"\-+" (:sequence1 alg))
+                     (re-seq #"\-+" (:sequence2 alg)))
+        nmatches (count (filter (partial apply =) pairs))
+        ngaps (count gaps)]
+    [nmatches ngaps
+     (+ (* 2 nmatches)
+        (* -1 (count (filter (fn [[a b]] (and (not= a b) (not= a \-) (not= b \-))) pairs)))
+        (* -5 ngaps)
+        (* -0.5 (reduce + (map (comp dec count) gaps))))]
+    ))

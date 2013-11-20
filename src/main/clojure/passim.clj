@@ -9,7 +9,8 @@
             [passim.utils :refer :all]
             [passim.quotes]
             [clojure.math.combinatorics :refer [combinations]])
-  (:import (org.lemurproject.galago.core.index IndexPartReader KeyIterator)
+  (:import (passim.utils Alignment)
+           (org.lemurproject.galago.core.index IndexPartReader KeyIterator)
            (org.lemurproject.galago.core.index.disk DiskIndex)
            (org.lemurproject.galago.core.parse Document)
            (org.lemurproject.galago.core.retrieval Retrieval RetrievalFactory)
@@ -246,8 +247,6 @@
                 (recur (cons (dec prev) res))
                 (seq res)))))))))
 
-(defrecord Alignment [sequence1 sequence2 start1 start2 end1 end2])
-
 (defn- align-words
   [start end w1 w2 gap-words]
   (let [[s1 s2] (if (not-empty start)
@@ -352,24 +351,6 @@
                      (s/join " " (map (comp s/trim :sequence1) vspan))
                      (s/join " " (map (comp s/trim :sequence2) vspan))
                      (:start1 head) (:start2 head) (:end1 tail) (:end2 tail)))))))))
-
-(defn maxer
-  [f]
-  (fn [a b] (< (f a) (f b)) b a))
-
-(defn- alignment-stats
-  [^Alignment alg]
-  (let [pairs (partition 2 (interleave (:sequence1 alg) (:sequence2 alg)))
-        gaps (concat (re-seq #"\-+" (:sequence1 alg))
-                     (re-seq #"\-+" (:sequence2 alg)))
-        nmatches (count (filter (partial apply =) pairs))
-        ngaps (count gaps)]
-    [nmatches ngaps
-     (+ (* 2 nmatches)
-        (* -1 (count (filter (fn [[a b]] (and (not= a b) (not= a \-) (not= b \-))) pairs)))
-        (* -5 ngaps)
-        (* -0.5 (reduce + (map (comp dec count) gaps))))]
-    ))
 
 (defn score-pair
   [^String s ^Retrieval ri ^long gram]
