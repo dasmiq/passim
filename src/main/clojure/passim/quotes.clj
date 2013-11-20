@@ -71,8 +71,8 @@
         w (- (->> coords (map #(Integer/parseInt (nth % 3))) (reduce max)) x)
         h (- (->> coords (map #(Integer/parseInt (nth % 2))) (reduce max)) y)]
     {:id id
-     :n n
-     :text
+     :p n
+     :text2
      (-> raw
          (s/replace #"<lb>" "\n")
          (s/replace #"</?[A-Za-z][^>]*>" ""))
@@ -118,7 +118,7 @@
                    y2 (->> coords (map #(Integer/parseInt (nth % 2))) (reduce max 0))]
                (conj res
                      {:id id
-                      :n n
+                      :p n
                       :s1 s1
                       :s2 s2
                       :w1 (w1 s1)
@@ -206,7 +206,7 @@
                            (merge
                             (doc-passage doc-data sword2 eword2)
                             (alignment-stats (Alignment. out1 out2 sword1 sword2 eword1 eword2))
-                            {:canonical (s/join " " (subvec (:words idx) sword1 eword1))
+                            {:text1 (s/join " " (subvec (:words idx) sword1 eword1))
                              :score score
                              :cites
                              (mapv #(get (:names idx) %) (distinct (subvec (:positions idx) sword1 eword1)))
