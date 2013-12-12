@@ -225,24 +225,28 @@
                   (str
                    "passim quotes [options] <n-gram index> (<reference text file> | -)+\n\n"
                    (var-doc #'dump-quotes))
+                  ["-p" "--pretty" "Pretty-print JSON output" :default false :flag true]
                   ["-h" "--help" "Show help" :default false :flag true])]
     (try
-      (let [[idx & tfiles] remaining]
-        (let [dir (.getParent (java.io.File. idx))
-              bad-docs (->> (jio/file dir "names") str dump-index
-                            (filter #(re-find #"^urn:cts:" (second %)))
-                            (map #(Long/parseLong (first %)))
-                            set)
-              di (DiskIndex/openIndexPart idx)
-              gram (.get (.getManifest di) "n" 5)
-              ki (.getIterator di)
-              ri (RetrievalFactory/instance dir (Parameters.))]
-          (doseq [f tfiles
-                  q (-> (if (= "-" f) *in* f)
-                        load-tsv
-                        (quoted-passages gram bad-docs ki ri))]
-            (json/write q *out* :escape-slash false)
-            (println))))
+      (let [[idx & tfiles] remaining
+            printer (if (:pretty options)
+                      #(json/pprint % :escape-slash false)
+                      #(json/write % *out* :escape-slash false))
+            dir (.getParent (java.io.File. idx))
+            bad-docs (->> (jio/file dir "names") str dump-index
+                          (filter #(re-find #"^urn:cts:" (second %)))
+                          (map #(Long/parseLong (first %)))
+                          set)
+            di (DiskIndex/openIndexPart idx)
+            gram (.get (.getManifest di) "n" 5)
+            ki (.getIterator di)
+            ri (RetrievalFactory/instance dir (Parameters.))]
+        (doseq [f (if (seq tfiles) tfiles ["-"])
+                q (-> (if (= "-" f) *in* f)
+                      load-tsv
+                      (quoted-passages gram bad-docs ki ri))]
+          (printer q)
+          (println)))
       (catch Exception e
         (println e)
         (exit 1 banner)))))
