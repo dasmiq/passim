@@ -51,3 +51,7 @@
         (* -5 ngaps)
         (* -0.5 (reduce + (map (comp dec count) gaps))))}
     ))
+
+(defn var-doc
+  [v]
+  (:doc (meta v)))

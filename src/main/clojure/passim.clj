@@ -75,6 +75,7 @@
    coll))
 
 (defn dump-pairs
+  "Output document pairs with overlapping features."
   [index-file series-map-file stop-file max-series max-df modp modrec step stride]
   (let [ireader (DiskIndex/openIndexPart index-file)
         ki (.getIterator ireader)
@@ -397,11 +398,21 @@
 ;; (def qwe (line-seq (jio/reader "/Users/dasmith/locca/ab/build/pairs/pall.1k")))
 
 (defn dump-scores
-  [^String idx gram]
+  "Score document pairs based on n-gram overlap"
+  [& argv]
+  (let [[options remaining banner]
+        (safe-cli argv
+                  (str
+                   "passim scores [options] <index>\n\n"
+                   (var-doc #'dump-scores))
+                  ["-n" "--ngram" "N-gram order" :default 5 :parse-fn #(Integer/parseInt %)]
+                  ["-h" "--help" "Show help" :default false :flag true])
+        idx ^String (first remaining)
+        gram (:ngram options)]
   (let [ri (RetrievalFactory/instance idx (Parameters.))]
     (doseq [line (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq)]
       (when-let [out (score-pair line ri gram)]
-        (println out)))))
+        (println out))))))
 
 (defn- vocab-set
   [s]
@@ -543,6 +554,7 @@
     (<= top-rep default-max-rep)))
 
 (defn cluster-scores
+  "Single-link clustering of reprints"
   [overlap max-proportion lines]
   (doseq
       [cluster
@@ -564,6 +576,7 @@
         (println (str prefix text))))))
 
 (defn format-cluster
+  "Format tab-separated cluster data"
   [^String idx ^String meta-file lines]
   (let [ri (RetrievalFactory/instance idx (Parameters.))
         title (load-tab-map meta-file)]
@@ -603,35 +616,58 @@
                   [sscore date2 date1 o2 o1 name2 name1]))))))))))
 
 (defn -main
-  "Detect and align similar passages"
-  [cmd & args]
-  (condp = cmd
-    "format-cluster" (format-cluster
-                      (first args)
-                      (second args)
-                      (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq))
-    "cluster" (cluster-scores
-               (Double/parseDouble (first args))
-               (Double/parseDouble (second args))
-               (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq))
-    "diffs" (diff-words
-             (Long/parseLong (first args))
-             (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq))
-    "scores" (dump-scores (first args) (Integer/parseInt (second args)))
-    "pairs" (dump-pairs (first args) (second args) (nth args 2)
-                        (Integer/parseInt (nth args 3)) (Integer/parseInt (nth args 4))
-                        (Integer/parseInt (nth args 5)) (Integer/parseInt (nth args 6))
-                        (Integer/parseInt (nth args 7)) (Integer/parseInt (nth args 8)))
-    "quotes" (passim.quotes/dump-quotes (first args) (rest args))
-    "gaps" (index-gaps (first args) (second args)
-                        (Integer/parseInt (nth args 2)) (Integer/parseInt (nth args 3))
-                        (Integer/parseInt (nth args 4)) (Integer/parseInt (nth args 5))
-                        (Integer/parseInt (nth args 6)))                       
-    "counts" (->> (first args) dump-index (map second) frequencies prn)
-    "entries"  (->> (first args) dump-index count prn)
-    "total"  (->> (first args) dump-index (rand-blat first 0.001) (map second) (reduce +) prn)
-    "dump" (doseq
-               [s (->> (first args) dump-index)]
-             (println s))
-    "easy-dump" (kv-dump (DiskIndex/openIndexPart (first args)))
-    (println "Unexpected command:" cmd)))
+  "Usage: passim command [command-options]"
+  [& argv]
+  (let [commands
+        {"pairs" #'dump-pairs
+         "scores" #'dump-scores
+         "cluster" #'cluster-scores
+         "format" #'format-cluster
+         "quotes" #'passim.quotes/dump-quotes}
+        usage
+        (str
+         (var-doc #'-main)
+         "\n\nCommands:\n"
+         (s/join
+          "\n"
+          (map
+           (fn [[k v]]
+             (str "\t" k "\t\t" (var-doc v)))
+           commands)))]
+    (if (seq argv)
+      (let [[cmd & args] argv]
+        (if-let [v (commands cmd)]
+          (apply v args)
+          (exit 1 usage)))
+      (exit 1 usage))))
+
+      ;;   (condp = cmd
+      ;;     "format-cluster" (format-cluster
+      ;;                       (first args)
+      ;;                       (second args)
+      ;;                       (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq))
+      ;;     "cluster" (cluster-scores
+      ;;                (Double/parseDouble (first args))
+      ;;                (Double/parseDouble (second args))
+      ;;                (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq))
+      ;;     "diffs" (diff-words
+      ;;              (Long/parseLong (first args))
+      ;;              (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq))
+      ;;     "pairs" (dump-pairs (first args) (second args) (nth args 2)
+      ;;                         (Integer/parseInt (nth args 3)) (Integer/parseInt (nth args 4))
+      ;;                         (Integer/parseInt (nth args 5)) (Integer/parseInt (nth args 6))
+      ;;                         (Integer/parseInt (nth args 7)) (Integer/parseInt (nth args 8)))
+      ;;     ;; These are for debugging and aren't used much.
+      ;;     "gaps" (index-gaps (first args) (second args)
+      ;;                        (Integer/parseInt (nth args 2)) (Integer/parseInt (nth args 3))
+      ;;                        (Integer/parseInt (nth args 4)) (Integer/parseInt (nth args 5))
+      ;;                        (Integer/parseInt (nth args 6)))                       
+      ;;     "counts" (->> (first args) dump-index (map second) frequencies prn)
+      ;;     "entries"  (->> (first args) dump-index count prn)
+      ;;     "total"  (->> (first args) dump-index (rand-blat first 0.001) (map second) (reduce +) prn)
+      ;;     "dump" (doseq
+      ;;                [s (->> (first args) dump-index)]
+      ;;              (println s))
+      ;;     "easy-dump" (kv-dump (DiskIndex/openIndexPart (first args)))
+      ;;     (exit 1 usage)
+      ;; (exit 1 usage))))))

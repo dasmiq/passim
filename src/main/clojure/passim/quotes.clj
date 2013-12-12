@@ -218,19 +218,31 @@
     hits))
 
 (defn dump-quotes
-  [^String idx tfiles]
-  (let [dir (.getParent (java.io.File. idx))
-        bad-docs (->> (jio/file dir "names") str dump-index
-                      (filter #(re-find #"^urn:cts:" (second %)))
-                      (map #(Long/parseLong (first %)))
-                      set)
-        di (DiskIndex/openIndexPart idx)
-        gram (.get (.getManifest di) "n" 5)
-        ki (.getIterator di)
-        ri (RetrievalFactory/instance dir (Parameters.))]
-    (doseq [f tfiles
-            q (-> (if (= "-" f) *in* f)
-                  load-tsv
-                  (quoted-passages gram bad-docs ki ri))]
-      (json/write q *out* :escape-slash false)
-      (println))))
+  "Find passages in a reference text that align well to passages using an an n-gram index."
+  [& argv]
+  (let [[options remaining banner]
+        (safe-cli argv
+                  (str
+                   "passim quotes [options] <n-gram index> (<reference text file> | -)+\n\n"
+                   (var-doc #'dump-quotes))
+                  ["-h" "--help" "Show help" :default false :flag true])]
+    (try
+      (let [[idx & tfiles] remaining]
+        (let [dir (.getParent (java.io.File. idx))
+              bad-docs (->> (jio/file dir "names") str dump-index
+                            (filter #(re-find #"^urn:cts:" (second %)))
+                            (map #(Long/parseLong (first %)))
+                            set)
+              di (DiskIndex/openIndexPart idx)
+              gram (.get (.getManifest di) "n" 5)
+              ki (.getIterator di)
+              ri (RetrievalFactory/instance dir (Parameters.))]
+          (doseq [f tfiles
+                  q (-> (if (= "-" f) *in* f)
+                        load-tsv
+                        (quoted-passages gram bad-docs ki ri))]
+            (json/write q *out* :escape-slash false)
+            (println))))
+      (catch Exception e
+        (println e)
+        (exit 1 banner)))))
