@@ -21,10 +21,12 @@ The basic pipeline uses the subcommands `pairs`, `scores`, `cluster`,
 
 ## Quotations of Reference Texts
 
-The format is:
+The reference text format is a unique citation, followed by a tab and some text:
 
 	urn:cts:englishLit:shakespeare.ham:1.1.6	You come most carefully upon your hour.
 	urn:cts:englishLit:shakespeare.ham:1.1.7	'Tis now struck twelve; get thee to bed, Francisco.
+
+This program treats citations as unparsed, atomic strings, though URNs in a standard scheme, such as there CTS citations used here, are encouraged.
 
 ## License
 
