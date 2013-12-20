@@ -14,14 +14,17 @@ To compile, run:
 
 This should produce an executable `target/passim-0.1.0-SNAPSHOT`.
 
-## Quotes
+## Aligning and Clustering Matching Passage Pairs
+
+The basic pipeline uses the subcommands `pairs`, `scores`, `cluster`,
+`format`.
+
+## Quotations of Reference Texts
 
 The format is:
 
 	urn:cts:englishLit:shakespeare.ham:1.1.6	You come most carefully upon your hour.
 	urn:cts:englishLit:shakespeare.ham:1.1.7	'Tis now struck twelve; get thee to bed, Francisco.
-
-## All-Pairs Mode
 
 ## License
 
