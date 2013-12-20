@@ -6,9 +6,22 @@ It can be run either in query mode, to find quoted passages from a
 reference text, or all-pairs mode, to find all pairs of passages
 within longer documents with substantial alignments.
 
-## Usage
+## Installation
 
-FIXME
+To compile, run:
+
+    $ lein bin
+
+This should produce an executable `target/passim-0.1.0-SNAPSHOT`.
+
+## Quotes
+
+The format is:
+
+	urn:cts:englishLit:shakespeare.ham:1.1.6	You come most carefully upon your hour.
+	urn:cts:englishLit:shakespeare.ham:1.1.7	'Tis now struck twelve; get thee to bed, Francisco.
+
+## All-Pairs Mode
 
 ## License
 
