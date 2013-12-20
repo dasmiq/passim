@@ -27,7 +27,7 @@
        (s/replace (nth v 4) "\r\n" "\n")
        "</TEXT>\n</DOC>\n"))
 
-(defn read-series-map
+(defn make-series-map
   [fname]
   (let [asize (-> (sh/sh "tail" "-1" fname) :out (s/split #"\t") first Integer/parseInt inc)
         res (make-array Integer/TYPE asize)]
@@ -35,14 +35,14 @@
       (doseq [line (line-seq in)]
         (let [[id series] (s/split line #"\t")]
           (aset-int res (Integer/parseInt id) (Integer/parseInt series)))))
-    res))
+    #(get res %)))
 
 ;; Sort by series, then multiply group sizes.
 (defn cross-counts
-  [bins rec]
+  [series rec]
   (->> (nth rec 2)
        (map first)
-       (map #(get bins %))
+       (map #(series %))
        frequencies
        vals
        (#(combinations % 2))
@@ -50,16 +50,16 @@
        (reduce +)))
 
 (defn cross-pairs
-  [bins upper max-df rec]
+  [series upper max-df rec]
   (let [total-freq (second rec)]
     (when (<= total-freq upper)
       (let [k (first rec)
-            npairs (cross-counts bins rec)]
+            npairs (cross-counts series rec)]
         (when (<= npairs upper)
           (let [docs (nth rec 2)]
             (for [[bid & brest] docs [aid & arest] docs
                   :while (< aid bid)
-                  :when (and (not= (get bins aid) (get bins bid))
+                  :when (and (not= (series aid) (series bid))
                              (<= (first arest) max-df)
                              (<= (first brest) max-df))]
               {[aid bid] ["" total-freq arest brest]})))))))
@@ -76,21 +76,37 @@
 
 (defn dump-pairs
   "Output document pairs with overlapping features."
-  [index-file series-map-file stop-file max-series max-df modp modrec step stride]
-  (let [ireader (DiskIndex/openIndexPart index-file)
-        ki (.getIterator ireader)
-        series (read-series-map series-map-file)
-        stops (-> stop-file slurp (s/split #"\n") set (disj ""))
-        upper (/ (* max-series (dec max-series)) 2)]
-    (dorun (repeatedly (* step stride) (fn [] (.nextKey ki))))
-    ;; (println "#" step stride (.getKeyString ki))
-    (doseq [item (cond->>
-                  (->> ki dump-kl-index (take stride))
-                  (> modp 1) (filter #(= 0 (mod (.hashCode ^String (first %)) modp)))
-                  (not-empty stops) (remove #(some stops (s/split (first %) #"~")))
-                  true (mapcat (partial cross-pairs series upper max-df))
-                  (> modrec 1) (filter #(= 0 (mod (hash %) modrec))))]
-      (prn item))))
+  [& argv]
+  (let [[options remaining banner]
+        (safe-cli argv
+                  (str
+                   "passim pairs [options] <index>\n\n"
+                   (var-doc #'dump-pairs))
+                  ["-u" "--max-series" "Upper limit on effective series size" :default 100 :parse-fn #(Integer/parseInt %)]
+                  ["-d" "--max-df" "Maximum document frequency in posting lists" :default 100 :parse-fn #(Integer/parseInt %)]
+                  ["-m" "--series-map" "Map internal ids documents to integer series ids"]
+                  ["-p" "--modp" "Keep only features whose hashes are divisible by p" :default 1 :parse-fn #(Integer/parseInt %)]
+                  ["-r" "--modrec" "Keep only pairs whose hashes are divisible by r" :default 1 :parse-fn #(Integer/parseInt %)]
+                  ["-s" "--step" "Chunk of index to read" :default 0 :parse-fn #(Integer/parseInt %)]
+                  ["-t" "--stride" "Size of index chunks" :default 1000 :parse-fn #(Integer/parseInt %)]
+                  ["-S" "--stop" "Stopword list"]
+                  ["-h" "--help" "Show help" :default false :flag true])
+        index-file ^String (first remaining)
+        {:keys [series-map stop max-series max-df modp modrec step stride]} options]
+    (let [ireader (DiskIndex/openIndexPart index-file)
+          ki (.getIterator ireader)
+          series (if series-map (make-series-map series-map) identity)
+          stops (if stop (-> stop slurp (s/split #"\n") set (disj "")) #{})
+          upper (/ (* max-series (dec max-series)) 2)]
+      (dorun (repeatedly (* step stride) (fn [] (.nextKey ki))))
+      ;; (println "#" step stride (.getKeyString ki))
+      (doseq [item (cond->>
+                    (->> ki dump-kl-index (take stride))
+                    (> modp 1) (filter #(= 0 (mod (.hashCode ^String (first %)) modp)))
+                    (not-empty stops) (remove #(some stops (s/split (first %) #"~")))
+                    true (mapcat (partial cross-pairs series upper max-df))
+                    (> modrec 1) (filter #(= 0 (mod (hash %) modrec))))]
+        (prn item)))))
 
 (defn- vappend
   [x y]
