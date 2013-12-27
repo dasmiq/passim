@@ -571,31 +571,48 @@
 
 (defn cluster-scores
   "Single-link clustering of reprints"
-  [overlap max-proportion lines]
-  (doseq
-      [cluster
-       (->> lines
-            (reduce (partial greedy-cluster-reducer
-                             ;; (partial single-link-matches span-overlap 0.5))
-                             (partial single-link-matches absolute-overlap overlap))
-                    {})
-            :members
-            vals
-            (map vals)
-            (filter norep-cluster)
-            ;; (remove #(> (double (/ (top-rep-cluster %) (count %))) max-proportion))
-            (map dump-cluster))]
-    (let [prefix
-          (str (second cluster) "\t"
-               (first cluster) "\t")]
-      (doseq [text (nth cluster 2)]
-        (println (str prefix text))))))
+  [& argv]
+  (let [[options remaining banner]
+        (safe-cli argv
+                  (str
+                   "passim cluster [options]\n\n"
+                   (var-doc #'cluster-scores))
+                  ["-r" "--relative-overlap" "Proportion of longer text that must overlap" :default 0.5 :parse-fn #(Double/parseDouble %)]
+                  ["-h" "--help" "Show help" :default false :flag true])
+        lines (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq)
+        {:keys [relative-overlap]} options]
+    (doseq
+        [cluster
+         (->> lines
+              (reduce (partial greedy-cluster-reducer
+                               (partial single-link-matches span-overlap relative-overlap)
+                               ;; (partial single-link-matches absolute-overlap overlap)
+                               )
+                      {})
+              :members
+              vals
+              (map vals)
+              (filter norep-cluster)
+              ;; (remove #(> (double (/ (top-rep-cluster %) (count %))) max-proportion))
+              (map dump-cluster))]
+      (let [prefix
+            (str (second cluster) "\t"
+                 (first cluster) "\t")]
+        (doseq [text (nth cluster 2)]
+          (println (str prefix text)))))))
 
 (defn format-cluster
   "Format tab-separated cluster data"
-  [^String idx ^String meta-file lines]
-  (let [ri (RetrievalFactory/instance idx (Parameters.))
-        title (load-tab-map meta-file)]
+  [& argv]
+  (let [[options remaining banner]
+        (safe-cli argv
+                  (str
+                   "passim format [options] <index>\n\n"
+                   (var-doc #'format-cluster))
+                  ["-h" "--help" "Show help" :default false :flag true])
+        idx (first remaining)
+        lines (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq)
+        ri (RetrievalFactory/instance idx (Parameters.))]
     (doseq [line lines]
       (let [[id size date series name sstart send]
             (s/split line #"\t")
@@ -604,7 +621,6 @@
         (println
          (s/join "\t"
                  [id size date
-                  (title series)
                   (str "http://chroniclingamerica.loc.gov/lccn/" name)
                   sstart send
                   (s/replace (doc-text ri name start end)
@@ -658,10 +674,6 @@
       (exit 1 usage))))
 
       ;;   (condp = cmd
-      ;;     "format-cluster" (format-cluster
-      ;;                       (first args)
-      ;;                       (second args)
-      ;;                       (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq))
       ;;     "cluster" (cluster-scores
       ;;                (Double/parseDouble (first args))
       ;;                (Double/parseDouble (second args))
@@ -669,10 +681,6 @@
       ;;     "diffs" (diff-words
       ;;              (Long/parseLong (first args))
       ;;              (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq))
-      ;;     "pairs" (dump-pairs (first args) (second args) (nth args 2)
-      ;;                         (Integer/parseInt (nth args 3)) (Integer/parseInt (nth args 4))
-      ;;                         (Integer/parseInt (nth args 5)) (Integer/parseInt (nth args 6))
-      ;;                         (Integer/parseInt (nth args 7)) (Integer/parseInt (nth args 8)))
       ;;     ;; These are for debugging and aren't used much.
       ;;     "gaps" (index-gaps (first args) (second args)
       ;;                        (Integer/parseInt (nth args 2)) (Integer/parseInt (nth args 3))
