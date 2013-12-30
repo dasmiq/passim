@@ -538,18 +538,13 @@
 
 (defn dump-cluster
   [cluster]
-  (let [scores (->> cluster (map :score) set seq)
-        docs (->> cluster (map :name))]
-    [(->> docs set count)
-     ;;(/ (reduce + scores) (count scores))
-     (s/join ":" (sort-by doc-date docs))
-     (sort 
-      (map
-       #(s/join
-         "\t"
-         ((juxt (comp doc-date :name) :series :name :start :end)
-          %))
-       cluster))]))
+  [(->> cluster (map :name) set count)
+   (mapv
+    #(s/join
+      "\t"
+      ((juxt :name :start :end)
+       %))
+    cluster)])
 
 (defn top-rep-cluster
   [cluster]
@@ -592,12 +587,13 @@
                (if (< max-proportion 1)
                  #(> (double (/ (top-rep-cluster %) (count %))) max-proportion)
                  #(> (top-rep-cluster %) max-repeats)))
-              (map dump-cluster))]
-      (let [prefix
-            (str (second cluster) "\t"
-                 (first cluster) "\t")]
-        (doseq [text (nth cluster 2)]
-          (println (str prefix text)))))))
+              (map dump-cluster)
+              (sort (comp - compare))
+              (map-indexed
+                #(let [size (first %2)]
+                   (doseq [text (second %2)]
+                     (println (s/join "\t" [(inc %1) size text]))))))]
+      nil)))
 
 (defn format-cluster
   "Format tab-separated cluster data"
@@ -612,14 +608,17 @@
         lines (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq)
         ri (RetrievalFactory/instance idx (Parameters.))]
     (doseq [line lines]
-      (let [[id size date series name sstart send]
+      (let [[id size name sstart send]
             (s/split line #"\t")
+            m (doc-meta ri name)
             start (Long/parseLong sstart)
             end (Long/parseLong send)]
         (println
          (s/join "\t"
-                 [id size date
-                  (str "http://chroniclingamerica.loc.gov/lccn/" name)
+                 [id size (m "date")
+                  (doc-series name)
+                  (m "title")
+                  (m "url")
                   sstart send
                   (s/replace (doc-text ri name start end)
                              #"\n" "<br/>")]))))))
@@ -672,10 +671,6 @@
       (exit 1 usage))))
 
       ;;   (condp = cmd
-      ;;     "cluster" (cluster-scores
-      ;;                (Double/parseDouble (first args))
-      ;;                (Double/parseDouble (second args))
-      ;;                (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq))
       ;;     "diffs" (diff-words
       ;;              (Long/parseLong (first args))
       ;;              (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq))
