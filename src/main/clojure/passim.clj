@@ -562,13 +562,6 @@
        vals
        (reduce max)))
 
-;; Rather than norep, maybe we should look at the proportion
-;; contributed by one paper?
-(defn norep-cluster
-  [cluster]
-  (let [top-rep (top-rep-cluster cluster)]
-    (<= top-rep default-max-rep)))
-
 (defn cluster-scores
   "Single-link clustering of reprints"
   [& argv]
@@ -577,23 +570,28 @@
                   (str
                    "passim cluster [options]\n\n"
                    (var-doc #'cluster-scores))
-                  ["-r" "--relative-overlap" "Proportion of longer text that must overlap" :default 0.5 :parse-fn #(Double/parseDouble %)]
+                  ["-m" "--min-overlap" "Minimum size of overlap" :default 0 :parse-fn #(Double/parseDouble %)]
+                  ["-o" "--relative-overlap" "Proportion of longer text that must overlap" :default 0.5 :parse-fn #(Double/parseDouble %)]
+                  ["-p" "--max-proportion" "Maximum proportion of cluster from one series" :default 1.0 :parse-fn #(Double/parseDouble %)]
+                  ["-r" "--max-repeats" "Maximum number of texts from one series" :default 4 :parse-fn #(Integer/parseInt %)]
                   ["-h" "--help" "Show help" :default false :flag true])
         lines (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq)
-        {:keys [relative-overlap]} options]
+        {:keys [min-overlap relative-overlap max-proportion max-repeats]} options]
     (doseq
         [cluster
          (->> lines
               (reduce (partial greedy-cluster-reducer
-                               (partial single-link-matches span-overlap relative-overlap)
-                               ;; (partial single-link-matches absolute-overlap overlap)
-                               )
+                               (if (> min-overlap 0)
+                                 (partial single-link-matches absolute-overlap min-overlap)
+                                 (partial single-link-matches span-overlap relative-overlap)))
                       {})
               :members
               vals
               (map vals)
-              (filter norep-cluster)
-              ;; (remove #(> (double (/ (top-rep-cluster %) (count %))) max-proportion))
+              (remove
+               (if (< max-proportion 1)
+                 #(> (double (/ (top-rep-cluster %) (count %))) max-proportion)
+                 #(> (top-rep-cluster %) max-repeats)))
               (map dump-cluster))]
       (let [prefix
             (str (second cluster) "\t"
@@ -610,7 +608,7 @@
                    "passim format [options] <index>\n\n"
                    (var-doc #'format-cluster))
                   ["-h" "--help" "Show help" :default false :flag true])
-        idx (first remaining)
+        idx ^String (first remaining)
         lines (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq)
         ri (RetrievalFactory/instance idx (Parameters.))]
     (doseq [line lines]
