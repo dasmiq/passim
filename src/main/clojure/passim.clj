@@ -595,6 +595,27 @@
                      (println (s/join "\t" [(inc %1) size text]))))))]
       nil)))
 
+(defn loc-scale
+  [in]
+  (int (/ in 12)))
+
+(defn loc-url
+  [base text]
+  (let [raw
+        (->> text
+             (re-seq #"<w p=\"([^\"]+)\" c=\"(\d+),(\d+),(\d+),(\d+)\"")
+             (map (fn [[_ k & vals]] [k (mapv #(Integer/parseInt %) vals)]))
+             (group-by first))
+        p (->> raw (map (fn [[k v]] [k (count v)])) (sort (comp - compare)) ffirst)
+        dat (map second (raw p))
+        x1 (->> dat (map first) (reduce min))
+        y2 (->> dat (map second) (reduce max))
+        ;; What idiot put height before width in camun.pl?!?!?
+        x2 (->> dat (map (fn [[x y h w]] (+ x w))) (reduce max))
+        y1 (->> dat (map (fn [[x y h w]] (- y h))) (reduce min))]
+    (format "%s/%s/print/image_%dx%d_from_%d%%2C%d_to_%d%%2C%d/" base p
+            100000 100000 x1 y1 x2 y2)))
+
 (defn format-cluster
   "Format tab-separated cluster data"
   [& argv]
@@ -611,18 +632,24 @@
       (let [[id size name sstart send]
             (s/split line #"\t")
             m (doc-meta ri name)
+            base-url (m "url")
             start (Long/parseLong sstart)
-            end (Long/parseLong send)]
+            end (Long/parseLong send)
+            text (doc-text ri name start end)
+            url (if (re-find #"<w p=" text)
+                  (loc-url base-url text)
+                  base-url)
+            pretty-text
+            (-> text
+                (s/replace #"</?[a-zA-Z][^>]*>" "")
+                (s/replace #"\n" "<br/>"))]
         (println
          (s/join "\t"
                  [id size (m "date")
                   (doc-series name)
                   (m "title")
-                  (m "url")
-                  sstart send
-                  (s/replace (doc-text ri name start end)
-                             #"\n" "<br/>")]))))))
-                 
+                  url
+                  sstart send pretty-text]))))))
 
 (defn diff-words
   [gram lines]

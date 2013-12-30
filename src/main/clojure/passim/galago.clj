@@ -107,3 +107,7 @@
   [ri dname start end]
   (let [d (get-index-doc ri dname)]
     (subs (.text d) (.get (.termCharBegin d) start) (.get (.termCharEnd d) (dec end)))))
+
+(defn doc-meta
+  [ri dname]
+  (into {} (.metadata (get-index-doc ri dname))))
