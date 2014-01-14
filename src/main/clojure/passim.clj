@@ -19,8 +19,6 @@
 
 (set! *warn-on-reflection* true)
 
-(def default-max-rep 4)                         ; magic number
-
 (defn bill-doc
   [v]
   (str "<DOC>\n<DOCNO> " (second v) "/" (first v) " </DOCNO>\n<TEXT>\n"
@@ -597,24 +595,34 @@
 
 (defn loc-scale
   [in]
-  (int (/ in 12)))
+  (int (/ in 4)))
 
 (defn loc-url
   [base text]
   (let [raw
         (->> text
              (re-seq #"<w p=\"([^\"]+)\" c=\"(\d+),(\d+),(\d+),(\d+)\"")
-             (map (fn [[_ k & vals]] [k (mapv #(Integer/parseInt %) vals)]))
-             (group-by first))
-        p (->> raw (map (fn [[k v]] [k (count v)])) (sort (comp - compare)) ffirst)
-        dat (map second (raw p))
-        x1 (->> dat (map first) (reduce min))
-        y2 (->> dat (map second) (reduce max))
+             (map (fn [[_ k & vals]] [k (mapv #(Integer/parseInt %) vals)])))
+        p (ffirst raw)
+        dat (map second (filter #(= p (first %)) raw))
+        x1 (->> dat (map first) (reduce min) loc-scale)
+        y1 (->> dat (map second) (reduce min) loc-scale)
         ;; What idiot put height before width in camun.pl?!?!?
-        x2 (->> dat (map (fn [[x y h w]] (+ x w))) (reduce max))
-        y1 (->> dat (map (fn [[x y h w]] (- y h))) (reduce min))]
+        x2 (->> dat (map (fn [[x y h w]] (+ x w))) (reduce max) loc-scale)
+        y2 (->> dat (map (fn [[x y h w]] (+ y h))) (reduce max) loc-scale)]
     (format "%s/%s/print/image_%dx%d_from_%d%%2C%d_to_%d%%2C%d/" base p
-            100000 100000 x1 y1 x2 y2)))
+            600 600 x1 y1 x2 y2)))
+
+(defn loc-words-url
+  [base text]
+  (let [raw
+        (->> text
+             (re-seq #"<w p=\"([^\"]+)\" c=\"[^\"]+\"/>(\S+)")
+             (map rest))
+        p (ffirst raw)
+        words (->> raw (filter #(= p (first %))) (map #(s/replace (second %) #"[\.,!\?:;]$" "")) set)
+        kwords (remove #(< (count %) 5) words)]
+    (format "%s/%s/#words=%s" base p (s/join "+" kwords))))
 
 (defn format-cluster
   "Format tab-separated cluster data"
@@ -648,7 +656,7 @@
                  [id size (m "date")
                   (doc-series name)
                   (m "title")
-                  url
+                  url (loc-words-url base-url text)
                   sstart send pretty-text]))))))
 
 (defn diff-words
