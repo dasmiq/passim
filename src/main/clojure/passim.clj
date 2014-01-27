@@ -262,6 +262,25 @@
                 (recur (cons (dec prev) res))
                 (seq res)))))))))
 
+(defn- swg-align
+  [w1 w2]
+  (let [c1 (join-alnum-tokens w1)
+        c2 (join-alnum-tokens w2)
+        alg (jaligner.SmithWatermanGotoh/align
+             (jaligner.Sequence. c1) (jaligner.Sequence. c2) match-matrix 5 0.5)
+        out1 (String. (.getSequence1 alg))
+        out2 (String. (.getSequence2 alg))
+        os1 (.getStart1 alg)
+        os2 (.getStart2 alg)
+        sword1 (+ (space-count (subs c1 0 os1))
+                  (if (spacel? out1) 1 0))
+        sword2 (+ (space-count (subs c2 0 os2))
+                  (if (spacel? out2) 1 0))]
+    (Alignment. out1 out2
+                sword1 sword2
+                    (+ sword1 1 (space-count (s/trim out1)))
+                    (+ sword2 1 (space-count (s/trim out2))))))
+
 (defn- align-words
   [start end w1 w2 gap-words]
   (let [[s1 s2] (if (not-empty start)
@@ -374,10 +393,26 @@
         name2 (.getDocumentName ri (int id2))
         words1 (doc-words ri name1)
         words2 (doc-words ri name2)
-        passages (best-passages words1 words2 matches gram)
-        pass (if (empty? passages)
-               (Alignment. "" "" 0 0 0 0)
-               (reduce (maxer #(- (:end1 %) (:start1 %))) passages))
+        approx-pass
+        (try
+          (if-let [passages (seq (best-passages words1 words2 matches
+                                                (if (= gram 0) 1 gram)))]
+            (reduce (maxer #(- (:end1 %) (:start1 %))) passages)
+            (Alignment. "" "" 0 0 0 0))
+          (catch Exception e
+            (Alignment. "" "" 0 0 0 0))
+          (catch OutOfMemoryError e
+            (Alignment. "" "" 0 0 0 0)))
+        pass (if (= gram 0)
+               (try
+                 (swg-align words1 words2)
+                 (catch Exception e
+                   (.println System/err e)
+                   approx-pass)
+                 (catch OutOfMemoryError e
+                   (.println System/err e)
+                   approx-pass))
+               approx-pass)
         ;; nseries (count smeta)
         ;; idf (reduce +
         ;;             (map #(Math/log %)
