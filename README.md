@@ -21,6 +21,13 @@ The basic pipeline uses the subcommands `pairs`, `scores`, `cluster`,
 
 ## Quotations of Reference Texts
 
+Run with a galago n-gram index and reference text(s):
+
+	$ passim quotes [options] <n-gram index> <reference text file>
+
+A reference text file of `-` will read the standard input.  The only
+notable option is `--pretty` to pretty-print the JSON output.
+
 The reference text format is a unique citation, followed by a tab and
 some text:
 
