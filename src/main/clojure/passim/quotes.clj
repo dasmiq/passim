@@ -167,9 +167,17 @@
                             (fn [[[s _] [e _]]] (> (- e s) max-gap))
                             (partition 2 1 [[-1 0]] thits)))]
                   [page
-                   (map #(let [pos (mapv first %)]
-                           [(first pos) (peek pos)
+                   (map #(let [pos (mapv first %)
+                               start (first pos)
+                               end (peek pos)]
+                           [start end
                             ;;(->> % (map second) count)
+                            ;; I see: the problem is that we score
+                            ;;  only the overlap but we'd like to
+                            ;;  score the likelihood of the whole
+                            ;;  reference passage.  Adjust this score
+                            ;;  by number of high-freq terms?
+                            ;; 0 ;; (* (- (- end start) (count pos)) (Math/log (inc (/ 1 max-count))))
                             (->> % (map second) (map (fn [x] (Math/log (inc (/ 1 x))))) (reduce +))
                             ])
                         matches)])))
