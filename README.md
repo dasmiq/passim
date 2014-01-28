@@ -38,6 +38,20 @@ This program treats citations as unparsed, atomic strings, though URNs
 in a standard scheme, such as the CTS citations used here, are
 encouraged.
 
+You can use any galago n-gram index: 4-gram, 5-gram, etc. For several
+tasks, 5-grams seem like a good tradeoff.
+
+For best results, index the reference texts---as trectext or some
+other plaintext format---along with the target document.  This ensures
+that any n-gram in the reference texts occurs at least once in the
+index.  The quotes program will then automatically filter out matches
+of a reference text with itself.  There is one other advantage of
+including the reference texts in the index.  Since you guarantee that
+all n-grams in the reference texts will be seen, you can shard the
+index of the books without having any useful n-grams fall below
+threshold (as long as you add a copy of the reference texts to each
+shard).
+
 
 ## License
 
