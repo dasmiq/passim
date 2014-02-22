@@ -27,6 +27,19 @@
        "</TEXT>\n</DOC>\n"))
 
 (defn make-series-map
+  [idx]
+  (let [nidx (-> idx (jio/file "names.reverse") str)
+        asize (inc (->> nidx dump-index (map #(Integer/parseInt (second %))) (reduce max)))
+        res (make-array Integer/TYPE asize)]
+    ;; (prn asize)
+    (doseq [series (partition-by (comp doc-series first) (dump-index nidx))]
+      (let [snum (Integer/parseInt (second (first series)))]
+        (doseq [doc series]
+          ;;(prn (Integer/parseInt (second doc)) snum)
+          (aset-int res (Integer/parseInt (second doc)) snum))))
+    #(get res %)))
+
+(defn read-series-map
   [fname]
   (let [asize (-> (sh/sh "tail" "-1" fname) :out (s/split #"\t") first Integer/parseInt inc)
         res (make-array Integer/TYPE asize)]
@@ -94,7 +107,9 @@
         {:keys [series-map stop max-series max-df modp modrec step stride]} options]
     (let [ireader (DiskIndex/openIndexPart index-file)
           ki (.getIterator ireader)
-          series (if series-map (make-series-map series-map) identity)
+          series (if series-map
+                   (read-series-map series-map)
+                   (make-series-map (.getParent (java.io.File. index-file))))
           stops (if stop (-> stop slurp (s/split #"\n") set (disj "")) #{})
           upper (/ (* max-series (dec max-series)) 2)]
       (dorun (repeatedly (* step stride) (fn [] (.nextKey ki))))
