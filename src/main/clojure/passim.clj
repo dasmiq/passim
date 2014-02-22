@@ -3,6 +3,7 @@
             [clojure.set :as set]
             [clojure.data.csv :as csv]
             [clojure.data.json :as json]
+            [clojure.edn :as edn]
             [clojure.java.shell :as sh]
             [clojure.java.io :as jio]
             [ciir.utils :refer :all]
@@ -74,7 +75,7 @@
                   :when (and (not= (series aid) (series bid))
                              (<= (first arest) max-df)
                              (<= (first brest) max-df))]
-              {[aid bid] ["" total-freq arest brest]})))))))
+              {[aid bid] [["" total-freq arest brest]]})))))))
 
 (defn rand-blat
   [f prop coll]
@@ -85,6 +86,23 @@
           (println (f %))))
       true)
    coll))
+
+(defn merge-pairs
+  "Merge postings for document pairs."
+  [& argv]
+  (let [[options remaining banner]
+        (safe-cli argv
+                  (str
+                   "passim merge [options] <index>\n\n"
+                   (var-doc #'merge-pairs))
+                  ["-m" "--min-matches" "Minimum matching n-gram features" :default 1 :parse-fn #(Integer/parseInt %)]
+                  ["-h" "--help" "Show help" :default false :flag true])
+        {:keys [min-matches]} options]
+    (doseq [recs (->> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq
+                      (map edn/read-string) (partition-by ffirst))]
+      (let [m (reduce (partial merge-with concat) {} recs)]
+        (when (>= (-> m first second count) min-matches)
+          (prn m))))))
 
 (defn dump-pairs
   "Output document pairs with overlapping features."
@@ -729,6 +747,7 @@
   [& argv]
   (let [commands
         {"pairs" #'dump-pairs
+         "merge" #'merge-pairs
          "scores" #'dump-scores
          "cluster" #'cluster-scores
          "format" #'format-cluster
