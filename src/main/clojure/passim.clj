@@ -98,7 +98,7 @@
                   ["-m" "--min-matches" "Minimum matching n-gram features" :default 1 :parse-fn #(Integer/parseInt %)]
                   ["-h" "--help" "Show help" :default false :flag true])
         {:keys [min-matches]} options]
-    (doseq [recs (->> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq
+    (doseq [recs (->> *in* jio/reader line-seq
                       (map edn/read-string) (partition-by ffirst))]
       (let [m (reduce (partial merge-with concat) {} recs)]
         (when (>= (-> m first second count) min-matches)
@@ -493,7 +493,7 @@
         idx ^String (first remaining)
         gram (:ngram options)]
   (let [ri (RetrievalFactory/instance idx (Parameters.))]
-    (doseq [line (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq)]
+    (doseq [line (-> *in* jio/reader line-seq)]
       (when-let [out (score-pair line ri gram)]
         (println out))))))
 
@@ -634,7 +634,7 @@
                   ["-p" "--max-proportion" "Maximum proportion of cluster from one series" :default 1.0 :parse-fn #(Double/parseDouble %)]
                   ["-r" "--max-repeats" "Maximum number of texts from one series" :default 4 :parse-fn #(Integer/parseInt %)]
                   ["-h" "--help" "Show help" :default false :flag true])
-        lines (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq)
+        lines (-> *in* jio/reader line-seq)
         {:keys [min-overlap relative-overlap max-proportion max-repeats]} options]
     (doseq
         [cluster
@@ -699,7 +699,7 @@
                    (var-doc #'format-cluster))
                   ["-h" "--help" "Show help" :default false :flag true])
         idx ^String (first remaining)
-        lines (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq)
+        lines (-> *in* jio/reader line-seq)
         ri (RetrievalFactory/instance idx (Parameters.))]
     (doseq [line lines]
       (let [{:keys [id size members]} (json/read-str line :key-fn keyword)]
