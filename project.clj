@@ -1,6 +1,6 @@
 (defproject passim "0.1.0-SNAPSHOT"
   :description "Detect and align similar passages"
-  :jvm-opts ["-Dfile.encoding=UTF-8" "-Xmx1900m"]
+  :jvm-opts ["-server" "-Dfile.encoding=UTF-8" "-Xmx1900m"]
   :url "http://example.com/FIXME"
   :license {:name "Eclipse Public License"
             :url "http://www.eclipse.org/legal/epl-v10.html"}

@@ -2,6 +2,7 @@
   (:require [clojure.string :as s]
             [clojure.set :as set]
             [clojure.data.csv :as csv]
+            [clojure.data.json :as json]
             [clojure.java.shell :as sh]
             [clojure.java.io :as jio]
             [ciir.utils :refer :all]
@@ -573,10 +574,7 @@
   [cluster]
   [(->> cluster (map :name) set count)
    (mapv
-    #(s/join
-      "\t"
-      ((juxt :name :start :end)
-       %))
+    #((juxt :name :start :end) %)
     cluster)])
 
 (defn top-rep-cluster
@@ -623,10 +621,9 @@
               (map dump-cluster)
               (sort (comp - compare))
               (map-indexed
-                #(let [size (first %2)]
-                   (doseq [text (second %2)]
-                     (println (s/join "\t" [(inc %1) size text]))))))]
-      nil)))
+               #(hash-map :id (inc %1) :size (first %2) :members (second %2))))]
+      (json/write cluster *out* :escape-slash false)
+      (println))))
 
 (defn loc-scale
   [in]
@@ -672,27 +669,25 @@
         lines (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq)
         ri (RetrievalFactory/instance idx (Parameters.))]
     (doseq [line lines]
-      (let [[id size name sstart send]
-            (s/split line #"\t")
-            m (doc-meta ri name)
-            base-url (m "url")
-            start (Long/parseLong sstart)
-            end (Long/parseLong send)
-            text (doc-text ri name start end)
-            url (if (re-find #"<w p=" text)
-                  (loc-url base-url text)
-                  base-url)
-            pretty-text
-            (-> text
-                (s/replace #"</?[a-zA-Z][^>]*>" "")
-                (s/replace #"\n" "<br/>"))]
-        (println
-         (s/join "\t"
-                 [id size (m "date")
-                  (doc-series name)
-                  (m "title")
-                  url (loc-words-url base-url text)
-                  sstart send pretty-text]))))))
+      (let [{:keys [id size members]} (json/read-str line :key-fn keyword)]
+        (doseq [[name start end] members]
+          (let [m (doc-meta ri name)
+                base-url (m "url")
+                text (doc-text ri name start end)
+                url (if (re-find #"<w p=" text)
+                      (loc-words-url base-url text)
+                      base-url)
+                pretty-text
+                (-> text
+                    (s/replace #"</?[a-zA-Z][^>]*>" "")
+                    (s/replace #"\n" "<br/>"))]
+            (println
+             (s/join "\t"
+                     [id size (m "date")
+                      (doc-series name)
+                      (m "title")
+                      url
+                      start end pretty-text]))))))))
 
 (defn diff-words
   [gram lines]
