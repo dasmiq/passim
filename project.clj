@@ -18,6 +18,8 @@
   :source-paths ["src/main/clojure"]
   :java-source-paths ["src/main/java"]
   :plugins [[lein-bin "0.3.4"]]
+  :bin {:name "passim"
+        :bin-path "~/bin"}
   :aot [passim]
   :main passim)
 
