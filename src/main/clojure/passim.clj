@@ -422,7 +422,7 @@
 
 (defn score-pair
   [^String s ^Retrieval ri ^long gram]
-  (let [[[id1 id2] matches] (read-match-data s)
+  (let [[[id1 id2] matches] (first (edn/read-string s))
         name1 (.getDocumentName ri (int id1))
         name2 (.getDocumentName ri (int id2))
         words1 (doc-words ri name1)
