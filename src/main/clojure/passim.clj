@@ -722,6 +722,44 @@
                       url
                       start end pretty-text]))))))))
 
+(defn gexf-lines
+  [lines]
+  (->> lines
+       (mapcat
+        (fn [line]
+          (let [{:keys [id size members]} (json/read-str line :key-fn keyword)]
+            (map
+             #(vec (sort (map (comp doc-series first) %)))
+             (combinations members 2)))))
+       frequencies))
+
+(defn gexf-cluster
+  "Produce GEXF from cluster data for display by Gephi"
+  [& argv]
+  (let [[options remaining banner]
+        (safe-cli argv
+                  (str
+                   "passim gexf [options] <index>\n\n"
+                   (var-doc #'gexf-cluster))
+                  ["-h" "--help" "Show help" :default false :flag true])
+        idx ^String (first remaining)
+        lines (-> *in* jio/reader line-seq)
+        ri (RetrievalFactory/instance idx (Parameters.))
+        bins (gexf-lines lines)]
+    (println "<gexf>")
+    (println "<graph defaultedgetype=\"undirected\">")
+    (println "<nodes>")
+    (doseq [n (set (mapcat first bins))]
+      (printf
+       "<node id=\"%s\" label=\"%s\" />\n"
+       n n))
+    (println "</nodes>\n<edges>")
+    (doseq [[[s t] w] bins]
+      (printf
+       "<edge id=\"%s--%s\" source=\"%s\" target=\"%s\" weight=\"%d\" />\n"
+       s t s t w))
+    (println "</edges>\n</graph>\n</gexf>")))
+
 (defn diff-words
   [gram lines]
   (let [dict (set (line-seq (jio/reader "/usr/share/dict/words")))]
@@ -751,6 +789,7 @@
          "scores" #'dump-scores
          "cluster" #'cluster-scores
          "format" #'format-cluster
+         "gexf" #'gexf-cluster
          "quotes" #'passim.quotes/dump-quotes}
         usage
         (str
