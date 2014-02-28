@@ -97,12 +97,13 @@
                    (var-doc #'merge-pairs))
                   ["-m" "--min-matches" "Minimum matching n-gram features" :default 1 :parse-fn #(Integer/parseInt %)]
                   ["-h" "--help" "Show help" :default false :flag true])
-        {:keys [min-matches]} options]
-    (doseq [recs (->> *in* jio/reader line-seq
-                      (map edn/read-string) (partition-by ffirst))]
-      (let [m (reduce (partial merge-with concat) {} recs)]
-        (when (>= (-> m first second count) min-matches)
-          (prn m))))))
+        {:keys [min-matches]} options
+        recs (->> *in* jio/reader line-seq  (map edn/read-string) (partition-by ffirst))]
+    (doseq [rec recs]
+      (let [k (first (ffirst rec))
+            v (vec (mapcat (comp first vals) rec))]
+        (when (>= (count v) min-matches)
+          (prn {k v}))))))
 
 (defn dump-pairs
   "Output document pairs with overlapping features."
@@ -690,7 +691,7 @@
     (format "%s/%s/#words=%s" base p (s/join "+" kwords))))
 
 (defn format-cluster
-  "Format tab-separated cluster data"
+  "Format cluster data"
   [& argv]
   (let [[options remaining banner]
         (safe-cli argv
@@ -703,33 +704,66 @@
         ri (RetrievalFactory/instance idx (Parameters.))]
     (doseq [line lines]
       (let [{:keys [id size members]} (json/read-str line :key-fn keyword)]
-        (doseq [[name start end] members]
-          (let [m (doc-meta ri name)
-                base-url (m "url")
-                text (doc-text ri name start end)
-                url (if (re-find #"<w p=" text)
-                      (loc-words-url base-url text)
-                      base-url)
-                pretty-text
-                (-> text
-                    (s/replace #"</?[a-zA-Z][^>]*>" "")
-                    (s/replace #"\n" "<br/>"))]
-            (println
-             (s/join "\t"
-                     [id size (m "date")
-                      (doc-series name)
-                      (m "title")
-                      url
-                      start end pretty-text]))))))))
+        (json/pprint
+         {:id id :size size
+          :members
+          (sort-by
+           :date
+           (for [[name start end] members]
+             (let [m (doc-meta ri name)
+                   base-url (m "url")
+                   text (doc-text ri name start end)
+                   url (if (re-find #"<w p=" text)
+                         (loc-url base-url text)
+                         base-url)
+                   pretty-text
+                   (-> text
+                       (s/replace #"</?[a-zA-Z][^>]*>" "")
+                       (s/replace #"\t" " ")
+                       (s/replace #"\n" "<br/>"))]
+               {:date (m "date")
+                :name (doc-series name)
+                :title (m "title")
+                :url url
+                :start start :end end
+                :text pretty-text})))}
+         :escape-slash false)
+        (println)))))
 
-(defn gexf-lines
-  [lines]
-  (->> lines
+(defn median
+  [coll]
+  (let [c (count coll)]
+    (nth (sort coll) (int (/ c 2)))))
+
+(defn median-cluster-year
+  [members]
+  (->> members
+       (map :date)
+       (map #(Integer/parseInt (re-find #"^[0-9]{4}" %)))
+       median))
+
+(defn max-year
+  [members]
+  (->> members
+       (map :date)
+       (map #(Integer/parseInt (re-find #"[0-9]{4}" %)))
+       (reduce max)))
+
+(defn json-seq
+  "Returns JSON records from rdr as a lazy sequence.
+  rdr must implement java.io.BufferedReader."
+  [^java.io.BufferedReader rdr]
+  (when-let [rec (json/read rdr :key-fn keyword :eof-error? false)]
+    (cons rec (lazy-seq (json-seq rdr)))))
+
+(defn gexf-stats
+  [recs binf]
+  (->> recs
        (mapcat
-        (fn [line]
-          (let [{:keys [id size members]} (json/read-str line :key-fn keyword)]
+        (fn [rec]
+          (let [{:keys [id size members]} rec]
             (map
-             #(vec (sort (map (comp doc-series first) %)))
+             #(conj (vec (sort (map :name %))) (binf %))
              (combinations members 2)))))
        frequencies))
 
@@ -743,21 +777,25 @@
                    (var-doc #'gexf-cluster))
                   ["-h" "--help" "Show help" :default false :flag true])
         idx ^String (first remaining)
-        lines (-> *in* jio/reader line-seq)
-        ri (RetrievalFactory/instance idx (Parameters.))
-        bins (gexf-lines lines)]
+        info (json/read (jio/reader (first remaining)) :key-fn keyword)
+        labels (into {}
+                     (concat
+                      (map #(vector (str (:id %)) (:master_name %)) info)
+                      (->> info (mapcat :publication_names)
+                           (map #(vector (str (:sn %)) (:name %))))))
+        bins (gexf-stats (-> *in* jio/reader json-seq) max-year)]
     (println "<gexf>")
     (println "<graph defaultedgetype=\"undirected\">")
     (println "<nodes>")
-    (doseq [n (set (mapcat first bins))]
+    (doseq [n (set (mapcat (fn [[[s t b] w]] [s t]) bins))]
       (printf
        "<node id=\"%s\" label=\"%s\" />\n"
-       n n))
+       n (get labels n n)))
     (println "</nodes>\n<edges>")
-    (doseq [[[s t] w] bins]
+    (doseq [[[s t b] w] bins]
       (printf
-       "<edge id=\"%s--%s\" source=\"%s\" target=\"%s\" weight=\"%d\" />\n"
-       s t s t w))
+       "<edge id=\"%s--%s--%d\" source=\"%s\" target=\"%s\" weight=\"%d\" label=\"%d\" />\n"
+       s t b s t w b))
     (println "</edges>\n</graph>\n</gexf>")))
 
 (defn diff-words
