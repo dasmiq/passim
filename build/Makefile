@@ -6,7 +6,7 @@
 ## Edit this if you have only one collection.
 ## Otherwise, pass it as an argument to make, e.g.:
 ## make COLL=bills align
-COLL=maab
+COLL=coll
 
 LC_ALL=POSIX
 export LC_ALL
