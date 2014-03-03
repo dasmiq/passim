@@ -179,7 +179,8 @@ public final class SmithWatermanGotoh {
 			h = Float.NEGATIVE_INFINITY;
 			vDiagonal = v[0];
 			for (int j = 1, l = k + 1; j < n; j++, l++) {
-				similarityScore = matrix[a1[i - 1]][a2[j - 1]];
+			    // similarityScore = matrix[a1[i - 1]][a2[j - 1]];
+			    similarityScore = a1[i - 1] == a2[j - 1] ? 2 : -1;
 
 				// Fill the matrices
 				f = vDiagonal + similarityScore;
@@ -305,9 +306,9 @@ public final class SmithWatermanGotoh {
 					reversed3[len3++] = Markups.IDENTITY;
 					identity++;
 					similarity++;
-				} else if (scores[c1][c2] > 0) {
-					reversed3[len3++] = Markups.SIMILARITY;
-					similarity++;
+				// } else if (scores[c1][c2] > 0) {
+				// 	reversed3[len3++] = Markups.SIMILARITY;
+				// 	similarity++;
 				} else {
 					reversed3[len3++] = Markups.MISMATCH;
 				}

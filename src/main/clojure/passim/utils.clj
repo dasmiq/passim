@@ -27,7 +27,7 @@
 
 (defn join-alnum-tokens
   [toks]
-  (s/replace (s/join " " toks) #"[^a-zA-Z0-9 ]" "#"))
+  (s/join " " toks))
 
 (def match-matrix (jaligner.matrix.MatrixGenerator/generate 2 -1))
 

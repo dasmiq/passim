@@ -498,10 +498,6 @@
       (when-let [out (score-pair line ri gram)]
         (println out))))))
 
-(defn- vocab-set
-  [s]
-  (-> s (s/split #" ") set (disj "." "###")))
-
 (defn jaccard
   [set1 set2]
   (/ (count (set/intersection set1 set2)) (count (set/union set1 set2))))
@@ -727,7 +723,7 @@
                 :url url
                 :start start :end end
                 :text pretty-text})))}
-         :escape-slash false)
+         :escape-slash false :escape-unicode false)
         (println)))))
 
 (defn median
