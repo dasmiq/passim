@@ -1,0 +1,42 @@
+#!/usr/bin/perl
+
+use strict;
+
+open CMD, "galago @ARGV --mode=lsf --printJob=deps |" or die "$0: Couldn't open pipeline: $!\n";
+
+my %deps = ();
+my %stage = ();
+
+while (<CMD>) {
+    if ( /^\s*(\S+) -> (\S+)/ ) {
+	push @{ $deps{$2} }, $1;
+    } elsif ( /^bsub .*\-J \'([^\']+)\'/ ) {
+	my $job = $1;
+	$job =~ s/\[.*$//;
+	my @d = ();
+	my @parts = split /\-/, $job;
+	if ( exists($stage{$parts[0]}) ) {
+	    push @d, $stage{$parts[0]};
+	} else {
+	    my $j = $job;
+	    while ( $j ne '' ) {
+		if ( exists($deps{$j}) ) {
+		    push @d, map { $stage{$_} } @{ $deps{$j} };
+		    last;
+		}
+		$j =~ s/\-?[A-Za-z]+$//;
+	    }
+	}
+	$stage{$parts[0]} = $job;
+
+	if ( scalar(@d) > 0 ) {
+	    my $spec = join " && ", map { "done($_-$$)" } @d;
+	    s/^bsub /bsub -w '$spec' /;
+	}
+	s/ \-J '([^\'\[]+)([^\']*)\'/ -J '$1-${$}$2'/;
+	print;
+    }
+}
+
+
+
