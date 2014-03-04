@@ -11,6 +11,9 @@ COLL=coll
 LC_ALL=POSIX
 export LC_ALL
 
+PATH:=$(shell pwd):${PATH}
+export PATH
+
 SHELL=/bin/bash -o pipefail -c
 #.SHELLFLAGS=-o pipefail -c
 TMPDIR=/tmp
@@ -19,15 +22,9 @@ TMPDIR=/tmp
 QRUN=bsub -K
 PSH=bash -o pipefail -c
 
-#LQRUN=qrsh -nostdin -N $(shell basename $@) -now n -j y -cwd -V -l mem_token=2G -l mem_free=2G -l long=TRUE
-LQRUN=bsub -K
-
 passim=passim
 passimjar=$(shell which $(passim))
 passimopt=-Dfile.encoding=UTF-8 -jar $(passimjar)
-
-CLASSPATH_PREFIX:=$(passimjar):$(CLASSPATH_PREFIX)
-export CLASSPATH_PREFIX
 
 UPPER=100
 NGRAM=5
@@ -82,7 +79,7 @@ MAXREP=4
 cluster=$(dir)/cl$(MINALG)-flover$(subst .,,$(RELOVER))-rep$(MAXREP).cluster.gz
 clinfo=$(patsubst %.cluster.gz,%.clinfo.gz,$(cluster))
 
-.PHONY:	clinfo cluster swalign align pairs
+.PHONY:	clinfo cluster swalign align pairs index
 
 .SECONDARY:
 
@@ -96,15 +93,17 @@ swalign:	$(dir)/pall.sw.srt.gz
 
 pairs:	$(dir)/pall.srt.gz
 
+index:	$(idx)
+
 # .DELETE_ON_ERROR:
 
 GDISTRIB=$(shell ls -1 $(COLL)/input/*.gz | wc -l)
 
 %/idx/postings:
-	cd $*; ../lsf-galago build ${CURDIR}/build.json --distrib=$(GDISTRIB) --galagoJobDir=$(notdir $@).tmp > build.sh; . build.sh
+	cd $*; ../lsf-galago build ${CURDIR}/build.json --distrib=$(GDISTRIB) --galagoJobDir=$(notdir $@).tmp
 
 $(idx):	$(dir $(idx))postings
-	cd $(COLL); ../lsf-galago build-window ${CURDIR}/window.json --n=$(NGRAM) --width=$(WIDTH) --gap=$(GAP) --distrib=$(GDISTRIB) --galagoJobDir=$(notdir $@).tmp > window.sh; . window.sh
+	cd $(COLL); ../lsf-galago build-window ${CURDIR}/window.json --n=$(NGRAM) --width=$(WIDTH) --gap=$(GAP) --distrib=$(GDISTRIB) --galagoJobDir=$(notdir $@).tmp
 
 $(dir)/pall.srt.gz:	$(dir)/od.siz $(idx)
 	mkdir -p $(dir)/pall.srt.tmp
