@@ -12,12 +12,14 @@ To compile, run:
 
     $ lein bin
 
-This should produce an executable `target/passim-0.1.0-SNAPSHOT`.
+This should produce an executable `target/passim` and copy it to your
+`~/bin`.
 
 ## Aligning and Clustering Matching Passage Pairs
 
 The basic pipeline uses the subcommands `pairs`, `scores`, `cluster`,
-`format`.
+`clinfo`.  In the `build` subdirectory, there is a Makefile that
+automates this pipeline.
 
 ## Quotations of Reference Texts
 
