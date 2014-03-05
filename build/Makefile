@@ -20,10 +20,12 @@ galagoMode=
 ifneq ($(shell which bsub 2>/dev/null),)
 q=lsf
 sub=bsub
+QRUN=${sub} -K -o $@.err
 galagoIndex=lsf-galago
 else ifneq ($(shell which qsub 2>/dev/null),)
 q=sge
 sub=qsub -b y -j y -cwd -V -S /bin/bash -l mem_token=2G -l mem_free=2G
+QRUN=${sub} -sync y -o $@.err
 galagoMode=--mode=drmaa
 else
 q=
@@ -37,8 +39,6 @@ SHELL=/bin/bash -o pipefail -c
 #.SHELLFLAGS=-o pipefail -c
 TMPDIR=/tmp
 
-#QRUN=qrsh -nostdin -N $(shell basename $@) -now n -j y -cwd -V -l mem_token=2G -l mem_free=2G
-QRUN=bsub -K
 PSH=bash -o pipefail -c
 
 passim=passim
@@ -170,12 +170,18 @@ endif
 %.clinfo.gz:	%.cluster.gz
 	mkdir -p $*.clinfo.tmp
 	[ -f $*.clinfo.tmp/in000 ] || zcat -f $< | split -d -a 3 -l 2000 - $*.clinfo.tmp/in
+ifeq (${q},lsf)
 	bsub -J "$*.clinfo[1-`ls -1 $*.clinfo.tmp/in* | wc -l`]%${CONCUR}" -eo "$*.clinfo.tmp/err%I" \
 	    'ofile=$*.clinfo.tmp/out`printf "%03d" $$(( \$$LSB_JOBINDEX - 1 ))`; [ -f $$ofile ] || ${passim} format $(dir $@)/../idx < $*.clinfo.tmp/in`printf "%03d" $$(( \$$LSB_JOBINDEX - 1 ))` > $$ofile'
 	bsub -K -w "$*.clinfo" 'ls -1 $*.clinfo.tmp/out* | xargs cat | gzip -c > $@'
+else ifeq (${q},sge)
+	${sub} -N $(subst /,_,$*.clinfo) -t `ls -1 $*.clinfo.tmp/in* | wc -l` -tc ${CONCUR} -o $*.clinfo.tmp \
+	    'ofile=$*.clinfo.tmp/out`printf "%03d" $$(( \$$SGE_TASK_ID - 1 ))`; [ -f $$ofile ] || ${passim} format $(dir $@)/../idx < $*.clinfo.tmp/in`printf "%03d" $$(( \$$SGE_TASK_ID - 1 ))` > $$ofile'
+	${sub} -sync y -hold_jid $(subst /,_,$*.clinfo) -o $*.clinfo.tmp 'ls -1 $*.clinfo.tmp/out* | xargs cat | gzip -c > $@'
+endif
 
 $(cluster):	$(dir)/pall.proc.srt.gz
-	$(QRUN) -eo $@.err 'gzip -dc $< | awk "\$$1 >= $(MINALG)" | java -Xmx8g ${passimopt} cluster --relative-overlap $(RELOVER) --max-repeats $(MAXREP) | gzip -c > $@'
+	$(QRUN) 'gzip -dc $< | awk "\$$1 >= $(MINALG)" | java -Xmx8g ${passimopt} cluster --relative-overlap $(RELOVER) --max-repeats $(MAXREP) | gzip -c > $@'
 
 %.idtab.gz:	%.clinfo.gz
 	$(QRUN) 'gzip -dc $< | ${passim} format $(dir $@)/../idx | sort -k1,1n -k3,4 | gzip -c > $@'
