@@ -8,7 +8,8 @@ within longer documents with substantial alignments.
 
 ## Installation
 
-To compile, run:
+To compile, install the [Leiningen build tool](http://leiningen.org/)
+and run:
 
     $ lein bin
 
@@ -20,6 +21,62 @@ This should produce an executable `target/passim` and copy it to your
 The basic pipeline uses the subcommands `pairs`, `scores`, `cluster`,
 `clinfo`.  In the `build` subdirectory, there is a Makefile that
 automates this pipeline.
+
+### Input Formats
+
+The first step is to index the input documents with galago.  These
+documents can be in any format that galago supports.  Galago requires
+that the suffixes for input documents encode the format.  You can then
+optionally append `.gz` or `.bz2` to filenames to indicate that
+they've been compressed.  One simple but useful
+format is ``trectext'', which encodes a sequence of one or more
+documents along with their unique IDs like so:
+
+	<DOC>
+	<DOCNO> foo_1 </DOCNO>
+	<TEXT>
+	Contents
+	lasting
+	many lines.
+	...
+	</TEXT>
+	</DOC>
+	<DOC>
+	<DOCNO> bar_23 </DOCNO>
+	<TEXT>
+	More text appears.
+	The <emph>tags</emph> will be ignored unless otherwise specified.
+	...
+	</TEXT>
+	</DOC>
+
+In addition, passim supports a variant called ``metatext'' that
+inserts a metadata field for every tag other than `docno` and
+`text`.  Consider the following document:
+
+	<doc>
+	<docno>foo_1</docno>
+	<date>1901-01-01</date>
+	<url>http://example.com/</url>
+	<text>
+	Contents
+	go here.
+	</text>
+	</doc>
+	<doc>
+	...
+
+In addition to indexing the contents, galago will attach a `date` and
+`url` field to document `foo_1`.  Those two fields, along with
+`title`, are used by passim when formatting cluster output.  Note that
+the tags are in lower case.
+
+### Document Identifiers and Duplicate Detection
+
+Many passages are duplicated inside documents from the same source,
+and these local instances of text reuse are uninteresting for many
+applications.  For instance, different issues of the same newspaper
+might repeat the same masthead or advertisements.
 
 ## Quotations of Reference Texts
 
