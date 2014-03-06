@@ -19,10 +19,18 @@ galagoMode=
 
 ifneq ($(shell which bsub 2>/dev/null),)
 q=lsf
+else ifneq ($(shell which qsub 2>/dev/null),)
+q=sge
+else
+q=
+endif
+
+ifeq (${q},lsf)
+q=lsf
 sub=bsub
 QRUN=${sub} -K -o $@.err
 galagoIndex=lsf-galago
-else ifneq ($(shell which qsub 2>/dev/null),)
+else ifeq (${q},sge)
 q=sge
 sub=qsub -b y -j y -cwd -V -S /bin/bash -l mem_token=2G -l mem_free=2G
 QRUN=${sub} -sync y -o $@.err
@@ -124,8 +132,13 @@ GDISTRIB=$(shell ls -1 $(COLL)/input/*.gz | wc -l)
 $(idx):	$(dir $(idx))postings
 	cd $(COLL); ${galagoIndex} build-window ${CURDIR}/window.json --n=$(NGRAM) --width=$(WIDTH) --gap=$(GAP) ${galagoMode} --distrib=$(GDISTRIB) --galagoJobDir=$(notdir $@).tmp --outputIndexName=$(notdir $@)
 
-$(dir)/pall.srt.gz:	$(dir)/od.siz $(idx)
+$(dir)/pall.srt.tmp:
 	mkdir -p $(dir)/pall.srt.tmp
+
+$(dir)/pall.srt.tmp/out%:
+	${passim} pairs $(stops) --max-series $(UPPER) --max-df $(MAXDF) --modp $(MODP) --modrec $(MODREC) --step $* --stride 1000000 $(idx) | sort -T $(TMPDIR) > $@
+
+$(dir)/pall.srt.gz:	$(dir)/od.siz $(idx) $(dir)/pall.srt.tmp
 ifeq (${q},lsf)
 	bsub -J "$(dir)/pall.srt[1-$$(( `cat $<` + 1 ))]%${CONCUR}" -eo "$(dir)/pall.srt.tmp/err%I" \
 	    'ofile=$(dir)/pall.srt.tmp/out`printf "%03d" $$(( \$$LSB_JOBINDEX - 1 ))`; [ -f $$ofile ] || ${passim} pairs $(stops) --max-series $(UPPER) --max-df $(MAXDF) --modp $(MODP) --modrec $(MODREC) --step $$(( $$LSB_JOBINDEX - 1 )) --stride 1000000 $(idx) | sort -T $(TMPDIR) > $$ofile'
@@ -134,6 +147,9 @@ else ifeq (${q},sge)
 	${sub} -N $(subst /,_,$(dir)/pall.srt) -t $$(( `cat $<` + 1 )) -tc ${CONCUR} -o $(dir)/pall.srt.tmp \
 	    'ofile=$(dir)/pall.srt.tmp/out`printf "%03d" $$(( \$$SGE_TASK_ID - 1 ))`; [ -f $$ofile ] || ${passim} pairs $(stops) --max-series $(UPPER) --max-df $(MAXDF) --modp $(MODP) --modrec $(MODREC) --step $$(( $$SGE_TASK_ID - 1 )) --stride 1000000 $(idx) | sort -T $(TMPDIR) > $$ofile'
 	${sub} -sync y -hold_jid $(subst /,_,$(dir)/pall.srt) -o $(dir)/pall.srt.tmp 'ls -1 $(dir)/pall.srt.tmp/out* | xargs sort -T $(TMPDIR) -m | ${passim} merge -m $(MINREP) | gzip -c > $@'
+else
+	$(MAKE) $(foreach s,$(shell seq 0 $(shell if [ -f $< ]; then echo `cat $<`; else echo 0; fi)),$(dir)/pall.srt.tmp/out$(s)); \
+	    ls -1 $(dir)/pall.srt.tmp/out* | xargs sort -T $(TMPDIR) -m | ${passim} merge -m $(MINREP) | gzip -c > $@
 endif
 
 algram=$(NGRAM)
@@ -141,9 +157,14 @@ ifneq ($(GAP),1)
 algram=1
 endif
 
-$(dir)/pall.proc.srt.gz:	$(dir)/pall.srt.gz
+$(dir)/pall.proc.tmp/in000:
 	mkdir -p $(dir)/pall.proc.tmp
-	[ -f $(dir)/pall.proc.tmp/in000 ] || zcat -f $< | split -d -a 3 -l 20000 - $(dir)/pall.proc.tmp/in
+	zcat -f $< | split -d -a 3 -l 20000 - $(dir)/pall.proc.tmp/in
+
+$(dir)/pall.proc.tmp/out%:	$(dir)/pall.proc.tmp/in%
+	java -Xmx5900m ${passimopt} scores -n $(algram) $(dir)/../idx < $< | awk '$$1 >= 10' | sort -rn > $@
+
+$(dir)/pall.proc.srt.gz:	$(dir)/pall.srt.gz $(dir)/pall.proc.tmp/in000
 ifeq (${q},lsf)
 	bsub -R 'mem>6000' -J "$(dir)/pall.proc[1-`ls -1 $(dir)/pall.proc.tmp/in* | wc -l`]%${CONCUR}" -eo "$(dir)/pall.proc.tmp/err%I" \
 	    'ofile=$(dir)/pall.proc.tmp/out`printf "%03d" $$(( \$$LSB_JOBINDEX - 1 ))`; [ -f $$ofile ] || java -Xmx5900m ${passimopt} scores -n $(algram) $(dir)/../idx < $(dir)/pall.proc.tmp/in`printf "%03d" $$(( \$$LSB_JOBINDEX - 1 ))` | awk "\$$1 >= 10" | sort -rn > $$ofile'
@@ -152,6 +173,9 @@ else ifeq (${q},sge)
 	${sub} -l mem_token=6G -l mem_free=6G -N $(subst /,_,$(dir)/pall.proc) -t `ls -1 $(dir)/pall.proc.tmp/in* | wc -l` -tc ${CONCUR} -o $(dir)/pall.proc.tmp \
 	    'ofile=$(dir)/pall.proc.tmp/out`printf "%03d" $$(( \$$SGE_TASK_ID - 1 ))`; [ -f $$ofile ] || java -Xmx5900m ${passimopt} scores -n $(algram) $(dir)/../idx < $(dir)/pall.proc.tmp/in`printf "%03d" $$(( \$$SGE_TASK_ID - 1 ))` | awk "\$$1 >= 10" | sort -rn > $$ofile'
 	${sub} -sync y -hold_jid $(subst /,_,$(dir)/pall.proc) -o $(dir)/pall.proc.tmp 'ls -1 $(dir)/pall.proc.tmp/out* | xargs sort -rnm | gzip -c > $@'
+else
+	$(MAKE) $(subst /in,/out,$(shell if [ -d $(dir)/pall.proc.tmp ]; then ls -1 $(dir)/pall.proc.tmp/in*; else echo $(dir)/pall.proc.tmp/in000; fi)); \
+	    ls -1 $(dir)/pall.proc.tmp/out* | xargs sort -rnm | gzip -c > $@
 endif
 
 $(dir)/pall.sw.srt.gz:	$(dir)/pall.srt.gz
