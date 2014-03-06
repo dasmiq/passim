@@ -127,9 +127,7 @@ Parameter | Default value | Description
 `NGRAM` | 5 | N-gram order for test-reuse detection
 `UPPER` | 100 | Maximum document frequency of n-grams used.
 `MINREP` | 5 | Minimum number of matching n-grams between two documents.
-`RELOVER` | 0.5 | Proportion that two different aligned passages from
-the same document must overlap to be clustered together, as measured
-on the longer passage.
+`RELOVER` | 0.5 | Proportion that two different aligned passages from the same document must overlap to be clustered together, as measured on the longer passage.
 
 Use `make clean` to remove temporary build directories and `make
 distclean` to remove all output files.
