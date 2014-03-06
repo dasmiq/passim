@@ -42,7 +42,7 @@ documents along with their unique IDs like so:
 	</TEXT>
 	</DOC>
 	<DOC>
-	<DOCNO> bar_23 </DOCNO>
+	<DOCNO> foo_23 </DOCNO>
 	<TEXT>
 	More text appears.
 	The <emph>tags</emph> will be ignored unless otherwise specified.
@@ -73,10 +73,19 @@ the tags are in lower case.
 
 ### Document Identifiers and Duplicate Detection
 
-Many passages are duplicated inside documents from the same source,
-and these local instances of text reuse are uninteresting for many
+Many passages are duplicated among documents from the same source, and
+these local instances of text reuse are uninteresting for many
 applications.  For instance, different issues of the same newspaper
-might repeat the same masthead or advertisements.
+might repeat the same masthead or advertisements.  The search for
+matching document pairs therefore uses the _series_ of each document
+to suppress these pairs.  By default, the series is the initial part
+of a document identifier before the first underscore (\_) or slash
+(/).  In the trectext example above, the series of both documents
+would be "foo".  You can override this default behavior by passing a
+map from _internal_ document IDs to series numbers with the
+`--series-map` option.  This would be useful if you wanted to reuse
+the same document collection and index with different groupings of
+documents into series.
 
 ## Quotations of Reference Texts
 
