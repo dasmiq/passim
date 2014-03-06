@@ -55,6 +55,7 @@ passim=passim
 passimjar=$(shell which $(passim))
 passimopt=-Dfile.encoding=UTF-8 -jar $(passimjar)
 
+## Pairwise detection parameters
 UPPER=100
 NGRAM=5
 MAXDF=$(UPPER)
@@ -62,9 +63,14 @@ MODP=1
 MODREC=1
 GAP=1
 WIDTH=1
-
 MINREP=5
 STRIDE=1000000
+
+## Clustering parameters
+MINALG=20
+RELOVER=0.5
+MAXREP=4
+
 
 ifeq ($(MODP),1)
 pairs=pairs-n$(NGRAM)u$(UPPER)
@@ -102,14 +108,10 @@ endif
 
 dir=$(COLL)/$(pairs)
 
-MINALG=20
-RELOVER=0.5
-MAXREP=4
-
 cluster=$(dir)/cl$(MINALG)-flover$(subst .,,$(RELOVER))-rep$(MAXREP).cluster.gz
 clinfo=$(patsubst %.cluster.gz,%.clinfo.gz,$(cluster))
 
-.PHONY:	clinfo cluster swalign align pairs index
+.PHONY:	clinfo cluster swalign align pairs index clean distclean
 
 .SECONDARY:
 
@@ -124,6 +126,12 @@ swalign:	$(dir)/pall.sw.srt.gz
 pairs:	$(dir)/pall.srt.gz
 
 index:	$(idx)
+
+clean:
+	$(RM) -r $(COLL)/postings.tmp $(COLL)/$(notdir $(idx)).tmp $(dir)/pall.srt.tmp $(dir)/pall.proc.tmp $(dir)/pall.sw.tmp $(dir)/cl*.clinfo.tmp
+
+distclean:
+	$(RM) -r $(COLL)/postings.tmp $(COLL)/$(notdir $(idx)).tmp $(COLL)/idx $(COLL)/pairs-*
 
 # .DELETE_ON_ERROR:
 
