@@ -119,12 +119,15 @@ and to change the n-gram feature length from 5 to 10, run
 
 	$ make COLL=bills NGRAM=10 clinfo
 
+The build process will place output in directories like
+`coll/pairs-n10u100`, depending on the value of various parameters.
+
 Some useful parameters are:
 
 Parameter | Default value | Description
 --------- | ------------- | -----------
 `COLL` | coll | Subdirectory containing collection input in `input`.
-`NGRAM` | 5 | N-gram order for test-reuse detection
+`NGRAM` | 5 | N-gram order for text-reuse detection
 `UPPER` | 100 | Maximum document frequency of n-grams used.
 `MINREP` | 5 | Minimum number of matching n-grams between two documents.
 `RELOVER` | 0.5 | Proportion that two different aligned passages from the same document must overlap to be clustered together, as measured on the longer passage.
