@@ -49,7 +49,8 @@ SHELL=/bin/bash -o pipefail -c
 TMPDIR=/tmp
 
 PSH=bash -o pipefail -c
-SPLIT=split
+## We prefer GNU split. We require a split that takes the -d argument.
+SPLIT=$(shell which gsplit || which split || echo split)
 
 passim=passim
 passimjar=$(shell which $(passim))
