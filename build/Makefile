@@ -135,7 +135,7 @@ distclean:
 
 # .DELETE_ON_ERROR:
 
-GDISTRIB=$(strip $(shell ls -1 $(COLL)/input/*.gz | wc -l))
+GDISTRIB=$(strip $(shell tops=`ls -1 $(COLL)/input | wc -l`; if [ $$tops -gt 100 ]; then echo 100; else echo $$tops; fi))
 
 %/idx/postings:
 	cd $*; ${galagoIndex} build ${CURDIR}/build.json ${galagoMode} --distrib=$(GDISTRIB) --galagoJobDir=$(notdir $@).tmp
@@ -254,4 +254,3 @@ $(dir)/od.siz:	$(idx)
 
 %/df01.stop:	%/idx/postings
 	galago dump-term-stats $< | awk "\$$3 >= $$(( `galago dump-index-manifest $*/idx/names | grep "keyCount" | perl -lane 'print $$1 if / (\d+),/'` / 10 ))" | sort -k3,3rn -k2,2rn | cut -f 1 > $@
-
