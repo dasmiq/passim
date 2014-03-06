@@ -18,10 +18,6 @@ This should produce an executable `target/passim` and copy it to your
 
 ## Aligning and Clustering Matching Passage Pairs
 
-The basic pipeline uses the subcommands `pairs`, `scores`, `cluster`,
-`clinfo`.  In the `build` subdirectory, there is a Makefile that
-automates this pipeline.
-
 ### Input Formats
 
 The first step is to index the input documents with galago.  These
@@ -86,6 +82,28 @@ map from _internal_ document IDs to series numbers with the
 `--series-map` option.  This would be useful if you wanted to reuse
 the same document collection and index with different groupings of
 documents into series.
+
+### Using `make` to Process Data
+
+In the `build` subdirectory, there is a Makefile and a few helper
+scripts that automate the data processing pipeline.  We recommend that
+you symlink these files into your working directory.  Then inside your
+working directory, put a subdirectory `coll/input` with the input
+files for your collection.  You directory structure under `work` would
+thus look something like this:
+
+	work/Makefile -> $SRC/passim/build/Makefile
+	work/build.json -> $SRC/passim/build/build.json
+	work/coll
+	work/coll/input
+	work/coll/input/data1.trectext.gz
+	work/coll/input/data2.trectext.gz
+	work/galago -> $SRC/passim/build/galago
+	work/lsf-galago -> $SRC/passim/build/lsf-galago
+	work/window.json -> $SRC/passim/build/window.json
+
+The basic pipeline uses the subcommands `index`, `pairs`, `align`,
+`cluster`, `clinfo`.
 
 ## Quotations of Reference Texts
 
