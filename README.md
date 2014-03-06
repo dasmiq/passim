@@ -105,6 +105,35 @@ thus look something like this:
 The basic pipeline uses the subcommands `index`, `pairs`, `align`,
 `cluster`, `clinfo`.
 
+To build the file of pairwise local alignments, run
+
+	$ make align
+
+To run single-link clustering of these aligned passages, run
+
+	$ make clinfo
+
+You can pass several arguments to alter the behavior of make.  For
+example, to change the collection subdirectory from `coll` to `bills`
+and to change the n-gram feature length from 5 to 10, run
+
+	$ make COLL=bills NGRAM=10 clinfo
+
+Some useful parameters are:
+
+Parameter | Default value | Description
+--------- | ------------- | -----------
+`COLL` | coll | Subdirectory containing collection input in `input`.
+`NGRAM` | 5 | N-gram order for test-reuse detection
+`UPPER` | 100 | Maximum document frequency of n-grams used.
+`MINREP` | 5 | Minimum number of matching n-grams between two documents.
+`RELOVER` | 0.5 | Proportion that two different aligned passages from
+the same document must overlap to be clustered together, as measured
+on the longer passage.
+
+Use `make clean` to remove temporary build directories and `make
+distclean` to remove all output files.
+
 ## Quotations of Reference Texts
 
 Run with a galago n-gram index and reference text(s):
