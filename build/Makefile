@@ -32,7 +32,7 @@ QRUN=${sub} -K -o $@.err
 galagoIndex=lsf-galago
 else ifeq (${q},sge)
 q=sge
-sub=qsub -b y -j y -cwd -V -S /bin/bash -l mem_token=2G -l mem_free=2G
+sub=qsub -b y -j y -cwd -V -S /bin/bash
 QRUN=${sub} -sync y -o $@.err
 galagoMode=--mode=drmaa
 else
@@ -152,7 +152,7 @@ ifeq (${q},lsf)
 	    'ofile=$(dir)/pall.srt.tmp/out`printf "%03d" $$(( \$$LSB_JOBINDEX - 1 ))`; [ -f $$ofile ] || ${passim} pairs $(stops) --max-series $(UPPER) --max-df $(MAXDF) --modp $(MODP) --modrec $(MODREC) --step $$(( $$LSB_JOBINDEX - 1 )) --stride ${STRIDE} $(idx) | sort -T $(TMPDIR) > $$ofile'
 	bsub -K -w "$(dir)/pall.srt" 'ls -1 $(dir)/pall.srt.tmp/out* | xargs sort -T $(TMPDIR) -m | ${passim} merge -m $(MINREP) | gzip -c > $@'
 else ifeq (${q},sge)
-	${sub} -N $(subst /,_,$(dir)/pall.srt) -t $$(( `cat $<` + 1 )) -tc ${CONCUR} -o $(dir)/pall.srt.tmp \
+	${sub} -N $(subst /,_,$(dir)/pall.srt) -t "1-$$(( `cat $<` + 1 )):1" -tc ${CONCUR} -o $(dir)/pall.srt.tmp \
 	    'ofile=$(dir)/pall.srt.tmp/out`printf "%03d" $$(( \$$SGE_TASK_ID - 1 ))`; [ -f $$ofile ] || ${passim} pairs $(stops) --max-series $(UPPER) --max-df $(MAXDF) --modp $(MODP) --modrec $(MODREC) --step $$(( $$SGE_TASK_ID - 1 )) --stride ${STRIDE} $(idx) | sort -T $(TMPDIR) > $$ofile'
 	${sub} -sync y -hold_jid $(subst /,_,$(dir)/pall.srt) -o $(dir)/pall.srt.tmp 'ls -1 $(dir)/pall.srt.tmp/out* | xargs sort -T $(TMPDIR) -m | ${passim} merge -m $(MINREP) | gzip -c > $@'
 else
@@ -182,7 +182,7 @@ ifeq (${q},lsf)
 	    'ofile=$(dir)/pall.proc.tmp/out`printf "%03d" $$(( \$$LSB_JOBINDEX - 1 ))`; [ -f $$ofile ] || java -Xmx5900m ${passimopt} scores -n $(algram) $(dir)/../idx < $(dir)/pall.proc.tmp/in`printf "%03d" $$(( \$$LSB_JOBINDEX - 1 ))` | awk "\$$1 >= 10" | sort -rn > $$ofile'
 	bsub -K -w "$(dir)/pall.proc" 'ls -1 $(dir)/pall.proc.tmp/out* | xargs sort -rnm | gzip -c > $@'
 else ifeq (${q},sge)
-	${sub} -l mem_token=6G -l mem_free=6G -N $(subst /,_,$(dir)/pall.proc) -t `ls -1 $(dir)/pall.proc.tmp/in* | wc -l` -tc ${CONCUR} -o $(dir)/pall.proc.tmp \
+	${sub} -N $(subst /,_,$(dir)/pall.proc) -t "1-`ls -1 $(dir)/pall.proc.tmp/in* | wc -l`:1" -tc ${CONCUR} -o $(dir)/pall.proc.tmp \
 	    'ofile=$(dir)/pall.proc.tmp/out`printf "%03d" $$(( \$$SGE_TASK_ID - 1 ))`; [ -f $$ofile ] || java -Xmx5900m ${passimopt} scores -n $(algram) $(dir)/../idx < $(dir)/pall.proc.tmp/in`printf "%03d" $$(( \$$SGE_TASK_ID - 1 ))` | awk "\$$1 >= 10" | sort -rn > $$ofile'
 	${sub} -sync y -hold_jid $(subst /,_,$(dir)/pall.proc) -o $(dir)/pall.proc.tmp 'ls -1 $(dir)/pall.proc.tmp/out* | xargs sort -rnm | gzip -c > $@'
 else
@@ -197,7 +197,7 @@ ifeq (${q},lsf)
 	    'ofile=$(dir)/pall.sw.tmp/out`printf "%03d" $$(( \$$LSB_JOBINDEX - 1 ))`; [ -f $$ofile ] || java -Xmx7900m ${passimopt} scores -n 0 $(dir)/../idx < $(dir)/pall.sw.tmp/in`printf "%03d" $$(( \$$LSB_JOBINDEX - 1 ))` | awk "\$$1 >= 10" | sort -rn > $$ofile'
 	bsub -K -w "$(dir)/pall.sw" 'ls -1 $(dir)/pall.sw.tmp/out* | xargs sort -rnm | gzip -c > $@'
 else ifeq (${q},sge)
-	${sub} -l mem_token=8G -l mem_free=8G -N $(subst /,_,$(dir)/pall.sw) -t `ls -1 $(dir)/pall.sw.tmp/in* | wc -l` -tc ${CONCUR} -o $(dir)/pall.sw.tmp \
+	${sub} -N $(subst /,_,$(dir)/pall.sw) -t "1-`ls -1 $(dir)/pall.sw.tmp/in* | wc -l`:1" -tc ${CONCUR} -o $(dir)/pall.sw.tmp \
 	    'ofile=$(dir)/pall.sw.tmp/out`printf "%03d" $$(( \$$SGE_TASK_ID - 1 ))`; [ -f $$ofile ] || java -Xmx7900m ${passimopt} scores -n 0 $(dir)/../idx < $(dir)/pall.sw.tmp/in`printf "%03d" $$(( \$$SGE_TASK_ID - 1 ))` | awk "\$$1 >= 10" | sort -rn > $$ofile'
 	${sub} -sync y -hold_jid $(subst /,_,$(dir)/pall.sw) -o $(dir)/pall.sw.tmp 'ls -1 $(dir)/pall.sw.tmp/out* | xargs sort -rnm | gzip -c > $@'
 endif
