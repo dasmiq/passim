@@ -51,6 +51,9 @@ TMPDIR=/tmp
 PSH=bash -o pipefail -c
 ## We prefer GNU split. We require a split that takes the -d argument.
 SPLIT=$(shell which gsplit || which split || echo split)
+## Galago requires this.
+JAVA_HOME?=$(dir $(patsubst %/,%,$(dir $(shell which javac || which java))))
+export JAVA_HOME
 
 passim=passim
 passimjar=$(shell which $(passim))
@@ -71,7 +74,6 @@ STRIDE=1000000
 MINALG=20
 RELOVER=0.5
 MAXREP=4
-
 
 ifeq ($(MODP),1)
 pairs=pairs-n$(NGRAM)u$(UPPER)
