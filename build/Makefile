@@ -27,8 +27,8 @@ endif
 
 ifeq (${q},lsf)
 q=lsf
-sub=bsub
-QRUN=${sub} -K -o $@.err
+sub=bsub -n 1 -q ser-par-10g
+QRUN=${sub} -K -e $@.err
 galagoIndex=lsf-galago
 else ifeq (${q},sge)
 q=sge
