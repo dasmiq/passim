@@ -113,12 +113,18 @@ dir=$(COLL)/$(pairs)
 
 cluster=$(dir)/cl$(MINALG)-flover$(subst .,,$(RELOVER))-rep$(MAXREP).cluster.gz
 clinfo=$(patsubst %.cluster.gz,%.clinfo.gz,$(cluster))
+idtab=$(patsubst %.cluster.gz,%.idtab.gz,$(cluster))
+gexf=$(patsubst %.cluster.gz,%.gexf.gz,$(cluster))
 
-.PHONY:	clinfo cluster swalign align pairs index clean distclean
+.PHONY:	clinfo cluster gexf idtab swalign align pairs index clean distclean
 
 .SECONDARY:
 
 clinfo:	$(clinfo)
+
+idtab:	$(idtab)
+
+gexf:	$(gexf)
 
 cluster:	$(cluster)
 
@@ -223,7 +229,7 @@ else
 endif
 
 %.clinfo.tmp/in000:	%.cluster.gz
-	mkdir -p $*.clinfo.tmp
+	mkdir -p $*.clinfo.tmp; \
 	gzip -fdc $< | ${SPLIT} -d -a 3 -l 2000 - $*.clinfo.tmp/in
 
 $(subst .gz,.tmp,$(clinfo))/out%:	$(subst .gz,.tmp,$(clinfo))/in%
@@ -246,7 +252,10 @@ $(cluster):	$(dir)/pall.proc.srt.gz
 	$(QRUN) 'gzip -dc $< | awk "\$$1 >= $(MINALG)" | java -Xmx8g ${passimopt} cluster --relative-overlap $(RELOVER) --max-repeats $(MAXREP) | gzip -c > $@'
 
 %.idtab.gz:	%.clinfo.gz
-	$(QRUN) 'gzip -dc $< | ${passim} format $(dir $@)/../idx | sort -k1,1n -k3,4 | gzip -c > $@'
+	$(QRUN) 'gzip -dc $< | ${passim} idtab | sort -k1,1n -k3,4 | gzip -c > $@'
+
+%.gexf.gz:	%.clinfo.gz pubs.json
+	$(QRUN) 'gzip -dc $< | ${passim} gexf pubs.json | gzip -c > $@'
 
 $(dir)/od.siz:	$(idx)
 	mkdir -p $(dir)
