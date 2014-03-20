@@ -66,22 +66,26 @@
         eoff (+ 4 (.get (.termCharEnd d) (dec end)))
         raw (subs (.text d) soff eoff)
         coords (re-seq #" coords=\"([0-9]+),([0-9]+),([0-9]+),([0-9]+)" raw)
-        x (->> coords (map #(Integer/parseInt (nth % 1))) (reduce min))
-        y (->> coords (map #(Integer/parseInt (nth % 4))) (reduce min))
-        w (- (->> coords (map #(Integer/parseInt (nth % 3))) (reduce max)) x)
-        h (- (->> coords (map #(Integer/parseInt (nth % 2))) (reduce max)) y)]
-    {:id id
-     :p n
-     :text2
-     (-> raw
-         (s/replace #"<lb>" "\n")
-         (s/replace #"</?[A-Za-z][^>]*>" ""))
-     :bbox
-     [x y w h]
-     :url
-     (str "http://www.archive.org/download/" id "/page/n" (dec (Integer/parseInt n))
-          (format "_x%d_y%d_w%d_h%d.jpg" x y w h))
-     }))
+        clip-info
+        (when (seq coords)
+          (let [x (->> coords (map #(Integer/parseInt (nth % 1))) (reduce min))
+                y (->> coords (map #(Integer/parseInt (nth % 4))) (reduce min))
+                w (- (->> coords (map #(Integer/parseInt (nth % 3))) (reduce max)) x)
+                h (- (->> coords (map #(Integer/parseInt (nth % 2))) (reduce max)) y)]
+            {:bbox
+             [x y w h]
+             :url
+             (str "http://www.archive.org/download/" id "/page/n" (dec (Integer/parseInt n))
+                  (format "_x%d_y%d_w%d_h%d.jpg" x y w h))}))]
+    (merge
+     {:id id
+      :p n
+      :text2
+      (-> raw
+          (s/replace #"<lb>" "\n")
+          (s/replace #"</?[A-Za-z][^>]*>" ""))
+      }
+     clip-info)))
 
 (defn- proc-aligned-doc
   [out1 out2 idx sword1 eword1 ^Document doc sword2 eword2]
@@ -111,20 +115,23 @@
                           0)
                    eoff (+ 4 (.get tce s2))
                    raw (subs (.text doc) soff eoff)
-                   coords (re-seq #" coords=\"([0-9]+),([0-9]+),([0-9]+),([0-9]+)" raw)
-                   x1 (->> coords (map #(Integer/parseInt (nth % 1))) (reduce min 1000))
-                   y1 (->> coords (map #(Integer/parseInt (nth % 4))) (reduce min 1000))
-                   x2 (->> coords (map #(Integer/parseInt (nth % 3))) (reduce max 0))
-                   y2 (->> coords (map #(Integer/parseInt (nth % 2))) (reduce max 0))]
+                   coords (re-seq #" coords=\"([0-9]+),([0-9]+),([0-9]+),([0-9]+)" raw)]
                (conj res
-                     {:id id
-                      :p n
-                      :s1 s1
-                      :s2 s2
-                      :w1 (w1 s1)
-                      :w2 (.get terms s2)
-                      :bbox [x1 y1 x2 y2]
-                      :cite (-> s1 ((:positions idx)) ((:names idx)))}))
+                     (merge
+                      {:id id
+                       :p n
+                       :s1 s1
+                       :s2 s2
+                       :w1 (w1 s1)
+                       :w2 (.get terms s2)
+                       :cite (-> s1 ((:positions idx)) ((:names idx)))}
+                      (when (seq coords)
+                        (let [x1 (->> coords (map #(Integer/parseInt (nth % 1))) (reduce min 1000))
+                              y1 (->> coords (map #(Integer/parseInt (nth % 4))) (reduce min 1000))
+                              x2 (->> coords (map #(Integer/parseInt (nth % 3))) (reduce max 0))
+                              y2 (->> coords (map #(Integer/parseInt (nth % 2))) (reduce max 0))
+                              ]
+                          :bbox [x1 y1 x2 y2])))))
              res)
            (rest c1)
            (rest c2)
@@ -218,6 +225,8 @@
                              :score score
                              :cites
                              (mapv #(get (:names idx) %) (distinct (subvec (:positions idx) sword1 eword1)))
+                             :align1 out1
+                             :align2 out2
                              :words
                              (proc-aligned-doc
                               out1 out2 idx sword1 eword1 doc-data sword2 eword2)
