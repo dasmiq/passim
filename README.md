@@ -25,7 +25,7 @@ documents can be in any format that galago supports.  Galago requires
 that the suffixes for input documents encode the format.  You can then
 optionally append `.gz` or `.bz2` to filenames to indicate that
 they've been compressed.  One simple but useful
-format is ``trectext'', which encodes a sequence of one or more
+format is _trectext_, which encodes a sequence of one or more
 documents along with their unique IDs like so:
 
 	<DOC>
@@ -46,7 +46,7 @@ documents along with their unique IDs like so:
 	</TEXT>
 	</DOC>
 
-In addition, passim supports a variant called ``metatext'' that
+In addition, passim supports a variant called _metatext_ that
 inserts a metadata field for every tag other than `docno` and
 `text`.  Consider the following document:
 

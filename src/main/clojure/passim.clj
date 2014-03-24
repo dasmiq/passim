@@ -772,7 +772,6 @@
                    "passim gexf [options] <index>\n\n"
                    (var-doc #'gexf-cluster))
                   ["-h" "--help" "Show help" :default false :flag true])
-        idx ^String (first remaining)
         info (json/read (jio/reader (first remaining)) :key-fn keyword)
         labels (into {}
                      (concat
@@ -793,6 +792,24 @@
        "<edge id=\"%s--%s--%d\" source=\"%s\" target=\"%s\" weight=\"%d\" label=\"%d\" />\n"
        s t b s t w b))
     (println "</edges>\n</graph>\n</gexf>")))
+
+(defn idtab-cluster
+  "Produce idtab format from cluster data for Viral Texts website"
+  [& argv]
+  (let [[options remaining banner]
+        (safe-cli argv
+                  (str
+                   "passim idtab [options]\n\n"
+                   (var-doc #'gexf-cluster))
+                  ["-h" "--help" "Show help" :default false :flag true])]
+    (doseq [cluster (-> *in* jio/reader json-seq)]
+      (let [prefix ((juxt :id :size) cluster)]
+        (doseq [reprint (:members cluster)]
+          (println
+           (s/join "\t"
+                   (concat
+                    prefix
+                    ((juxt :date :name :title :url :start :end :text) reprint)))))))))
 
 (defn diff-words
   [gram lines]
@@ -824,6 +841,7 @@
          "cluster" #'cluster-scores
          "format" #'format-cluster
          "gexf" #'gexf-cluster
+         "idtab" #'idtab-cluster
          "quotes" #'passim.quotes/dump-quotes}
         usage
         (str
