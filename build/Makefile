@@ -50,7 +50,7 @@ TMPDIR=/tmp
 
 PSH=bash -o pipefail -c
 ## We prefer GNU split. We require a split that takes the -d argument.
-SPLIT=$(shell which gsplit || which split || echo split)
+SPLIT=$(shell which gsplit 2>/dev/null || which split || echo split)
 ## Galago requires this.
 JAVA_HOME?=$(dir $(patsubst %/,%,$(dir $(shell which javac || which java))))
 export JAVA_HOME
@@ -157,16 +157,16 @@ $(dir)/pall.srt.tmp/job:	$(dir)/od.siz
 endif
 
 $(dir)/pall.srt.tmp/out%:
-	${passim} pairs $(stops) --max-series $(UPPER) --max-df $(MAXDF) --modp $(MODP) --modrec $(MODREC) --step $* --stride ${STRIDE} $(idx) | sort -T $(TMPDIR) > $@
+	${passim} pairs $(stops) --max-series $(UPPER) --max-df $(MAXDF) --modp $(MODP) --modrec $(MODREC) --step $* --stride ${STRIDE} $(pairopts) $(idx) | sort -T $(TMPDIR) > $@
 
 $(dir)/pall.srt.gz:	$(dir)/od.siz $(idx) $(dir)/pall.srt.tmp $(if ${q},,$(dir)/pall.srt.tmp/job)
 ifeq (${q},lsf)
 	${sub} -J "$(dir)/pall.srt[1-$$(( `cat $<` + 1 ))]%${CONCUR}" -eo "$(dir)/pall.srt.tmp/err%I" \
-	    'ofile=$(dir)/pall.srt.tmp/out`printf "%03d" $$(( \$$LSB_JOBINDEX - 1 ))`; [ -f $$ofile ] || ${passim} pairs $(stops) --max-series $(UPPER) --max-df $(MAXDF) --modp $(MODP) --modrec $(MODREC) --step $$(( $$LSB_JOBINDEX - 1 )) --stride ${STRIDE} $(idx) | sort -T $(TMPDIR) > $$ofile'
+	    'ofile=$(dir)/pall.srt.tmp/out`printf "%03d" $$(( \$$LSB_JOBINDEX - 1 ))`; [ -f $$ofile ] || ${passim} pairs $(stops) --max-series $(UPPER) --max-df $(MAXDF) --modp $(MODP) --modrec $(MODREC) --step $$(( $$LSB_JOBINDEX - 1 )) --stride ${STRIDE} $(pairopts) $(idx) | sort -T $(TMPDIR) > $$ofile'
 	${sub} -K -w "$(dir)/pall.srt" 'ls -1 $(dir)/pall.srt.tmp/out* | xargs sort -T $(TMPDIR) -m | ${passim} merge -m $(MINREP) | gzip -c > $@'
 else ifeq (${q},sge)
 	${sub} -N $(subst /,_,$(dir)/pall.srt) -t "1-$$(( `cat $<` + 1 )):1" -tc ${CONCUR} -o $(dir)/pall.srt.tmp \
-	    'ofile=$(dir)/pall.srt.tmp/out`printf "%03d" $$(( \$$SGE_TASK_ID - 1 ))`; [ -f $$ofile ] || ${passim} pairs $(stops) --max-series $(UPPER) --max-df $(MAXDF) --modp $(MODP) --modrec $(MODREC) --step $$(( $$SGE_TASK_ID - 1 )) --stride ${STRIDE} $(idx) | sort -T $(TMPDIR) > $$ofile'
+	    'ofile=$(dir)/pall.srt.tmp/out`printf "%03d" $$(( \$$SGE_TASK_ID - 1 ))`; [ -f $$ofile ] || ${passim} pairs $(stops) --max-series $(UPPER) --max-df $(MAXDF) --modp $(MODP) --modrec $(MODREC) --step $$(( $$SGE_TASK_ID - 1 )) --stride ${STRIDE} $(pairopts) $(idx) | sort -T $(TMPDIR) > $$ofile'
 	${sub} -sync y -hold_jid $(subst /,_,$(dir)/pall.srt) -o $(dir)/pall.srt.tmp 'ls -1 $(dir)/pall.srt.tmp/out* | xargs sort -T $(TMPDIR) -m | ${passim} merge -m $(MINREP) | gzip -c > $@'
 else
 	ls -1 $(dir)/pall.srt.tmp/out* | xargs sort -T $(TMPDIR) -m | ${passim} merge -m $(MINREP) | gzip -c > $@
