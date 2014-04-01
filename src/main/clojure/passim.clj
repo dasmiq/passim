@@ -113,6 +113,7 @@
                   (str
                    "passim pairs [options] <index>\n\n"
                    (var-doc #'dump-pairs))
+                  ["-c" "--counts" "Count pairs" :default false :flag true]
                   ["-u" "--max-series" "Upper limit on effective series size" :default 100 :parse-fn #(Integer/parseInt %)]
                   ["-d" "--max-df" "Maximum document frequency in posting lists" :default 100 :parse-fn #(Integer/parseInt %)]
                   ["-m" "--series-map" "Map internal ids documents to integer series ids"]
@@ -123,23 +124,35 @@
                   ["-S" "--stop" "Stopword list"]
                   ["-h" "--help" "Show help" :default false :flag true])
         index-file ^String (first remaining)
-        {:keys [series-map stop max-series max-df modp modrec step stride]} options]
+        {:keys [counts series-map stop max-series max-df modp modrec step stride]} options]
     (let [ireader (DiskIndex/openIndexPart index-file)
           ki (.getIterator ireader)
+          idir (.getParent (java.io.File. index-file))
           series (if series-map
                    (read-series-map series-map)
-                   (make-series-map (.getParent (java.io.File. index-file))))
+                   (make-series-map idir))
           stops (if stop (-> stop slurp (s/split #"\n") set (disj "")) #{})
           upper (/ (* max-series (dec max-series)) 2)]
       (dorun (repeatedly (* step stride) (fn [] (.nextKey ki))))
       ;; (println "#" step stride (.getKeyString ki))
-      (doseq [item (cond->>
-                    (->> ki dump-kl-index (take stride))
-                    (> modp 1) (filter #(= 0 (mod (.hashCode ^String (first %)) modp)))
-                    (not-empty stops) (remove #(some stops (s/split (first %) #"~")))
-                    true (mapcat (partial cross-pairs series upper max-df))
-                    (> modrec 1) (filter #(= 0 (mod (hash %) modrec))))]
-        (prn item)))))
+      (let [items (cond->>
+                   (->> ki dump-kl-index (take stride))
+                   (> modp 1) (filter #(= 0 (mod (.hashCode ^String (first %)) modp)))
+                   (not-empty stops) (remove #(some stops (s/split (first %) #"~")))
+                   true (mapcat (partial cross-pairs series upper max-df))
+                   (> modrec 1) (filter #(= 0 (mod (hash %) modrec))))]
+        (if counts
+          (let [sname (->> (jio/file idir "names") str dump-index
+                           (map (fn [[k v]]
+                                  [(Integer/parseInt k) (doc-series v)]))
+                           (into {}))]
+            (doseq [[[a b] c] (->> items
+                                   (mapcat keys)
+                                   (map #(vec (sort (map series %))))
+                                   frequencies)]
+              (println (format "%s\t%s\t%d" (sname a) (sname b) c))))
+          (doseq [item items]
+            (prn item)))))))
 
 (defn- vappend
   [x y]
