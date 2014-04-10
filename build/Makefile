@@ -254,8 +254,8 @@ $(cluster):	$(dir)/pall.proc.srt.gz
 %.idtab.gz:	%.clinfo.gz
 	$(QRUN) 'gzip -dc $< | ${passim} idtab | sort -k1,1n -k3,4 | gzip -c > $@'
 
-%.gexf.gz:	%.clinfo.gz pubs.json
-	$(QRUN) 'gzip -dc $< | ${passim} gexf pubs.json | gzip -c > $@'
+%.gexf.gz:	%.clinfo.gz publications.json
+	$(QRUN) 'gzip -dc $< | ${passim} gexf publications.json | gzip -c > $@'
 
 $(dir)/od.siz:	$(idx)
 	mkdir -p $(dir)
