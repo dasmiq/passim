@@ -89,11 +89,11 @@
                     (doc-stream iter))))))]
       (doc-stream di))))
 
-(defn galago-tokenize
+(defn ^Document galago-tokenize
   [^String s]
   (let [d (Document. "foo" s)]
     (.tokenize (TagTokenizer.) d)
-    (.terms d)))
+    d))
 
 (defn ^Document get-index-doc
   [^Retrieval ri ^String dname]
