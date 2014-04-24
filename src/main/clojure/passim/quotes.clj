@@ -26,11 +26,23 @@
 (defn- index-tokens
   [docs gram]
   (let [names (mapv first docs)
-        toks (map (comp galago-tokenize second) docs)
+        texts (map second docs)
+        tok-docs (map galago-tokenize texts)
+        doc-offsets (reductions + 0 (map (comp inc count) texts))
+        toks (map #(.terms %) tok-docs)
         idx (apply concat (map-indexed (fn [pos words] (map #(vector % pos) words)) toks))
         words (mapv first idx)]
     {:names names
      :positions (mapv second idx)
+     :text (s/join "\n" texts)
+     :starts (vec (mapcat
+                   (fn [toks off] (mapv #(+ % off) (.termCharBegin toks)))
+                   tok-docs
+                   doc-offsets))
+     :stops (vec (mapcat
+                  (fn [toks off] (mapv #(+ % off) (.termCharEnd toks)))
+                  tok-docs
+                  doc-offsets))
      :words words
      :terms (->> words
                  (partition gram 1)
@@ -218,11 +230,15 @@
                                sword2 (+ 0 (space-count (subs c2 0 os2))
                                          (if (spacel? out2) 1 0))
                                eword1 (+ sword1 1 (space-count (s/trim out1)))
-                               eword2 (+ sword2 1 (space-count (s/trim out2)))]
+                               eword2 (+ sword2 1 (space-count (s/trim out2)))
+                               start ((:starts idx) sword1)
+                               stop ((:stops idx) (dec eword1))]
                            (merge
                             (doc-passage doc-data sword2 eword2)
                             (alignment-stats (Alignment. out1 out2 sword1 sword2 eword1 eword2))
-                            {:text1 (s/join " " (subvec (:words idx) sword1 eword1))
+                            {:text1 (subs (:text idx) start stop)
+                             :start start
+                             :stop stop
                              :score score
                              :cites
                              (mapv #(get (:names idx) %) (distinct (subvec (:positions idx) sword1 eword1)))
