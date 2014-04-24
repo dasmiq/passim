@@ -66,6 +66,7 @@
         eoff (+ 4 (.get (.termCharEnd d) (dec end)))
         raw (subs (.text d) soff eoff)
         coords (re-seq #" coords=\"([0-9]+),([0-9]+),([0-9]+),([0-9]+)" raw)
+        pageref (if (re-find #"^[0-9]+$" n) (dec (Integer/parseInt n)) n)
         clip-info
         (when (seq coords)
           (let [x (->> coords (map #(Integer/parseInt (nth % 1))) (reduce min))
@@ -75,7 +76,7 @@
             {:bbox
              [x y w h]
              :url
-             (str "http://www.archive.org/download/" id "/page/n" (dec (Integer/parseInt n))
+             (str "http://www.archive.org/download/" id "/page/leaf" pageref
                   (format "_x%d_y%d_w%d_h%d.jpg" x y w h))}))]
     (merge
      {:id id
@@ -148,7 +149,7 @@
         max-gap 200
         idx (index-tokens docs gram)
         term-pos (index-positions (:terms idx))
-        term-count (count (:terms idx))
+        term-count (dec (+ gram (count (:terms idx))))
         page-hits
         (->> term-pos
              keys
@@ -203,7 +204,7 @@
                                c1 (join-alnum-tokens
                                    (subvec (:words idx)
                                            s1
-                                           (min (dec term-count) (+ e 50))))
+                                           (min term-count (+ e 50))))
                                alg (jaligner.SmithWatermanGotoh/align
                                     (jaligner.Sequence. c1)
                                     pseq
@@ -227,9 +228,9 @@
                              (mapv #(get (:names idx) %) (distinct (subvec (:positions idx) sword1 eword1)))
                              :align1 out1
                              :align2 out2
-                             :words
-                             (proc-aligned-doc
-                              out1 out2 idx sword1 eword1 doc-data sword2 eword2)
+                             ;; :words
+                             ;; (proc-aligned-doc
+                             ;;  out1 out2 idx sword1 eword1 doc-data sword2 eword2)
                              :page page})))
                        spans)))))]
     hits))
