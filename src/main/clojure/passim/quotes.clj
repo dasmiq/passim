@@ -209,6 +209,10 @@
               (fn [[page spans]]
                 (let [pterms (doc-words ri page)
                       doc-data (get-index-doc ri page)
+                      m (into {} (.metadata doc-data))
+                      title (m "title")
+                      date (m "date")
+                      language (m "language")
                       c2 (join-alnum-tokens pterms)
                       pseq (jaligner.Sequence. c2)]
                   (map (fn [[s e score]]
@@ -239,6 +243,9 @@
                             {:text1 (subs (:text idx) start stop)
                              :start start
                              :stop stop
+                             :title title
+                             :date date
+                             :language language
                              :score score
                              :cites
                              (mapv #(get (:names idx) %) (distinct (subvec (:positions idx) sword1 eword1)))
