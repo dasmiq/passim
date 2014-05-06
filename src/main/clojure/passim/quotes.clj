@@ -144,7 +144,7 @@
                               x2 (->> coords (map #(Integer/parseInt (nth % 3))) (reduce max 0))
                               y2 (->> coords (map #(Integer/parseInt (nth % 2))) (reduce max 0))
                               ]
-                          :bbox [x1 y1 x2 y2])))))
+                          {:bbox [x1 y1 x2 y2]})))))
              res)
            (rest c1)
            (rest c2)
@@ -156,10 +156,8 @@
 ;; that their ngrams show up as occurring at least once.  We should
 ;; therefore also remove hits to these texts from the results below.
 (defn quoted-passages
-  [docs gram bad-docs ^KeyIterator ki ^Retrieval ri]
-  (let [max-count 1000
-        max-gap 200
-        idx (index-tokens docs gram)
+  [docs gram bad-docs ^KeyIterator ki ^Retrieval ri {:keys [max-count max-gap words]}]
+  (let [idx (index-tokens docs gram)
         term-pos (index-positions (:terms idx))
         term-count (dec (+ gram (count (:terms idx))))
         page-hits
@@ -240,6 +238,9 @@
                            (merge
                             (doc-passage doc-data sword2 eword2)
                             (alignment-stats (Alignment. out1 out2 sword1 sword2 eword1 eword2))
+                            (when words
+                              {:words (proc-aligned-doc
+                                       out1 out2 idx sword1 eword1 doc-data sword2 eword2)})
                             {:text1 (subs (:text idx) start stop)
                              :start start
                              :stop stop
@@ -251,9 +252,6 @@
                              (mapv #(get (:names idx) %) (distinct (subvec (:positions idx) sword1 eword1)))
                              :align1 out1
                              :align2 out2
-                             ;; :words
-                             ;; (proc-aligned-doc
-                             ;;  out1 out2 idx sword1 eword1 doc-data sword2 eword2)
                              :page page})))
                        spans)))))]
     hits))
@@ -266,7 +264,10 @@
                   (str
                    "passim quotes [options] <n-gram index> (<reference text file> | -)+\n\n"
                    (var-doc #'dump-quotes))
+                  ["-c" "--max-count" "Maximum n-gram count to use" :default 1000 :parse-fn #(Integer/parseInt %)]
+                  ["-g" "--max-gap" "Maximum gap in n-gram hits within a passage" :default 200 :parse-fn #(Integer/parseInt %)]
                   ["-p" "--pretty" "Pretty-print JSON output" :default false :flag true]
+                  ["-w" "--words" "Output alignments at the word level" :default false :flag true]
                   ["-h" "--help" "Show help" :default false :flag true])]
     (try
       (let [[idx & tfiles] remaining
@@ -285,7 +286,7 @@
         (doseq [f (if (seq tfiles) tfiles ["-"])
                 q (-> (if (= "-" f) *in* f)
                       load-tsv
-                      (quoted-passages gram bad-docs ki ri))]
+                      (quoted-passages gram bad-docs ki ri options))]
           (printer q)
           (println)))
       (catch Exception e
