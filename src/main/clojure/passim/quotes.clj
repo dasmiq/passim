@@ -68,6 +68,21 @@
   [fname]
   (map #(s/split % #"\t") (s/split (slurp fname) #"\n")))
 
+(defn- extract-bbox
+  [coords]
+  (let [x (->> coords (map #(Integer/parseInt (nth % 1))) (reduce min))
+        y (->> coords (map #(Integer/parseInt (nth % 4))) (reduce min))
+        w (- (->> coords (map #(Integer/parseInt (nth % 3))) (reduce max)) x)
+        h (- (->> coords (map #(Integer/parseInt (nth % 2))) (reduce max)) y)]
+    [x y w h]))
+
+
+(defn- make-region-url
+  [id n bbox]
+  (let [pageref (if (re-find #"^[0-9]+$" n) (dec (Integer/parseInt n)) n)]
+    (str "http://www.archive.org/download/" id "/page/leaf" pageref
+         (apply format "_x%d_y%d_w%d_h%d.jpg" bbox))))
+
 (defn- doc-passage
   [^Document d start end]
   (let [[id n] (doc-id-parts (.name d))
@@ -78,18 +93,11 @@
         eoff (+ 4 (.get (.termCharEnd d) (dec end)))
         raw (subs (.text d) soff eoff)
         coords (re-seq #" coords=\"([0-9]+),([0-9]+),([0-9]+),([0-9]+)" raw)
-        pageref (if (re-find #"^[0-9]+$" n) (dec (Integer/parseInt n)) n)
         clip-info
         (when (seq coords)
-          (let [x (->> coords (map #(Integer/parseInt (nth % 1))) (reduce min))
-                y (->> coords (map #(Integer/parseInt (nth % 4))) (reduce min))
-                w (- (->> coords (map #(Integer/parseInt (nth % 3))) (reduce max)) x)
-                h (- (->> coords (map #(Integer/parseInt (nth % 2))) (reduce max)) y)]
-            {:bbox
-             [x y w h]
-             :url
-             (str "http://www.archive.org/download/" id "/page/leaf" pageref
-                  (format "_x%d_y%d_w%d_h%d.jpg" x y w h))}))]
+          (let [bbox (extract-bbox coords)]
+            {:bbox bbox
+             :url (make-region-url id n bbox)}))]
     (merge
      {:id id
       :p n
@@ -139,12 +147,9 @@
                        :w2 (.get terms s2)
                        :cite (-> s1 ((:positions idx)) ((:names idx)))}
                       (when (seq coords)
-                        (let [x1 (->> coords (map #(Integer/parseInt (nth % 1))) (reduce min 1000))
-                              y1 (->> coords (map #(Integer/parseInt (nth % 4))) (reduce min 1000))
-                              x2 (->> coords (map #(Integer/parseInt (nth % 3))) (reduce max 0))
-                              y2 (->> coords (map #(Integer/parseInt (nth % 2))) (reduce max 0))
-                              ]
-                          {:bbox [x1 y1 x2 y2]})))))
+                        (let [bbox (extract-bbox coords)]
+                          {:bbox bbox
+                           :url (make-region-url id n bbox)})))))
              res)
            (rest c1)
            (rest c2)
