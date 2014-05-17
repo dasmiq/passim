@@ -68,6 +68,21 @@
   [fname]
   (map #(s/split % #"\t") (s/split (slurp fname) #"\n")))
 
+(defn- extract-bbox
+  [coords]
+  (let [x (->> coords (map #(Integer/parseInt (nth % 1))) (reduce min))
+        y (->> coords (map #(Integer/parseInt (nth % 4))) (reduce min))
+        w (- (->> coords (map #(Integer/parseInt (nth % 3))) (reduce max)) x)
+        h (- (->> coords (map #(Integer/parseInt (nth % 2))) (reduce max)) y)]
+    [x y w h]))
+
+
+(defn- make-region-url
+  [id n bbox]
+  (let [pageref (if (re-find #"^[0-9]+$" n) (dec (Integer/parseInt n)) n)]
+    (str "http://www.archive.org/download/" id "/page/leaf" pageref
+         (apply format "_x%d_y%d_w%d_h%d.jpg" bbox))))
+
 (defn- doc-passage
   [^Document d start end]
   (let [[id n] (doc-id-parts (.name d))
@@ -78,18 +93,11 @@
         eoff (+ 4 (.get (.termCharEnd d) (dec end)))
         raw (subs (.text d) soff eoff)
         coords (re-seq #" coords=\"([0-9]+),([0-9]+),([0-9]+),([0-9]+)" raw)
-        pageref (if (re-find #"^[0-9]+$" n) (dec (Integer/parseInt n)) n)
         clip-info
         (when (seq coords)
-          (let [x (->> coords (map #(Integer/parseInt (nth % 1))) (reduce min))
-                y (->> coords (map #(Integer/parseInt (nth % 4))) (reduce min))
-                w (- (->> coords (map #(Integer/parseInt (nth % 3))) (reduce max)) x)
-                h (- (->> coords (map #(Integer/parseInt (nth % 2))) (reduce max)) y)]
-            {:bbox
-             [x y w h]
-             :url
-             (str "http://www.archive.org/download/" id "/page/leaf" pageref
-                  (format "_x%d_y%d_w%d_h%d.jpg" x y w h))}))]
+          (let [bbox (extract-bbox coords)]
+            {:bbox bbox
+             :url (make-region-url id n bbox)}))]
     (merge
      {:id id
       :p n
@@ -139,12 +147,9 @@
                        :w2 (.get terms s2)
                        :cite (-> s1 ((:positions idx)) ((:names idx)))}
                       (when (seq coords)
-                        (let [x1 (->> coords (map #(Integer/parseInt (nth % 1))) (reduce min 1000))
-                              y1 (->> coords (map #(Integer/parseInt (nth % 4))) (reduce min 1000))
-                              x2 (->> coords (map #(Integer/parseInt (nth % 3))) (reduce max 0))
-                              y2 (->> coords (map #(Integer/parseInt (nth % 2))) (reduce max 0))
-                              ]
-                          :bbox [x1 y1 x2 y2])))))
+                        (let [bbox (extract-bbox coords)]
+                          {:bbox bbox
+                           :url (make-region-url id n bbox)})))))
              res)
            (rest c1)
            (rest c2)
@@ -156,10 +161,8 @@
 ;; that their ngrams show up as occurring at least once.  We should
 ;; therefore also remove hits to these texts from the results below.
 (defn quoted-passages
-  [docs gram bad-docs ^KeyIterator ki ^Retrieval ri]
-  (let [max-count 1000
-        max-gap 200
-        idx (index-tokens docs gram)
+  [docs gram bad-docs ^KeyIterator ki ^Retrieval ri {:keys [max-count max-gap words]}]
+  (let [idx (index-tokens docs gram)
         term-pos (index-positions (:terms idx))
         term-count (dec (+ gram (count (:terms idx))))
         page-hits
@@ -240,6 +243,9 @@
                            (merge
                             (doc-passage doc-data sword2 eword2)
                             (alignment-stats (Alignment. out1 out2 sword1 sword2 eword1 eword2))
+                            (when words
+                              {:words (proc-aligned-doc
+                                       out1 out2 idx sword1 eword1 doc-data sword2 eword2)})
                             {:text1 (subs (:text idx) start stop)
                              :start start
                              :stop stop
@@ -251,9 +257,6 @@
                              (mapv #(get (:names idx) %) (distinct (subvec (:positions idx) sword1 eword1)))
                              :align1 out1
                              :align2 out2
-                             ;; :words
-                             ;; (proc-aligned-doc
-                             ;;  out1 out2 idx sword1 eword1 doc-data sword2 eword2)
                              :page page})))
                        spans)))))]
     hits))
@@ -266,7 +269,10 @@
                   (str
                    "passim quotes [options] <n-gram index> (<reference text file> | -)+\n\n"
                    (var-doc #'dump-quotes))
+                  ["-c" "--max-count" "Maximum n-gram count to use" :default 1000 :parse-fn #(Integer/parseInt %)]
+                  ["-g" "--max-gap" "Maximum gap in n-gram hits within a passage" :default 200 :parse-fn #(Integer/parseInt %)]
                   ["-p" "--pretty" "Pretty-print JSON output" :default false :flag true]
+                  ["-w" "--words" "Output alignments at the word level" :default false :flag true]
                   ["-h" "--help" "Show help" :default false :flag true])]
     (try
       (let [[idx & tfiles] remaining
@@ -285,7 +291,7 @@
         (doseq [f (if (seq tfiles) tfiles ["-"])
                 q (-> (if (= "-" f) *in* f)
                       load-tsv
-                      (quoted-passages gram bad-docs ki ri))]
+                      (quoted-passages gram bad-docs ki ri options))]
           (printer q)
           (println)))
       (catch Exception e
