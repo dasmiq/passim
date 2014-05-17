@@ -731,6 +731,7 @@
                        (s/replace #"\t" " ")
                        (s/replace #"\n" "<br/>"))]
                {:date (m "date")
+                :id name
                 :name (doc-series name)
                 :title (m "title")
                 :url url
@@ -793,7 +794,7 @@
                            (map #(vector (str (:sn %)) (:name %))))))
         bins (gexf-stats (-> *in* jio/reader json-seq) max-year)]
     (println "<gexf>")
-    (println "<graph defaultedgetype=\"undirected\">")
+    (println "<graph defaultedgetype=\"undirected\" mode=\"dynamic\" timeformat=\"date\">")
     (println "<nodes>")
     (doseq [n (set (mapcat (fn [[[s t b] w]] [s t]) bins))]
       (printf
@@ -802,8 +803,8 @@
     (println "</nodes>\n<edges>")
     (doseq [[[s t b] w] bins]
       (printf
-       "<edge id=\"%s--%s--%d\" source=\"%s\" target=\"%s\" weight=\"%d\" label=\"%d\" />\n"
-       s t b s t w b))
+       "<edge id=\"%s--%s--%d\" source=\"%s\" target=\"%s\" weight=\"%d\" start=\"%d\" label=\"%d\" />\n"
+       s t b s t w b b))
     (println "</edges>\n</graph>\n</gexf>")))
 
 (defn idtab-cluster
