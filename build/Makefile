@@ -109,6 +109,10 @@ ifneq ($(MINREP),5)
 pairs:=$(pairs)m$(MINREP)
 endif
 
+ifneq ($(wildcard $(COLL)/idx/names.smap*),)
+pairopts+= --series-map $(COLL)/idx/names.smap
+endif
+
 dir=$(COLL)/$(pairs)
 
 cluster=$(dir)/cl$(MINALG)-flover$(subst .,,$(RELOVER))-rep$(MAXREP).cluster.gz
