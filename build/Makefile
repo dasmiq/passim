@@ -70,6 +70,9 @@ WIDTH=1
 MINREP=5
 STRIDE=1000000
 
+## Alignment parameters
+MINMINALG=10
+
 ## Clustering parameters
 MINALG=20
 RELOVER=0.5
@@ -192,7 +195,7 @@ $(dir)/pall.proc.tmp/in000:	$(dir)/pall.srt.gz
 	gzip -fdc $< | ${SPLIT} -d -a 3 -l 20000 - $(dir)/pall.proc.tmp/in
 
 $(dir)/pall.proc.tmp/out%:	$(dir)/pall.proc.tmp/in%
-	java -Xmx5900m ${passimopt} scores -n $(algram) $(dir)/../idx < $< | awk '$$1 >= 10' | sort -rn > $@
+	java -Xmx5900m ${passimopt} scores -n $(algram) $(dir)/../idx < $< | awk '$$1 >= $(MINMINALG)' | sort -rn > $@
 
 ifeq (${q},)
 %.tmp/job:	%.tmp/in000
@@ -202,11 +205,11 @@ endif
 $(dir)/pall.proc.srt.gz:	$(dir)/pall.srt.gz $(dir)/pall.proc.tmp/in000 $(if ${q},,$(dir)/pall.proc.tmp/job)
 ifeq (${q},lsf)
 	${sub} -R 'mem>6000' -J "$(dir)/pall.proc[1-`ls -1 $(dir)/pall.proc.tmp/in* | wc -l`]%${CONCUR}" -eo "$(dir)/pall.proc.tmp/err%I" \
-	    'ofile=$(dir)/pall.proc.tmp/out`printf "%03d" $$(( \$$LSB_JOBINDEX - 1 ))`; [ -f $$ofile ] || java -Xmx5900m ${passimopt} scores -n $(algram) $(dir)/../idx < $(dir)/pall.proc.tmp/in`printf "%03d" $$(( \$$LSB_JOBINDEX - 1 ))` | awk "\$$1 >= 10" | sort -rn > $$ofile'
+	    'ofile=$(dir)/pall.proc.tmp/out`printf "%03d" $$(( \$$LSB_JOBINDEX - 1 ))`; [ -f $$ofile ] || java -Xmx5900m ${passimopt} scores -n $(algram) $(dir)/../idx < $(dir)/pall.proc.tmp/in`printf "%03d" $$(( \$$LSB_JOBINDEX - 1 ))` | awk "\$$1 >= $(MINMINALG)" | sort -rn > $$ofile'
 	${sub} -K -w "$(dir)/pall.proc" 'ls -1 $(dir)/pall.proc.tmp/out* | xargs sort -rnm | gzip -c > $@'
 else ifeq (${q},sge)
 	${sub} -N $(subst /,_,$(dir)/pall.proc) -t "1-`ls -1 $(dir)/pall.proc.tmp/in* | wc -l`:1" -tc ${CONCUR} -o $(dir)/pall.proc.tmp \
-	    'ofile=$(dir)/pall.proc.tmp/out`printf "%03d" $$(( \$$SGE_TASK_ID - 1 ))`; [ -f $$ofile ] || java -Xmx5900m ${passimopt} scores -n $(algram) $(dir)/../idx < $(dir)/pall.proc.tmp/in`printf "%03d" $$(( \$$SGE_TASK_ID - 1 ))` | awk "\$$1 >= 10" | sort -rn > $$ofile'
+	    'ofile=$(dir)/pall.proc.tmp/out`printf "%03d" $$(( \$$SGE_TASK_ID - 1 ))`; [ -f $$ofile ] || java -Xmx5900m ${passimopt} scores -n $(algram) $(dir)/../idx < $(dir)/pall.proc.tmp/in`printf "%03d" $$(( \$$SGE_TASK_ID - 1 ))` | awk "\$$1 >= $(MINMINALG)" | sort -rn > $$ofile'
 	${sub} -sync y -hold_jid $(subst /,_,$(dir)/pall.proc) -o $(dir)/pall.proc.tmp 'ls -1 $(dir)/pall.proc.tmp/out* | xargs sort -rnm | gzip -c > $@'
 else
 	ls -1 $(dir)/pall.proc.tmp/out* | xargs sort -rnm | gzip -c > $@
@@ -217,16 +220,16 @@ $(dir)/pall.sw.tmp/in000:	$(dir)/pall.srt.gz
 	gzip -fdc $< | ${SPLIT} -d -a 3 -l 20000 - $(dir)/pall.sw.tmp/in
 
 $(dir)/pall.sw.tmp/out%:	$(dir)/pall.sw.tmp/in%
-	java -Xmx7900m ${passimopt} scores -n 0 $(dir)/../idx < $< | awk "\$$1 >= 10" | sort -rn > $@
+	java -Xmx7900m ${passimopt} scores -n 0 $(dir)/../idx < $< | awk "\$$1 >= $(MINMINALG)" | sort -rn > $@
 
 $(dir)/pall.sw.srt.gz:	$(dir)/pall.srt.gz $(dir)/pall.sw.tmp/in000 $(if ${q},,$(dir)/pall.sw.tmp/job)
 ifeq (${q},lsf)
 	${sub} -R 'mem>8000' -J "$(dir)/pall.sw[1-`ls -1 $(dir)/pall.sw.tmp/in* | wc -l`]%${CONCUR}" -eo "$(dir)/pall.sw.tmp/err%I" \
-	    'ofile=$(dir)/pall.sw.tmp/out`printf "%03d" $$(( \$$LSB_JOBINDEX - 1 ))`; [ -f $$ofile ] || java -Xmx7900m ${passimopt} scores -n 0 $(dir)/../idx < $(dir)/pall.sw.tmp/in`printf "%03d" $$(( \$$LSB_JOBINDEX - 1 ))` | awk "\$$1 >= 10" | sort -rn > $$ofile'
+	    'ofile=$(dir)/pall.sw.tmp/out`printf "%03d" $$(( \$$LSB_JOBINDEX - 1 ))`; [ -f $$ofile ] || java -Xmx7900m ${passimopt} scores -n 0 $(dir)/../idx < $(dir)/pall.sw.tmp/in`printf "%03d" $$(( \$$LSB_JOBINDEX - 1 ))` | awk "\$$1 >= $(MINMINALG)" | sort -rn > $$ofile'
 	${sub} -K -w "$(dir)/pall.sw" 'ls -1 $(dir)/pall.sw.tmp/out* | xargs sort -rnm | gzip -c > $@'
 else ifeq (${q},sge)
 	${sub} -N $(subst /,_,$(dir)/pall.sw) -t "1-`ls -1 $(dir)/pall.sw.tmp/in* | wc -l`:1" -tc ${CONCUR} -o $(dir)/pall.sw.tmp \
-	    'ofile=$(dir)/pall.sw.tmp/out`printf "%03d" $$(( \$$SGE_TASK_ID - 1 ))`; [ -f $$ofile ] || java -Xmx7900m ${passimopt} scores -n 0 $(dir)/../idx < $(dir)/pall.sw.tmp/in`printf "%03d" $$(( \$$SGE_TASK_ID - 1 ))` | awk "\$$1 >= 10" | sort -rn > $$ofile'
+	    'ofile=$(dir)/pall.sw.tmp/out`printf "%03d" $$(( \$$SGE_TASK_ID - 1 ))`; [ -f $$ofile ] || java -Xmx7900m ${passimopt} scores -n 0 $(dir)/../idx < $(dir)/pall.sw.tmp/in`printf "%03d" $$(( \$$SGE_TASK_ID - 1 ))` | awk "\$$1 >= $(MINMINALG)" | sort -rn > $$ofile'
 	${sub} -sync y -hold_jid $(subst /,_,$(dir)/pall.sw) -o $(dir)/pall.sw.tmp 'ls -1 $(dir)/pall.sw.tmp/out* | xargs sort -rnm | gzip -c > $@'
 else
 	ls -1 $(dir)/pall.sw.tmp/out* | xargs sort -rnm | gzip -c > $@

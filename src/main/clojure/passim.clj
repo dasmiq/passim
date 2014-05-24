@@ -443,40 +443,41 @@
         words2 (doc-words ri name2)
         approx-pass
         (try
-          (if-let [passages (seq (best-passages words1 words2 matches
-                                                (if (= gram 0) 1 gram)))]
-            (reduce (maxer #(- (:end1 %) (:start1 %))) passages)
-            (Alignment. "" "" 0 0 0 0))
+          (if-let [p (seq (best-passages words1 words2 matches
+                                         (if (= gram 0) 1 gram)))]
+            ;; (reduce (maxer #(- (:end1 %) (:start1 %))) passages)
+            p
+            [(Alignment. "" "" 0 0 0 0)])
           (catch Exception e
-            (Alignment. "" "" 0 0 0 0))
+            [(Alignment. "" "" 0 0 0 0)])
           (catch OutOfMemoryError e
-            (Alignment. "" "" 0 0 0 0)))
-        pass (if (= gram 0)
+            [(Alignment. "" "" 0 0 0 0)]))
+        passages (if (= gram 0)
                (try
-                 (swg-align words1 words2)
+                 [(swg-align words1 words2)]
                  (catch Exception e
                    (.println System/err e)
                    approx-pass)
                  (catch OutOfMemoryError e
                    (.println System/err e)
                    approx-pass))
-               approx-pass)
+               approx-pass)]
         ;; nseries (count smeta)
         ;; idf (reduce +
         ;;             (map #(Math/log %)
         ;;                  (map (partial / nseries) (map first (vals matches)))))
-        match-len1 (- (:end1 pass) (:start1 pass))
-        match-len2 (- (:end2 pass) (:start2 pass))]
-    (when (>= match-len1 gram)
-      (s/join "\t" (concat [match-len1
-                            (float (/ match-len1 (count words1)))
-                            (float (/ match-len2 (count words2)))]
-                           ((juxt :matches :gaps :swscore) (alignment-stats pass))
-                           [id1 id2 name1 name2
-                            (:start1 pass) (:end1 pass)
-                            (:start2 pass) (:end2 pass)
-                            (-> pass :sequence1 s/trim)
-                            (-> pass :sequence2 s/trim)])))))
+    (for [pass passages :when (>= (- (:end1 pass) (:start1 pass)) gram)]
+      (let [match-len1 (- (:end1 pass) (:start1 pass))
+            match-len2 (- (:end2 pass) (:start2 pass))]
+        (s/join "\t" (concat [match-len1
+                              (float (/ match-len1 (count words1)))
+                              (float (/ match-len2 (count words2)))]
+                             ((juxt :matches :gaps :swscore) (alignment-stats pass))
+                             [id1 id2 name1 name2
+                              (:start1 pass) (:end1 pass)
+                              (:start2 pass) (:end2 pass)
+                              (-> pass :sequence1 s/trim)
+                              (-> pass :sequence2 s/trim)]))))))
 
 (defn load-series-meta
   [fname]
@@ -508,7 +509,7 @@
         gram (:ngram options)]
   (let [ri (RetrievalFactory/instance idx (Parameters.))]
     (doseq [line (-> *in* jio/reader line-seq)]
-      (when-let [out (score-pair line ri gram)]
+      (doseq [out (score-pair line ri gram)]
         (println out))))))
 
 (defn jaccard
