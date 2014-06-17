@@ -9,9 +9,9 @@
                    :snapshots false}]
                  ["edu.umass.ciir.snapshots"
                   "http://scm-ciir.cs.umass.edu:8080/nexus/content/repositories/snapshots"]]
-  :dependencies [[org.clojure/clojure "1.5.1"]
+  :dependencies [[org.clojure/clojure "1.6.0"]
                  [org.clojure/data.csv "0.1.2"]
-                 [org.clojure/data.json "0.2.3"]
+                 [org.clojure/data.json "0.2.4"]
                  [org.clojure/math.combinatorics "0.0.4"]
 		 [ciir/utils "1.0.0-SNAPSHOT"]
                  [org.lemurproject.galago/core "3.5.2"]]
