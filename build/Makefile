@@ -57,7 +57,7 @@ export JAVA_HOME
 
 passim=passim
 passimjar=$(shell which $(passim))
-passimopt=-Dfile.encoding=UTF-8 -jar $(passimjar)
+passimopt=-server -Dfile.encoding=UTF-8 -jar $(passimjar)
 
 ## Pairwise detection parameters
 UPPER=100
@@ -195,25 +195,13 @@ $(dir)/pall.proc.tmp/in000:	$(dir)/pall.srt.gz
 	gzip -fdc $< | ${SPLIT} -d -a 3 -l 30000 - $(dir)/pall.proc.tmp/in
 
 $(dir)/pall.proc.tmp/out%:	$(dir)/pall.proc.tmp/in%
-	java -Xmx5900m ${passimopt} scores -n $(algram) $(dir)/../idx < $< | awk '$$1 >= $(MINMINALG)' | sort -rn > $@
+	$(QRUN) 'java -Xmx5900m ${passimopt} scores -n $(algram) $(dir)/../idx < $< | awk "\$$1 >= $(MINMINALG)" | sort -rn > $@'
 
-ifeq (${q},)
 %.tmp/job:	%.tmp/in000
 	$(MAKE) $(subst /in,/out,$(shell if [ -f $< ]; then echo `ls -1 $*.tmp/in*`; else echo $<; fi))
-endif
 
-$(dir)/pall.proc.srt.gz:	$(dir)/pall.srt.gz $(dir)/pall.proc.tmp/in000 $(if ${q},,$(dir)/pall.proc.tmp/job)
-ifeq (${q},lsf)
-	${sub} -R 'mem>8000' -J "$(dir)/pall.proc[1-`ls -1 $(dir)/pall.proc.tmp/in* | wc -l`]%${CONCUR}" -eo "$(dir)/pall.proc.tmp/err%I" \
-	    'ofile=$(dir)/pall.proc.tmp/out`printf "%03d" $$(( \$$LSB_JOBINDEX - 1 ))`; [ -f $$ofile ] || java -Xmx7900m ${passimopt} scores -n $(algram) $(dir)/../idx < $(dir)/pall.proc.tmp/in`printf "%03d" $$(( \$$LSB_JOBINDEX - 1 ))` | awk "\$$1 >= $(MINMINALG)" | sort -rn > $$ofile || $(RM) $$ofile'
-	${sub} -K -w "$(dir)/pall.proc" 'ls -1 $(dir)/pall.proc.tmp/out* | xargs sort -rnm | gzip -c > $@ || $(RM) $@'
-else ifeq (${q},sge)
-	${sub} -N $(subst /,_,$(dir)/pall.proc) -t "1-`ls -1 $(dir)/pall.proc.tmp/in* | wc -l`:1" -tc ${CONCUR} -o $(dir)/pall.proc.tmp \
-	    'ofile=$(dir)/pall.proc.tmp/out`printf "%03d" $$(( \$$SGE_TASK_ID - 1 ))`; [ -f $$ofile ] || java -Xmx5900m ${passimopt} scores -n $(algram) $(dir)/../idx < $(dir)/pall.proc.tmp/in`printf "%03d" $$(( \$$SGE_TASK_ID - 1 ))` | awk "\$$1 >= $(MINMINALG)" | sort -rn > $$ofile || $(RM) $$ofile'
-	${sub} -sync y -hold_jid $(subst /,_,$(dir)/pall.proc) -o $(dir)/pall.proc.tmp 'ls -1 $(dir)/pall.proc.tmp/out* | xargs sort -rnm | gzip -c > $@ || $(RM) $@'
-else
-	ls -1 $(dir)/pall.proc.tmp/out* | xargs sort -rnm | gzip -c > $@ || $(RM) $@
-endif
+$(dir)/pall.proc.srt.gz:	$(dir)/pall.proc.tmp/job
+	$(QRUN) 'ls -1 $(dir)/pall.proc.tmp/out*[0-9] | xargs sort -rnm | gzip -c > $@'
 
 $(dir)/pall.sw.tmp/in000:	$(dir)/pall.srt.gz
 	mkdir -p $(dir)/pall.sw.tmp
@@ -256,7 +244,7 @@ else
 endif
 
 $(cluster):	$(dir)/pall.proc.srt.gz
-	$(QRUN) 'gzip -dc $< | awk "\$$1 >= $(MINALG)" | java -Xmx8g ${passimopt} cluster --relative-overlap $(RELOVER) --max-repeats $(MAXREP) | gzip -c > $@'
+	$(QRUN) 'gzip -dc $< | awk "\$$1 >= $(MINALG)" | java -d64 -Xmx32g ${passimopt} cluster --relative-overlap $(RELOVER) --max-repeats $(MAXREP) | gzip -c > $@'
 
 %.idtab.gz:	%.clinfo.gz
 	$(QRUN) 'gzip -dc $< | ${passim} idtab | sort -k1,1n -k3,4 | gzip -c > $@'
