@@ -85,28 +85,29 @@
 
 (defn- doc-passage
   [^Document d start end]
-  (let [[id n] (doc-id-parts (.name d))
+  (let [[series n] (doc-id-parts (.name d))
         len (count (.terms d))
         soff (if (> start 0)
                (.get (.termCharEnd d) (dec start))
                0)
         eoff (.get (.termCharEnd d) (dec end))
         raw (subs (.text d) soff eoff)
-        coords (re-seq #" coords=\"([0-9]+),([0-9]+),([0-9]+),([0-9]+)" raw)
-        clip-info
-        (when (seq coords)
-          (let [bbox (extract-bbox coords)]
-            {:bbox bbox
-             :url (make-region-url id n bbox)}))]
-    (merge
-     {:id id
-      :p n
-      :text2
-      (-> raw
-          (s/replace #"<lb>" "\n")
-          (s/replace #"</?[A-Za-z][^>]*>" ""))
-      }
-     clip-info)))
+        m (into {} (.metadata d))
+        base-url (m "url")
+        info {:series series
+              :n n
+              :text2
+              (-> raw
+                  (s/replace #"<lb>" "\n")
+                  (s/replace #"</?[A-Za-z][^>]*>" ""))}
+        clip
+        {:url
+         (if-let [coords (re-seq #" coords=\"([0-9]+),([0-9]+),([0-9]+),([0-9]+)" raw)]
+           (make-region-url series n (extract-bbox coords))
+           (if (re-find #"<w p=" raw)
+             (loc-url base-url raw)
+             base-url))}]
+    (merge info clip)))
 
 (defn- proc-aligned-doc
   [out1 out2 idx sword1 eword1 ^Document doc sword2 eword2]
@@ -222,51 +223,52 @@
                         date (m "date")
                         language (m "language")]
                     (map (fn [[score s e min2 max2]]
-                           (try
-                             (let [s1 (max 0 (- s 50))
-                                   c1 (join-alnum-tokens
-                                       (subvec (:words idx)
-                                               s1
-                                               (min term-count (+ e 50))))
-                                   s2 (max 0 (- min2 50))
-                                   e2 (min n2 (+ max2 50))
-                                   c2 (join-alnum-tokens (subvec pterms s2 e2))
-                                   alg (jaligner.SmithWatermanGotoh/align
-                                        (jaligner.Sequence. c1)
-                                        (jaligner.Sequence. c2)
-                                        match-matrix 5 0.5)
-                                   out1 (String. (.getSequence1 alg))
-                                   out2 (String. (.getSequence2 alg))
-                                   os1 (.getStart1 alg)
-                                   os2 (.getStart2 alg)
-                                   sword1 (+ s1 (space-count (subs c1 0 os1))
-                                             (if (spacel? out1) 1 0))
-                                   sword2 (+ s2 (space-count (subs c2 0 os2))
-                                             (if (spacel? out2) 1 0))
-                                   eword1 (+ sword1 1 (space-count (s/trim out1)))
-                                   eword2 (+ sword2 1 (space-count (s/trim out2)))
-                                   start ((:starts idx) sword1)
-                                   stop ((:stops idx) (dec eword1))]
-                               (merge
-                                (doc-passage doc-data sword2 eword2)
-                                (alignment-stats (Alignment. out1 out2 sword1 sword2 eword1 eword2))
-                                (when words
-                                  {:words (proc-aligned-doc
-                                           out1 out2 idx sword1 eword1 doc-data sword2 eword2)})
-                                {:text1 (subs (:text idx) start stop)
-                                 :start start
-                                 :stop stop
-                                 :title title
-                                 :date date
-                                 :language language
-                                 :score score
-                                 :cites
-                                 (mapv #(get (:names idx) %) (distinct (subvec (:positions idx) sword1 eword1)))
-                                 :align1 out1
-                                 :align2 out2
-                                 :page page}))
-                             (catch OutOfMemoryError e
-                               nil)))
+                           (merge
+                            {:date date
+                             :title title
+                             :language language
+                             :score score
+                             :page page}
+                            (try
+                              (let [s1 (max 0 (- s 50))
+                                    c1 (join-alnum-tokens
+                                        (subvec (:words idx)
+                                                s1
+                                                (min term-count (+ e 50))))
+                                    s2 (max 0 (- min2 50))
+                                    e2 (min n2 (+ max2 50))
+                                    c2 (join-alnum-tokens (subvec pterms s2 e2))
+                                    alg (jaligner.SmithWatermanGotoh/align
+                                         (jaligner.Sequence. c1)
+                                         (jaligner.Sequence. c2)
+                                         match-matrix 5 0.5)
+                                    out1 (String. (.getSequence1 alg))
+                                    out2 (String. (.getSequence2 alg))
+                                    os1 (.getStart1 alg)
+                                    os2 (.getStart2 alg)
+                                    sword1 (+ s1 (space-count (subs c1 0 os1))
+                                              (if (spacel? out1) 1 0))
+                                    sword2 (+ s2 (space-count (subs c2 0 os2))
+                                              (if (spacel? out2) 1 0))
+                                    eword1 (+ sword1 1 (space-count (s/trim out1)))
+                                    eword2 (+ sword2 1 (space-count (s/trim out2)))
+                                    start ((:starts idx) sword1)
+                                    stop ((:stops idx) (dec eword1))]
+                                (merge
+                                 (doc-passage doc-data sword2 eword2)
+                                 (alignment-stats (Alignment. out1 out2 sword1 sword2 eword1 eword2))
+                                 (when words
+                                   {:words (proc-aligned-doc
+                                            out1 out2 idx sword1 eword1 doc-data sword2 eword2)})
+                                 {:text1 (subs (:text idx) start stop)
+                                  :start start
+                                  :stop stop
+                                  :cites
+                                  (mapv #(get (:names idx) %) (distinct (subvec (:positions idx) sword1 eword1)))
+                                  :align1 out1
+                                  :align2 out2}))
+                              (catch OutOfMemoryError e
+                               nil))))
                          good-spans))))))]
     hits))
 
