@@ -75,7 +75,7 @@
                   :when (and (not= (series aid) (series bid))
                              (<= (first arest) max-df)
                              (<= (first brest) max-df))]
-              {[aid bid] [["" total-freq arest brest]]})))))))
+              [[aid bid] [["" total-freq (second arest) (second brest)]]])))))))
 
 (defn rand-blat
   [f prop coll]
@@ -98,13 +98,23 @@
                   ["-m" "--min-matches" "Minimum matching n-gram features" :default 1 :parse-fn #(Integer/parseInt %)]
                   ["-h" "--help" "Show help" :default false :flag true])
         {:keys [min-matches]} options
-        recs (->> *in* jio/reader line-seq  (map edn/read-string) (partition-by ffirst))]
+        recs (->> *in* jio/reader line-seq  (map edn/read-string) (partition-by first))]
     (doseq [rec recs]
-      (let [k (first (ffirst rec))
-            v (vec (mapcat (comp first vals) rec))]
+      (let [k (ffirst rec)
+            v (vec (mapcat second rec))]
         (when (>= (count v) min-matches)
-          (prn {k v}))))))
+          (prn [k v]))))))
 
+(defn mean
+  "Mean of sequence values"
+  [s]
+  (/ (reduce + s) (count s)))
+
+;; It might be nice to add something like minimum average word
+;; length. You'd want this to be greater than 1, perhaps at least 2,
+;; no?  We could check this after alignment, as well, but this appears
+;; to uncover a bug in the alignment algorithm where some text pairs
+;; get out of alignment.
 (defn dump-pairs
   "Output document pairs with overlapping features."
   [& argv]
@@ -121,10 +131,11 @@
                   ["-r" "--modrec" "Keep only pairs whose hashes are divisible by r" :default 1 :parse-fn #(Integer/parseInt %)]
                   ["-s" "--step" "Chunk of index to read" :default 0 :parse-fn #(Integer/parseInt %)]
                   ["-t" "--stride" "Size of index chunks" :default 1000 :parse-fn #(Integer/parseInt %)]
+                  ["-w" "--word-length" "Minimum average word length" :default 1.5 :parse-fn #(Double/parseDouble %)]
                   ["-S" "--stop" "Stopword list"]
                   ["-h" "--help" "Show help" :default false :flag true])
         index-file ^String (first remaining)
-        {:keys [counts series-map stop max-series max-df modp modrec step stride]} options]
+        {:keys [counts series-map stop max-series max-df modp modrec step stride word-length]} options]
     (let [ireader (DiskIndex/openIndexPart index-file)
           ki (.getIterator ireader)
           idir (.getParent (java.io.File. index-file))
@@ -139,6 +150,7 @@
                    (->> ki dump-kl-index (take stride))
                    (> modp 1) (filter #(= 0 (mod (.hashCode ^String (first %)) modp)))
                    (not-empty stops) (remove #(some stops (s/split (first %) #"~")))
+                   (> word-length 1) (remove #(< (->> (s/split (first %) #"~") (map count) mean) word-length))
                    true (mapcat (partial cross-pairs series upper max-df))
                    (> modrec 1) (filter #(= 0 (mod (hash %) modrec))))]
         (if counts
@@ -262,8 +274,8 @@
   (let [res (->> matches
                  (map
                   (fn [[gram df p1 p2]]
-                    (when (= 1 (first p1) (first p2))
-                      (vector (first (second p1)) (first (second p2))))))
+                    (when (= 1 (count p1) (count p2))
+                      (vector (first p1) (first p2)))))
                  (remove nil?)
                  sort
                  vec)]
@@ -436,7 +448,7 @@
 
 (defn score-pair
   [^String s ^Retrieval ri ^long gram]
-  (let [[[id1 id2] matches] (first (edn/read-string s))
+  (let [[[id1 id2] matches] (edn/read-string s)
         name1 (.getDocumentName ri (int id1))
         name2 (.getDocumentName ri (int id2))
         words1 (doc-words ri name1)
