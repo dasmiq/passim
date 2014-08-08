@@ -6,6 +6,7 @@
             [passim.utils :refer :all]
             [passim.galago :refer :all])
   (:import (passim.utils Alignment)
+           (edu.berkeley.nlp.lm.io LmReaders)
            (org.lemurproject.galago.core.index IndexPartReader KeyIterator)
            (org.lemurproject.galago.core.index.disk DiskIndex)
            (org.lemurproject.galago.core.parse Document)
@@ -68,6 +69,43 @@
   [fname]
   (map #(s/split % #"\t") (s/split (slurp fname) #"\n")))
 
+(defn lm-intern
+  [lm words]
+  (let [windex (.getWordIndexer lm)]
+    (int-array (map #(.getIndexPossiblyUnk windex %) words))))
+
+(defn lm-score
+  [lm words]
+  (let [order (.getLmOrder lm)
+        wids (lm-intern lm words)]
+    (+
+     (reduce + (map #(float (.getLogProb lm wids 0 %))
+                    (range 1 (inc (min order (count wids))))))
+     (reduce + (map #(float (.getLogProb lm wids % (+ % order)))
+                    (range 1 (inc (- (count wids) order))))))))
+
+     ;; (loop [lp (float 0)
+     ;;        i 1]
+     ;;   (if (<= i (min order (count wids)))
+     ;;     (recur (+ lp (float (.getLogProb lm wids 0 i)))
+     ;;            (inc i))
+     ;;     lp))
+     ;; (loop [lp (float 0)
+     ;;        i 1]
+     ;;   (if (<= i (- (count wids) order))
+     ;;     (recur (+ lp (float (.getLogProb lm wids i (+ i order))))
+     ;;            (inc i))
+     ;;     lp)))))
+
+(defn lm-stats
+  [lm s1 s2]
+  (let [core1
+        (-> s1
+            (s/replace-first #"^\S*\s+" "")
+            (s/replace-first #"\s+\S*$" ""))
+        w1 (s/split core1 #" ")]
+    (lm-score lm w1)))
+
 (defn- extract-bbox
   [coords]
   (let [x (->> coords (map #(Integer/parseInt (nth % 1))) (reduce min))
@@ -75,7 +113,6 @@
         w (- (->> coords (map #(Integer/parseInt (nth % 3))) (reduce max)) x)
         h (- (->> coords (map #(Integer/parseInt (nth % 2))) (reduce max)) y)]
     [x y w h]))
-
 
 (defn- make-region-url
   [id n bbox]
@@ -162,7 +199,7 @@
 ;; that their ngrams show up as occurring at least once.  We should
 ;; therefore also remove hits to these texts from the results below.
 (defn quoted-passages
-  [docs gram bad-docs ^KeyIterator ki ^Retrieval ri {:keys [max-count max-gap min-score words]}]
+  [docs gram bad-docs ^KeyIterator ki ^Retrieval ri lm {:keys [max-count max-gap min-score words]}]
   (let [idx (index-tokens docs gram)
         term-pos (index-positions (:terms idx))
         term-count (dec (+ gram (count (:terms idx))))
@@ -257,6 +294,7 @@
                                 (merge
                                  (doc-passage doc-data sword2 eword2)
                                  (alignment-stats (Alignment. out1 out2 sword1 sword2 eword1 eword2))
+                                 (when lm (lm-stats lm out1 out2))
                                  (when words
                                    {:words (proc-aligned-doc
                                             out1 out2 idx sword1 eword1 doc-data sword2 eword2)})
@@ -297,13 +335,14 @@
                           (map #(Long/parseLong (first %)))
                           set)
             di (DiskIndex/openIndexPart idx)
+            lm nil
             gram (.get (.getManifest di) "n" 5)
             ki (.getIterator di)
             ri (RetrievalFactory/instance dir (Parameters.))]
         (doseq [f (if (seq tfiles) tfiles ["-"])
                 q (-> (if (= "-" f) *in* f)
                       load-tsv
-                      (quoted-passages gram bad-docs ki ri options))]
+                      (quoted-passages gram bad-docs ki ri lm options))]
           (printer q)
           (println)))
       (catch Exception e
