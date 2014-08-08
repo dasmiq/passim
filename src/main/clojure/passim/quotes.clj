@@ -102,9 +102,12 @@
   (let [core1
         (-> s1
             (s/replace-first #"^\S*\s+" "")
-            (s/replace-first #"\s+\S*$" ""))
+            (s/replace-first #"\s+\S*$" "")
+            (s/replace #"-" ""))
         w1 (s/split core1 #" ")]
-    (lm-score lm w1)))
+    {:lm1 (lm-score lm w1)
+     :lm1words (count w1)
+     :lm1chars (count s1)}))
 
 (defn- extract-bbox
   [coords]
@@ -323,6 +326,7 @@
                   ["-s" "--min-score" "Minimum score for n-gram matches" :default 0 :parse-fn #(Double/parseDouble %)]
                   ["-p" "--pretty" "Pretty-print JSON output" :default false :flag true]
                   ["-w" "--words" "Output alignments at the word level" :default false :flag true]
+                  ["-l" "--lm" "Language model binary" :default nil]
                   ["-h" "--help" "Show help" :default false :flag true])]
     (try
       (let [[idx & tfiles] remaining
@@ -335,7 +339,8 @@
                           (map #(Long/parseLong (first %)))
                           set)
             di (DiskIndex/openIndexPart idx)
-            lm nil
+            lm (when (:lm options)
+                 (LmReaders/readLmBinary (:lm options)))
             gram (.get (.getManifest di) "n" 5)
             ki (.getIterator di)
             ri (RetrievalFactory/instance dir (Parameters.))]
