@@ -7,6 +7,7 @@
             [passim.galago :refer :all])
   (:import (passim.utils Alignment)
            (edu.berkeley.nlp.lm.io LmReaders)
+           (edu.berkeley.nlp.lm.cache ArrayEncodedCachingLmWrapper)
            (org.lemurproject.galago.core.index IndexPartReader KeyIterator)
            (org.lemurproject.galago.core.index.disk DiskIndex)
            (org.lemurproject.galago.core.parse Document)
@@ -344,6 +345,7 @@
             bad-docs (get-bad-docs dir)
             di (DiskIndex/openIndexPart idx)
             lm (when (:lm options)
+                 ;; (ArrayEncodedCachingLmWrapper/wrapWithCacheNotThreadSafe
                  (LmReaders/readLmBinary (:lm options)))
             gram (.get (.getManifest di) "n" 5)
             ki (.getIterator di)
