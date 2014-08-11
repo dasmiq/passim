@@ -313,6 +313,13 @@
                          good-spans))))))]
     hits))
 
+(defn- get-bad-docs
+  [dir]
+  (->> (jio/file dir "names") str dump-index
+       (filter #(re-find #"^urn:cts:" (second %)))
+       (map #(Long/parseLong (first %)))
+       set))
+
 (defn dump-quotes
   "Find passages in a reference text that align well to passages using an an n-gram index."
   [& argv]
@@ -334,10 +341,7 @@
                       #(json/pprint % :escape-slash false)
                       #(json/write % *out* :escape-slash false))
             dir (.getParent (java.io.File. idx))
-            bad-docs (->> (jio/file dir "names") str dump-index
-                          (filter #(re-find #"^urn:cts:" (second %)))
-                          (map #(Long/parseLong (first %)))
-                          set)
+            bad-docs (get-bad-docs dir)
             di (DiskIndex/openIndexPart idx)
             lm (when (:lm options)
                  (LmReaders/readLmBinary (:lm options)))
