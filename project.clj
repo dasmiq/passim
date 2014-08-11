@@ -13,6 +13,7 @@
                  [org.clojure/data.csv "0.1.2"]
                  [org.clojure/data.json "0.2.4"]
                  [org.clojure/math.combinatorics "0.0.4"]
+                 [edu.berkeley.nlp/berkeleylm "1.1.2"]
 		 [ciir/utils "1.0.0-SNAPSHOT"]
                  [org.lemurproject.galago/core "3.5.2"]]
   :source-paths ["src/main/clojure"]
