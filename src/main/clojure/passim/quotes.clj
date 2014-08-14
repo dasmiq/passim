@@ -345,8 +345,8 @@
             bad-docs (get-bad-docs dir)
             di (DiskIndex/openIndexPart idx)
             lm (when (:lm options)
-                 ;; (ArrayEncodedCachingLmWrapper/wrapWithCacheNotThreadSafe
-                 (LmReaders/readLmBinary (:lm options)))
+                 (ArrayEncodedCachingLmWrapper/wrapWithCacheNotThreadSafe
+                  (LmReaders/readLmBinary (:lm options))))
             gram (.get (.getManifest di) "n" 5)
             ki (.getIterator di)
             ri (RetrievalFactory/instance dir (Parameters.))]
