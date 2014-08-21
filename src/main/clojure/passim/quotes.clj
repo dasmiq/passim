@@ -124,23 +124,34 @@
     (str "http://www.archive.org/download/" id "/page/leaf" pageref
          (apply format "_x%d_y%d_w%d_h%d.jpg" bbox))))
 
+(defn- zap-tags
+  [x]
+  (-> x
+      (s/replace #"<lb>" "\n")
+      (s/replace #"</?[A-Za-z][^>]*>" "")))
+
 (defn- doc-passage
   [^Document d start end]
   (let [[series n] (doc-id-parts (.name d))
+        wends (.termCharEnd d)
         len (count (.terms d))
+        context 10
         soff (if (> start 0)
-               (.get (.termCharEnd d) (dec start))
+               (.get wends (dec start))
                0)
-        eoff (.get (.termCharEnd d) (dec end))
+        bpref (if (> start 0)
+                (.get wends (max 0 (dec (- start context))))
+                0)
+        eoff (.get wends (dec end))
+        esuff (.get wends (dec (min len (+ end context))))
         raw (subs (.text d) soff eoff)
         m (into {} (.metadata d))
         base-url (m "url")
         info {:series series
               :n n
-              :text2
-              (-> raw
-                  (s/replace #"<lb>" "\n")
-                  (s/replace #"</?[A-Za-z][^>]*>" ""))}
+              :text2 (zap-tags raw)
+              :prefix2 (zap-tags (subs (.text d) bpref soff))
+              :suffix2 (zap-tags (subs (.text d) eoff esuff))}
         clip
         {:url
          (if-let [coords (re-seq #" coords=\"([0-9]+),([0-9]+),([0-9]+),([0-9]+)" raw)]
@@ -156,7 +167,7 @@
         w1 (:words idx)
         raw (.text doc)
         terms (.terms doc)
-        tce (.termCharEnd doc)]
+        wends (.termCharEnd doc)]
     ;;(println (s/join " " (subvec w1 sword1 eword1)))
     (loop [res []
            c1 (seq (s/trimr out1))
@@ -174,9 +185,9 @@
            ;; much.
            (if (and (= \space f1) (= \space f2))
              (let [soff (if (> s2 0)
-                          (+ 5 (.get tce (dec s2)))
+                          (+ 5 (.get wends (dec s2)))
                           0)
-                   eoff (+ 4 (.get tce s2))
+                   eoff (+ 4 (.get wends s2))
                    raw (subs (.text doc) soff eoff)
                    coords (re-seq #" coords=\"([0-9]+),([0-9]+),([0-9]+),([0-9]+)" raw)]
                (conj res
