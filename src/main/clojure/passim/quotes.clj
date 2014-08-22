@@ -151,7 +151,8 @@
               :n n
               :text2 (zap-tags raw)
               :prefix2 (zap-tags (subs (.text d) bpref soff))
-              :suffix2 (zap-tags (subs (.text d) eoff esuff))}
+              :suffix2 (zap-tags (subs (.text d) eoff esuff))
+              }
         clip
         {:url
          (if-let [coords (re-seq #" coords=\"([0-9]+),([0-9]+),([0-9]+),([0-9]+)" raw)]
@@ -233,7 +234,7 @@
              (map
               (fn [[k v]]
                 [(.getDocumentName ri (int k)) (vec (sort v))])))
-        book-hits (frequencies (map (comp first doc-id-parts first) page-hits))
+        ;; book-hits (frequencies (map (comp first doc-id-parts first) page-hits))
         hits (->> page-hits
              (map
               (fn [[page thits]]
@@ -320,7 +321,13 @@
                                   (mapv #(get (:names idx) %) (distinct (subvec (:positions idx) sword1 eword1)))
                                   :align1 out1
                                   :align2 out2}))
-                              (catch OutOfMemoryError e
+                              (catch Exception ex
+                                (binding [*out* *err*]
+                                  (println ex page score s e min2 max2 spans))
+                                nil)
+                              (catch OutOfMemoryError ex
+                                (binding [*out* *err*]
+                                  (println ex page score s e min2 max2 spans))
                                nil))))
                          good-spans))))))]
     hits))
@@ -368,5 +375,6 @@
           (printer q)
           (println)))
       (catch Exception e
-        (println e)
-        (exit 1 banner)))))
+        (binding [*out* *err*]
+          (println e)
+          (exit 1 banner))))))
