@@ -66,6 +66,25 @@
    {}
    (sort terms)))
 
+(defn- page-hits
+  [^KeyIterator ki max-count bad-docs terms]
+  (.reset ki)
+  (->> terms
+       sort
+       (mapcat
+        (fn [[term p1]]
+          (.skipToKey ki (Utility/fromString term))
+          (if (= (.getKeyString ki) term)
+            (let [vi (.getValueIterator ki)]
+              (if (<= (.totalEntries vi) max-count)
+                (->> vi
+                     value-iterator-seq
+                     (remove #(bad-docs (first %)))
+                     (map
+                      (fn [[d2 c p2]]
+                        {d2 [[term (.totalEntries vi) p1 p2]]}))))))))
+       (reduce (partial merge-with concat) {})))
+
 (defn load-tsv
   [fname]
   (map #(s/split % #"\t") (s/split (slurp fname) #"\n")))
@@ -211,6 +230,51 @@
            (if (= \space f2) (inc s2) s2)))
         res))))
 
+(defn- proc-page
+  [idx ri gram lm [page matches]]
+  (let [doc-data (get-index-doc ri page)
+        pterms (vec (.terms doc-data))
+        n2 (count pterms)
+        m (into {} (.metadata doc-data))
+        title (m "title")
+        date (m "date")
+        language (m "language")
+        score (->> matches (map #(Math/log1p (/ 1 (second %)))) (reduce +))
+        passages
+        (try
+          (if-let [p (seq (best-passages (:words idx) pterms matches gram 200))]
+            p
+            [(Alignment. "" "" 0 0 0 0)])
+          (catch Exception ex
+            (binding [*out* *err*] (println ex page matches))
+            [(Alignment. "" "" 0 0 0 0)])
+          (catch OutOfMemoryError ex
+            (binding [*out* *err*] (println ex page matches))
+            [(Alignment. "" "" 0 0 0 0)]))]
+    (for [pass passages]
+      (let [start ((:starts idx) (:start1 pass))
+            stop ((:stops idx) (dec (:end1 pass)))]
+        (merge
+         {:date date
+          :title title
+          :language language
+          :score score
+          :page page}
+         (doc-passage doc-data (:start2 pass) (:end2 pass))
+         (alignment-stats pass)
+         (when lm (lm-stats lm (:sequence1 pass) (:sequence2 pass)))
+         ;; (when words
+         ;;   {:words (proc-aligned-doc
+         ;;            out1 out2 idx sword1 eword1 doc-data sword2 eword2)})
+         {:text1 (subs (:text idx) start stop)
+          :start start
+          :stop stop
+          :cites
+          (mapv #(get (:names idx) %) (distinct (subvec (:positions idx)
+                                                        (:start1 pass) (:end1 pass))))
+          :align1 (:sequence1 pass)
+          :align2 (:sequence2 pass)})))))
+
 ;; We should include the canonical texts themselves in the index so
 ;; that their ngrams show up as occurring at least once.  We should
 ;; therefore also remove hits to these texts from the results below.
@@ -219,118 +283,112 @@
   (let [idx (index-tokens docs gram)
         term-pos (index-positions (:terms idx))
         term-count (dec (+ gram (count (:terms idx))))
-        page-hits
-        (->> term-pos
-             keys
-             (term-hits ki max-count bad-docs)
-             (reduce
-              (fn [m [t d]]
-                (let [tf (count d)
-                      pos (mapv #(vector % tf) (term-pos t))]
-                  (merge-with
-                   (comp vec concat) m
-                   (into {} (map #(vector (first %) (mapv (fn [x] (conj x (nth % 2))) pos)) d)))))
-              {})
-             (map
-              (fn [[k v]]
-                [(.getDocumentName ri (int k)) (vec (sort v))])))
+        pages (->> term-pos
+                   (page-hits ki max-count bad-docs)
+                   (reduce-kv
+                    (fn [m k v]
+                      (assoc m (.getDocumentName ri (int k)) (vec v)))
+                    {}))
         ;; book-hits (frequencies (map (comp first doc-id-parts first) page-hits))
-        hits (->> page-hits
-             (map
-              (fn [[page thits]]
-                (let [matches
-                      (map #(mapv first %)
-                           (partition-when
-                            (fn [[[s _] [e _]]] (> (- e s) max-gap))
-                            (partition 2 1 [[-1 0 []]] thits)))]
-                  [page
-                   (mapv (fn [span]
-                           (let [pos (mapv first span)
-                                 phits (mapcat #(nth % 2) span)
-                                 start (first pos)
-                                 end (peek pos)]
-                             ;;(->> % (map second) count)
-                             ;; I see: the problem is that we score
-                             ;;  only the overlap but we'd like to
-                             ;;  score the likelihood of the whole
-                             ;;  reference passage.  Adjust this score
-                             ;;  by number of high-freq terms?
-                             ;; 0 ;; (* (- (- end start) (count pos)) (Math/log (inc (/ 1 max-count))))
-                             [(->> span (map second) (map #(Math/log1p (/ 1 %))) (reduce +))
-                              start end
-                              (reduce min phits) (reduce max phits)
-                              ]))
-                         matches)])))
-             sort
-             ;; We keep a single record for each page, with multiple
-             ;; spans, so we can save time and look up the text for a
-             ;; page once.
-             (mapcat
-              (fn [[page spans]]
-                (if-let [good-spans (seq (filter #(>= (first %) min-score) spans))]
-                  (let [doc-data (get-index-doc ri page)
-                        pterms (vec (.terms doc-data))
-                        n2 (count pterms)
-                        m (into {} (.metadata doc-data))
-                        title (m "title")
-                        date (m "date")
-                        language (m "language")]
-                    (map (fn [[score s e min2 max2]]
-                           (merge
-                            {:date date
-                             :title title
-                             :language language
-                             :score score
-                             :page page}
-                            (try
-                              (let [s1 (max 0 (- s 50))
-                                    c1 (join-alnum-tokens
-                                        (subvec (:words idx)
-                                                s1
-                                                (min term-count (+ e 50))))
-                                    s2 (max 0 (- min2 50))
-                                    e2 (min n2 (+ max2 50))
-                                    c2 (join-alnum-tokens (subvec pterms s2 e2))
-                                    alg (jaligner.SmithWatermanGotoh/align
-                                         (jaligner.Sequence. c1)
-                                         (jaligner.Sequence. c2)
-                                         match-matrix 5 0.5)
-                                    out1 (String. (.getSequence1 alg))
-                                    out2 (String. (.getSequence2 alg))
-                                    os1 (.getStart1 alg)
-                                    os2 (.getStart2 alg)
-                                    sword1 (+ s1 (space-count (subs c1 0 os1))
-                                              (if (spacel? out1) 1 0))
-                                    sword2 (+ s2 (space-count (subs c2 0 os2))
-                                              (if (spacel? out2) 1 0))
-                                    eword1 (+ sword1 1 (space-count (s/trim out1)))
-                                    eword2 (+ sword2 1 (space-count (s/trim out2)))
-                                    start ((:starts idx) sword1)
-                                    stop ((:stops idx) (dec eword1))]
-                                (merge
-                                 (doc-passage doc-data sword2 eword2)
-                                 (alignment-stats (Alignment. out1 out2 sword1 sword2 eword1 eword2))
-                                 (when lm (lm-stats lm out1 out2))
-                                 (when words
-                                   {:words (proc-aligned-doc
-                                            out1 out2 idx sword1 eword1 doc-data sword2 eword2)})
-                                 {:text1 (subs (:text idx) start stop)
-                                  :start start
-                                  :stop stop
-                                  :cites
-                                  (mapv #(get (:names idx) %) (distinct (subvec (:positions idx) sword1 eword1)))
-                                  :align1 out1
-                                  :align2 out2}))
-                              (catch Exception ex
-                                (binding [*out* *err*]
-                                  (println ex page score s e min2 max2 spans))
-                                nil)
-                              (catch OutOfMemoryError ex
-                                (binding [*out* *err*]
-                                  (println ex page score s e min2 max2 spans))
-                               nil))))
-                         good-spans))))))]
-    hits))
+        ]
+    (mapcat (partial proc-page idx ri gram lm) (sort pages))))
+
+    ;;     hits (->> page-hits
+    ;;          (map
+    ;;           (fn [[page thits]]
+    ;;             (let [matches
+    ;;                   (map #(mapv first %)
+    ;;                        (partition-when
+    ;;                         (fn [[[s _] [e _]]] (> (- e s) max-gap))
+    ;;                         (partition 2 1 [[-1 0 []]] thits)))]
+    ;;               [page
+    ;;                (mapv (fn [span]
+    ;;                        (let [pos (mapv first span)
+    ;;                              phits (mapcat #(nth % 2) span)
+    ;;                              start (first pos)
+    ;;                              end (peek pos)]
+    ;;                          ;;(->> % (map second) count)
+    ;;                          ;; I see: the problem is that we score
+    ;;                          ;;  only the overlap but we'd like to
+    ;;                          ;;  score the likelihood of the whole
+    ;;                          ;;  reference passage.  Adjust this score
+    ;;                          ;;  by number of high-freq terms?
+    ;;                          ;; 0 ;; (* (- (- end start) (count pos)) (Math/log (inc (/ 1 max-count))))
+    ;;                          [(->> span (map second) (map #(Math/log1p (/ 1 %))) (reduce +))
+    ;;                           start end
+    ;;                           (reduce min phits) (reduce max phits)
+    ;;                           ]))
+    ;;                      matches)])))
+    ;;          sort
+    ;;          ;; We keep a single record for each page, with multiple
+    ;;          ;; spans, so we can save time and look up the text for a
+    ;;          ;; page once.
+    ;;          (mapcat
+    ;;           (fn [[page spans]]
+    ;;             (if-let [good-spans (seq (filter #(>= (first %) min-score) spans))]
+    ;;               (let [doc-data (get-index-doc ri page)
+    ;;                     pterms (vec (.terms doc-data))
+    ;;                     n2 (count pterms)
+    ;;                     m (into {} (.metadata doc-data))
+    ;;                     title (m "title")
+    ;;                     date (m "date")
+    ;;                     language (m "language")]
+    ;;                 (map (fn [[score s e min2 max2]]
+    ;;                        (merge
+    ;;                         {:date date
+    ;;                          :title title
+    ;;                          :language language
+    ;;                          :score score
+    ;;                          :page page}
+    ;;                         (try
+    ;;                           (let [s1 (max 0 (- s 50))
+    ;;                                 c1 (join-alnum-tokens
+    ;;                                     (subvec (:words idx)
+    ;;                                             s1
+    ;;                                             (min term-count (+ e 50))))
+    ;;                                 s2 (max 0 (- min2 50))
+    ;;                                 e2 (min n2 (+ max2 50))
+    ;;                                 c2 (join-alnum-tokens (subvec pterms s2 e2))
+    ;;                                 alg (jaligner.SmithWatermanGotoh/align
+    ;;                                      (jaligner.Sequence. c1)
+    ;;                                      (jaligner.Sequence. c2)
+    ;;                                      match-matrix 5 0.5)
+    ;;                                 out1 (String. (.getSequence1 alg))
+    ;;                                 out2 (String. (.getSequence2 alg))
+    ;;                                 os1 (.getStart1 alg)
+    ;;                                 os2 (.getStart2 alg)
+    ;;                                 sword1 (+ s1 (space-count (subs c1 0 os1))
+    ;;                                           (if (spacel? out1) 1 0))
+    ;;                                 sword2 (+ s2 (space-count (subs c2 0 os2))
+    ;;                                           (if (spacel? out2) 1 0))
+    ;;                                 eword1 (+ sword1 1 (space-count (s/trim out1)))
+    ;;                                 eword2 (+ sword2 1 (space-count (s/trim out2)))
+    ;;                                 start ((:starts idx) sword1)
+    ;;                                 stop ((:stops idx) (dec eword1))]
+    ;;                             (merge
+    ;;                              (doc-passage doc-data sword2 eword2)
+    ;;                              (alignment-stats (Alignment. out1 out2 sword1 sword2 eword1 eword2))
+    ;;                              (when lm (lm-stats lm out1 out2))
+    ;;                              (when words
+    ;;                                {:words (proc-aligned-doc
+    ;;                                         out1 out2 idx sword1 eword1 doc-data sword2 eword2)})
+    ;;                              {:text1 (subs (:text idx) start stop)
+    ;;                               :start start
+    ;;                               :stop stop
+    ;;                               :cites
+    ;;                               (mapv #(get (:names idx) %) (distinct (subvec (:positions idx) sword1 eword1)))
+    ;;                               :align1 out1
+    ;;                               :align2 out2}))
+    ;;                           (catch Exception ex
+    ;;                             (binding [*out* *err*]
+    ;;                               (println ex page score s e min2 max2 spans))
+    ;;                             nil)
+    ;;                           (catch OutOfMemoryError ex
+    ;;                             (binding [*out* *err*]
+    ;;                               (println ex page score s e min2 max2 spans))
+    ;;                            nil))))
+    ;;                      good-spans))))))]
+    ;; hits))
 
 (defn- get-bad-docs
   [dir]
@@ -378,3 +436,11 @@
         (binding [*out* *err*]
           (println e)
           (exit 1 banner))))))
+
+;; (def docs (load-tsv "/Users/dasmith/cts/urn:cts:englishLit:shakespeare.ham"))
+;; (def di (DiskIndex/openIndexPart "/Users/dasmith/cts/ham/od.n5.w1.h2.df.pos"))
+;; (def di (DiskIndex/openIndexPart "/Users/dasmith/cts/ham/od.n5.w1.h2.df.pos"))
+;; (def ri (RetrievalFactory/instance "/Users/dasmith/cts/ham" (Parameters.)))
+;; (def idx (index-tokens docs gram))
+;; (def term-pos (index-positions (:terms idx)))
+;; (def term-count (dec (+ gram (count (:terms idx)))))

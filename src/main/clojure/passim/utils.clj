@@ -216,13 +216,12 @@
       :sequence2 (s/join " " (drop-last gram (s/split (:sequence2 alg) #" "))))))
 
 (defn best-passages
-  [w1 w2 matches gram]
+  [w1 w2 matches gram gap-words]
   (when-let [anch (find-match-anchors matches)]
     (let [
           ;; (find-hapax-anchors (partition gram 1 w1) (partition gram 1 w2))
           ;; (->> matches vals first rest (map second) (map first) vec vector))
           inc-anch (increasing-matches anch)
-          gap-words 100
           add-gram (partial + (dec gram))
           middles (mapcat
                    (fn [[[s1 s2] [e1 e2]]]
@@ -261,6 +260,6 @@
                         head (first vspan)
                         tail (peek vspan)]
                     (Alignment.
-                     (s/join " " (map (comp s/trim :sequence1) vspan))
-                     (s/join " " (map (comp s/trim :sequence2) vspan))
+                     (s/replace (s/join " " (map :sequence1 vspan)) #" [ ]+" " ")
+                     (s/replace (s/join " " (map :sequence2 vspan)) #" [ ]+" " ")
                      (:start1 head) (:start2 head) (:end1 tail) (:end2 tail)))))))))

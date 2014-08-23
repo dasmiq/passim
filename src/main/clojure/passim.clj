@@ -253,7 +253,7 @@
         approx-pass
         (try
           (if-let [p (seq (best-passages words1 words2 matches
-                                         (if (= gram 0) 1 gram)))]
+                                         (if (= gram 0) 1 gram) 100))]
             ;; (reduce (maxer #(- (:end1 %) (:start1 %))) passages)
             p
             [(Alignment. "" "" 0 0 0 0)])
