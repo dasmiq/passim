@@ -325,6 +325,10 @@
                    {:text1 (subs (:text idx) start stop)
                     :start start
                     :stop stop
+                    :len1 (- eword1 sword1)
+                    :len2 (- eword2 sword2)
+                    :prop1 (double (/ (- eword1 sword1) term-count))
+                    :prop2 (double (/ (- eword2 sword2) n2))
                     :cites
                     (mapv #(get (:names idx) %) (distinct (subvec (:positions idx) sword1 eword1)))
                     :align1 out1
