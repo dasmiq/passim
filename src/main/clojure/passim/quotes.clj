@@ -245,8 +245,20 @@
                (mapv (fn [span]
                        (let [pos (mapv first span)
                              phits (mapcat #(nth % 2) span)
-                             start (first pos)
-                             end (peek pos)]
+                             s1 (first pos)
+                             e1 (peek pos)
+                             raw-s2 (reduce min phits)
+                             raw-e2 (reduce max phits)
+                             raw-len2 (- raw-e2 raw-s2)
+                             ;; Terrible HACK: fall back to unique n-gram features
+                             uniq-phits (->> span (filter #(= 1 (count %))) (mapcat #(nth % 2)))
+                             [s2 e2]
+                             (if (and (> raw-len2 max-gap)
+                                      (> (/ (inc raw-len2) (inc (- e1 s1))) 10)
+                                      (> (/ (count uniq-phits) (count phits) 0.7)))
+                               [(reduce min uniq-phits) (reduce max uniq-phits)]
+                               [raw-s2 raw-e2])
+                             ]
                          ;;(->> % (map second) count)
                          ;; I see: the problem is that we score
                          ;;  only the overlap but we'd like to
@@ -255,8 +267,7 @@
                          ;;  by number of high-freq terms?
                          ;; 0 ;; (* (- (- end start) (count pos)) (Math/log (inc (/ 1 max-count))))
                          [(->> span (map second) (map #(Math/log1p (/ 1 %))) (reduce +))
-                          start end
-                          (reduce min phits) (reduce max phits)
+                          s1 e1 s2 e2
                           span
                           ]))
                      matches)]))))))
