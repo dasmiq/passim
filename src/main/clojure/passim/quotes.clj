@@ -251,11 +251,11 @@
                              raw-e2 (reduce max phits)
                              raw-len2 (- raw-e2 raw-s2)
                              ;; Terrible HACK: fall back to unique n-gram features
-                             uniq-phits (->> span (filter #(= 1 (count %))) (mapcat #(nth % 2)))
+                             uniq-phits (->> span (map #(nth % 2)) (filter #(= 1 (count %))) (mapv first))
                              [s2 e2]
                              (if (and (> raw-len2 max-gap)
                                       (> (/ (inc raw-len2) (inc (- e1 s1))) 10)
-                                      (> (/ (count uniq-phits) (count phits) 0.7)))
+                                      (> (/ (count uniq-phits) (count phits)) 0.7))
                                [(reduce min uniq-phits) (reduce max uniq-phits)]
                                [raw-s2 raw-e2])
                              ]
