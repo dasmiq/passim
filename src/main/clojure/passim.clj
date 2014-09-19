@@ -635,6 +635,7 @@
          "format" #'format-cluster
          "gexf" #'gexf-cluster
          "idtab" #'idtab-cluster
+         "qoac" #'passim.quotes/qoac
          "quotes" #'passim.quotes/dump-quotes}
         usage
         (str

@@ -410,6 +410,63 @@
           (println e)
           (exit 1 banner))))))
 
+(defn json-seq
+  "Returns JSON records from rdr as a lazy sequence.
+  rdr must implement java.io.BufferedReader."
+  [^java.io.BufferedReader rdr]
+  (when-let [rec (json/read rdr :key-fn keyword :eof-error? false)]
+    (cons rec (lazy-seq (json-seq rdr)))))
+
+(defn- qoac-quote
+  [rec]
+  (let [id
+        (if-let
+            [[_ base series page] (re-find #"^(.*)/download/(.*)/(page/leaf[^_]+)" (:url rec))]
+          (str base "/stream/" series "#" page "/mode/1up")
+          (:url rec))]
+    {"@context" "http://www.w3.org/ns/oa-context-20130208.json"
+     "@type" "oa:Annotation"
+     "hasTarget" {
+                  "@type" "oa:Choice"
+                  "oa:default" {
+                                "@type" "oa:SpecificResource"
+                                "hasSource"
+                                {
+                                 "@id" id
+                                 "@type" "dctypes:Text"
+                                 "dc:title" (:title rec)
+                               "dc:date" (:date rec)
+                               "dc:language" (:language rec)
+                               }
+                              "hasSelector"
+                              {
+                               "@type" "oa:TextQuoteSelector"
+                               "prefix" (:prefix2 rec)
+                               "exact" (:text2 rec)
+                               "suffix" (:suffix2 rec)
+                               }
+                              }
+                  "oa:item" {"@id" (:url rec) "@type" "dctypes:Image"}
+                  }
+     "hasBody"
+     {
+      "@type" "oa:SpecificResource"
+      "hasSource" {"@type" "oa:Composite"
+                   "oa:item" (vec (:cites rec))}
+      "hasSelector" {
+                     "@type" "oa:TextQuoteSelector"
+                     "exact" (:text1 rec)
+                     }
+      }
+     }))
+
+(defn qoac
+  "Convert to Open Annotation JSON-LD serialization."
+  [& argv]
+  (doseq [q (->> *in* jio/reader json-seq)]
+    (json/write (qoac-quote q) *out* :escape-slash false)
+    (println)))
+
 ;; (def raw (load-tsv "/Users/dasmith/cts/urn:cts:englishLit:shakespeare.ham"))
 ;; (def docs (take 20 raw))
 ;; (def di (DiskIndex/openIndexPart "/Users/dasmith/cts/ham/od.n5.w1.h2.df.pos"))
