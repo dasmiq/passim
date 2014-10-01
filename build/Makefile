@@ -70,6 +70,8 @@ WIDTH=1
 MINREP=5
 STRIDE=1000000
 
+BINS=64
+
 ## Alignment parameters
 MINMINALG=10
 
@@ -163,6 +165,18 @@ $(idx):	$(dir $(idx))postings
 $(dir)/pall.srt.tmp:
 	mkdir -p $(dir)/pall.srt.tmp
 
+$(dir)/bins/0:
+	mkdir -p $(foreach b,$(shell seq 0 $$(( $(BINS) - 1 )) ),$(dir)/bins/$(b))
+
+$(dir)/bins/step%.out:
+	$(QRUN) '${passim} pairs $(stops) --max-series $(UPPER) --max-df $(MAXDF) --modp $(MODP) --modrec $(MODREC) --step $* --stride ${STRIDE} --hash-bins ${BINS} $(pairopts) $(idx) | ./fsplit.pl $(dir)/bins $*.gz'; touch $@
+
+$(dir)/bins/job:	$(dir)/od.siz $(dir)/bins/0
+	$(MAKE) $(foreach s,$(shell seq 0 `cat $(dir)/od.siz`),$(dir)/bins/step$(s).out)
+
+$(dir)/bins/sorts:	$(dir)/bins/0
+	$(MAKE) $(foreach b,$(shell seq 0 $$(( $(BINS) - 1 )) ),$(dir)/bins/$(b)/pall.proc.srt.gz)
+
 ifeq (${q},)
 ## This redundant dependency seems to be needed in some makes.
 $(dir)/pall.srt.tmp/job:	$(dir)/od.siz
@@ -190,6 +204,19 @@ ifneq ($(GAP),1)
 algram=1
 endif
 
+$(dir)/bins/%/pall.proc.tmp/in000.algin.gz:	$(dir)/bins/job
+	mkdir -p $(dir)/bins/$*/pall.proc.tmp
+	$(QRUN) 'gzip -fdc $(dir)/bins/$*/[0-9]*.gz | sort | ${passim} merge -m ${MINREP} | ${SPLIT} -d -a 3 -l 10000 - $(dir)/bins/$*/pall.proc.tmp/in; touch $(dir)/bins/$*/pall.proc.tmp/in000; for i in $(dir)/bins/$*/pall.proc.tmp/in*[0-9]; do gzip $$i; mv $$i.gz $$i.algin.gz; done'
+
+%.algout:	%.algin.gz
+	$(QRUN) 'gzip -dc $< | java -Xmx5900m ${passimopt} scores -n $(algram) $(dir)/../idx | awk "\$$1 >= $(MINMINALG)" | sort -rn > $@'
+
+%.tmp/job:	%.tmp/in000.algin.gz
+	$(MAKE) $(subst .algin.gz,.algout,$(shell if [ -f $< ]; then echo `ls -1 $*.tmp/in*.algin.gz`; else echo $<; fi))
+
+$(dir)/bins/%/pall.proc.srt.gz:	$(dir)/bins/%/pall.proc.tmp/job
+	$(QRUN) 'ls -1 $(dir)/bins/$*/pall.proc.tmp/in*.algout | xargs sort -rnm | gzip -c > $@'
+
 $(dir)/pall.proc.tmp/in000:	$(dir)/pall.srt.gz
 	mkdir -p $(dir)/pall.proc.tmp
 	gzip -fdc $< | ${SPLIT} -d -a 3 -l 30000 - $(dir)/pall.proc.tmp/in
@@ -200,8 +227,13 @@ $(dir)/pall.proc.tmp/out%:	$(dir)/pall.proc.tmp/in%
 %.tmp/job:	%.tmp/in000
 	$(MAKE) $(subst /in,/out,$(shell if [ -f $< ]; then echo `ls -1 $*.tmp/in*`; else echo $<; fi))
 
-$(dir)/pall.proc.srt.gz:	$(dir)/pall.proc.tmp/job
-	$(QRUN) 'ls -1 $(dir)/pall.proc.tmp/out*[0-9] | xargs sort -rnm | gzip -c > $@'
+
+
+$(dir)/pall.proc.srt.gz:	$(dir)/bins/sorts
+	$(QRUN) 'ls -1 $(dir)/bins/*/pall.proc.srt.gz | xargs gzip -dc | sort -rn | gzip -c > $@'
+
+#$(dir)/pall.proc.srt.gz:	$(dir)/pall.proc.tmp/job
+#	$(QRUN) 'ls -1 $(dir)/pall.proc.tmp/out*[0-9] | xargs sort -rnm | gzip -c > $@'
 
 $(dir)/pall.sw.tmp/in000:	$(dir)/pall.srt.gz
 	mkdir -p $(dir)/pall.sw.tmp

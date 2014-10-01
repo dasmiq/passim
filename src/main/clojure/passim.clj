@@ -126,6 +126,7 @@
                   ["-c" "--counts" "Count pairs" :default false :flag true]
                   ["-u" "--max-series" "Upper limit on effective series size" :default 100 :parse-fn #(Integer/parseInt %)]
                   ["-d" "--max-df" "Maximum document frequency in posting lists" :default 100 :parse-fn #(Integer/parseInt %)]
+                  ["-h" "--hash-bins" "Number of bins to hash records into" :default nil :parse-fn #(Integer/parseInt %)]
                   ["-m" "--series-map" "Map internal ids documents to integer series ids"]
                   ["-p" "--modp" "Keep only features whose hashes are divisible by p" :default 1 :parse-fn #(Integer/parseInt %)]
                   ["-r" "--modrec" "Keep only pairs whose hashes are divisible by r" :default 1 :parse-fn #(Integer/parseInt %)]
@@ -135,7 +136,7 @@
                   ["-S" "--stop" "Stopword list"]
                   ["-h" "--help" "Show help" :default false :flag true])
         index-file ^String (first remaining)
-        {:keys [counts series-map stop max-series max-df modp modrec step stride word-length]} options]
+        {:keys [counts series-map stop max-series max-df hash-bins modp modrec step stride word-length]} options]
     (let [ireader (DiskIndex/openIndexPart index-file)
           ki (.getIterator ireader)
           idir (.getParent (java.io.File. index-file))
@@ -163,8 +164,11 @@
                                    (map #(vec (sort (map series %))))
                                    frequencies)]
               (println (format "%s\t%s\t%d" (sname a) (sname b) c))))
-          (doseq [item items]
-            (prn item)))))))
+          (if hash-bins
+            (doseq [item items]
+              (prn (mod (hash (first item)) hash-bins) item))
+            (doseq [item items]
+              (prn item))))))))
 
 (defn- vappend
   [x y]
