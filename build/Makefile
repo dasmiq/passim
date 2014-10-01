@@ -71,6 +71,7 @@ MINREP=5
 STRIDE=1000000
 
 BINS=64
+bins=$(shell seq 0 $$(( $(BINS) - 1 )))
 
 ## Alignment parameters
 MINMINALG=10
@@ -162,20 +163,14 @@ $(idx):	$(dir $(idx))postings
 	cd $(COLL); ${galagoIndex} build-window ${CURDIR}/window.json --n=$(NGRAM) --width=$(WIDTH) --gap=$(GAP) ${galagoMode} --distrib=$(GDISTRIB) --galagoJobDir=$(notdir $@).tmp --outputIndexName=$(notdir $@)
 
 ## Separate target to avoid race condition in parallel make.
-$(dir)/pall.srt.tmp:
-	mkdir -p $(dir)/pall.srt.tmp
-
 $(dir)/bins/0:
-	mkdir -p $(foreach b,$(shell seq 0 $$(( $(BINS) - 1 )) ),$(dir)/bins/$(b))
+	mkdir -p $(foreach b,$(bins),$(dir)/bins/$(b))
 
 $(dir)/bins/step%.out:
 	$(QRUN) '${passim} pairs $(stops) --max-series $(UPPER) --max-df $(MAXDF) --modp $(MODP) --modrec $(MODREC) --step $* --stride ${STRIDE} --hash-bins ${BINS} $(pairopts) $(idx) | ./fsplit.pl $(dir)/bins $*.gz'; touch $@
 
 $(dir)/bins/job:	$(dir)/od.siz $(dir)/bins/0
 	$(MAKE) $(foreach s,$(shell seq 0 `cat $(dir)/od.siz`),$(dir)/bins/step$(s).out)
-
-$(dir)/bins/sorts:	$(dir)/bins/0
-	$(MAKE) $(foreach b,$(shell seq 0 $$(( $(BINS) - 1 )) ),$(dir)/bins/$(b)/pall.proc.srt.gz)
 
 algram=$(NGRAM)
 ifneq ($(GAP),1)
@@ -195,17 +190,10 @@ $(dir)/bins/%/pall.proc.tmp/in000.algin.gz:	$(dir)/bins/job
 $(dir)/bins/%/pall.proc.srt.gz:	$(dir)/bins/%/pall.proc.tmp/job
 	$(QRUN) 'ls -1 $(dir)/bins/$*/pall.proc.tmp/in*.algout | xargs sort -rnm | gzip -c > $@'
 
-$(dir)/pall.proc.tmp/in000:	$(dir)/pall.srt.gz
-	mkdir -p $(dir)/pall.proc.tmp
-	gzip -fdc $< | ${SPLIT} -d -a 3 -l 30000 - $(dir)/pall.proc.tmp/in
-
-$(dir)/pall.proc.tmp/out%:	$(dir)/pall.proc.tmp/in%
-	$(QRUN) 'java -Xmx5900m ${passimopt} scores -n $(algram) $(dir)/../idx < $< | awk "\$$1 >= $(MINMINALG)" | sort -rn > $@'
-
 %.tmp/job:	%.tmp/in000
 	$(MAKE) $(subst /in,/out,$(shell if [ -f $< ]; then echo `ls -1 $*.tmp/in*`; else echo $<; fi))
 
-$(dir)/pall.proc.srt.gz:	$(dir)/bins/sorts
+$(dir)/pall.proc.srt.gz:	$(patsubst %,$(dir)/bins/%/pall.proc.srt.gz,$(bins))
 	$(QRUN) 'ls -1 $(dir)/bins/*/pall.proc.srt.gz | xargs gzip -dc | sort -rn | gzip -c > $@'
 
 $(dir)/pall.sw.tmp/in000:	$(dir)/pall.srt.gz
