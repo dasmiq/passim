@@ -181,14 +181,14 @@ $(dir)/bins/%/pall.proc.tmp/in000.algin.gz:	$(dir)/bins/job
 	mkdir -p $(dir)/bins/$*/pall.proc.tmp
 	$(QRUN) 'gzip -fdc $(dir)/bins/$*/[0-9]*.gz | sort | ${passim} merge -m ${MINREP} | ${SPLIT} -d -a 3 -l 10000 - $(dir)/bins/$*/pall.proc.tmp/in; touch $(dir)/bins/$*/pall.proc.tmp/in000; for i in $(dir)/bins/$*/pall.proc.tmp/in*[0-9]; do gzip $$i; mv $$i.gz $$i.algin.gz; done'
 
-%.algout:	%.algin.gz
-	$(QRUN) 'gzip -dc $< | java -Xmx5900m ${passimopt} scores -n $(algram) $(dir)/../idx | awk "\$$1 >= $(MINMINALG)" | sort -rn > $@'
+%.algout.gz:	%.algin.gz
+	$(QRUN) 'gzip -dc $< | java -Xmx5900m ${passimopt} scores -n $(algram) $(dir)/../idx | awk "\$$1 >= $(MINMINALG)" | sort -rn | gzip -c > $@'
 
 %.tmp/job:	%.tmp/in000.algin.gz
-	$(MAKE) $(subst .algin.gz,.algout,$(shell if [ -f $< ]; then echo `ls -1 $*.tmp/in*.algin.gz`; else echo $<; fi))
+	$(MAKE) $(subst .algin.gz,.algout.gz,$(shell if [ -f $< ]; then echo `ls -1 $*.tmp/in*.algin.gz`; else echo $<; fi))
 
-$(dir)/bins/%/pall.proc.srt.gz:	$(dir)/bins/%/pall.proc.tmp/job
-	$(QRUN) 'ls -1 $(dir)/bins/$*/pall.proc.tmp/in*.algout | xargs sort -rnm | gzip -c > $@'
+$(dir)/bins/%/pall.proc.srt.gz:	$(dir)/bins/%/pall.proc.tmp/in000.algin.gz $(dir)/bins/%/pall.proc.tmp/job
+	$(QRUN) 'ls -1 $(dir)/bins/$*/pall.proc.tmp/in*.algout.gz | xargs gzip -dc | sort -rn | gzip -c > $@'
 
 %.tmp/job:	%.tmp/in000
 	$(MAKE) $(subst /in,/out,$(shell if [ -f $< ]; then echo `ls -1 $*.tmp/in*`; else echo $<; fi))
