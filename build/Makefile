@@ -177,28 +177,6 @@ $(dir)/bins/job:	$(dir)/od.siz $(dir)/bins/0
 $(dir)/bins/sorts:	$(dir)/bins/0
 	$(MAKE) $(foreach b,$(shell seq 0 $$(( $(BINS) - 1 )) ),$(dir)/bins/$(b)/pall.proc.srt.gz)
 
-ifeq (${q},)
-## This redundant dependency seems to be needed in some makes.
-$(dir)/pall.srt.tmp/job:	$(dir)/od.siz
-	$(MAKE) $(foreach s,$(shell seq 0 `cat $(dir)/od.siz`),$(dir)/pall.srt.tmp/out$(s))
-endif
-
-$(dir)/pall.srt.tmp/out%:
-	${passim} pairs $(stops) --max-series $(UPPER) --max-df $(MAXDF) --modp $(MODP) --modrec $(MODREC) --step $* --stride ${STRIDE} $(pairopts) $(idx) | sort -T $(TMPDIR) > $@
-
-$(dir)/pall.srt.gz:	$(dir)/od.siz $(idx) $(dir)/pall.srt.tmp $(if ${q},,$(dir)/pall.srt.tmp/job)
-ifeq (${q},lsf)
-	${sub} -J "$(dir)/pall.srt[1-$$(( `cat $<` + 1 ))]%${CONCUR}" -eo "$(dir)/pall.srt.tmp/err%I" \
-	    'ofile=$(dir)/pall.srt.tmp/out`printf "%03d" $$(( \$$LSB_JOBINDEX - 1 ))`; [ -f $$ofile ] || ${passim} pairs $(stops) --max-series $(UPPER) --max-df $(MAXDF) --modp $(MODP) --modrec $(MODREC) --step $$(( $$LSB_JOBINDEX - 1 )) --stride ${STRIDE} $(pairopts) $(idx) | sort -T $(TMPDIR) > $$ofile'
-	${sub} -K -w "$(dir)/pall.srt" 'ls -1 $(dir)/pall.srt.tmp/out* | xargs sort -T $(TMPDIR) -m | ${passim} merge -m $(MINREP) | gzip -c > $@'
-else ifeq (${q},sge)
-	${sub} -N $(subst /,_,$(dir)/pall.srt) -t "1-$$(( `cat $<` + 1 )):1" -tc ${CONCUR} -o $(dir)/pall.srt.tmp \
-	    'ofile=$(dir)/pall.srt.tmp/out`printf "%03d" $$(( \$$SGE_TASK_ID - 1 ))`; [ -f $$ofile ] || ${passim} pairs $(stops) --max-series $(UPPER) --max-df $(MAXDF) --modp $(MODP) --modrec $(MODREC) --step $$(( $$SGE_TASK_ID - 1 )) --stride ${STRIDE} $(pairopts) $(idx) | sort -T $(TMPDIR) > $$ofile'
-	${sub} -sync y -hold_jid $(subst /,_,$(dir)/pall.srt) -o $(dir)/pall.srt.tmp 'ls -1 $(dir)/pall.srt.tmp/out* | xargs sort -T $(TMPDIR) -m | ${passim} merge -m $(MINREP) | gzip -c > $@'
-else
-	ls -1 $(dir)/pall.srt.tmp/out* | xargs sort -T $(TMPDIR) -m | ${passim} merge -m $(MINREP) | gzip -c > $@
-endif
-
 algram=$(NGRAM)
 ifneq ($(GAP),1)
 algram=1
@@ -227,13 +205,8 @@ $(dir)/pall.proc.tmp/out%:	$(dir)/pall.proc.tmp/in%
 %.tmp/job:	%.tmp/in000
 	$(MAKE) $(subst /in,/out,$(shell if [ -f $< ]; then echo `ls -1 $*.tmp/in*`; else echo $<; fi))
 
-
-
 $(dir)/pall.proc.srt.gz:	$(dir)/bins/sorts
 	$(QRUN) 'ls -1 $(dir)/bins/*/pall.proc.srt.gz | xargs gzip -dc | sort -rn | gzip -c > $@'
-
-#$(dir)/pall.proc.srt.gz:	$(dir)/pall.proc.tmp/job
-#	$(QRUN) 'ls -1 $(dir)/pall.proc.tmp/out*[0-9] | xargs sort -rnm | gzip -c > $@'
 
 $(dir)/pall.sw.tmp/in000:	$(dir)/pall.srt.gz
 	mkdir -p $(dir)/pall.sw.tmp
