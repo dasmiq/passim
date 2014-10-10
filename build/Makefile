@@ -70,7 +70,7 @@ WIDTH=1
 MINREP=5
 STRIDE=1000000
 
-BINS=64
+BINS=128
 bins=$(shell seq 0 $$(( $(BINS) - 1 )))
 
 ## Alignment parameters
@@ -177,12 +177,12 @@ ifneq ($(GAP),1)
 algram=1
 endif
 
-$(dir)/bins/%/pall.proc.tmp/in000.algin.gz:	$(dir)/bins/job
+$(dir)/bins/%/pall.proc.tmp/in000.algin.gz:
 	mkdir -p $(dir)/bins/$*/pall.proc.tmp
 	$(QRUN) 'gzip -fdc $(dir)/bins/$*/[0-9]*.gz | sort | ${passim} merge -m ${MINREP} | ${SPLIT} -d -a 3 -l 10000 - $(dir)/bins/$*/pall.proc.tmp/in; touch $(dir)/bins/$*/pall.proc.tmp/in000; for i in $(dir)/bins/$*/pall.proc.tmp/in*[0-9]; do gzip $$i; mv $$i.gz $$i.algin.gz; done'
 
 %.algout.gz:	%.algin.gz
-	$(QRUN) 'gzip -dc $< | java -Xmx5900m ${passimopt} scores -n $(algram) $(dir)/../idx | awk "\$$1 >= $(MINMINALG)" | sort -rn | gzip -c > $@'
+	$(QRUN) -R 'mem>16000' 'gzip -dc $< | java -Xmx15900m ${passimopt} scores -n $(algram) $(dir)/../idx | awk "\$$1 >= $(MINMINALG)" | sort -rn | gzip -c > $@'
 
 %.tmp/job:	%.tmp/in000.algin.gz
 	$(MAKE) $(subst .algin.gz,.algout.gz,$(shell if [ -f $< ]; then echo `ls -1 $*.tmp/in*.algin.gz`; else echo $<; fi))
