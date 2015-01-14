@@ -142,7 +142,7 @@ align:	$(dir)/pall.proc.srt.gz
 
 swalign:	$(dir)/pall.sw.srt.gz
 
-pairs:	$(dir)/pall.srt.gz
+pairs:	$(dir)/bins/job
 
 index:	$(idx)
 
