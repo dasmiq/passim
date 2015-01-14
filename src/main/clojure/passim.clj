@@ -606,7 +606,7 @@
            (s/join "\t"
                    (concat
                     prefix
-                    ((juxt :date :name :title :url :start :end :text) reprint)))))))))
+                    ((juxt :date :name #(or (:title %) (:id %)) :url :start :end :text) reprint)))))))))
 
 (defn diff-words
   [gram lines]
