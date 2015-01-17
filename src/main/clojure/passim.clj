@@ -645,11 +645,11 @@
       (concat passages (reduce link-spans nil spans))
       (let [[id name span link] (first in)]
         (if (> (:start span) top)
-          (recur (:end span)
+          (recur ^long (:end span)
                  (list (first in))
                  (concat passages (reduce link-spans nil spans))
                  (rest in))
-          (recur (max top (:end span))
+          (recur (max top ^long (:end span))
                  (conj spans (first in))
                  passages
                  (rest in)))))))
