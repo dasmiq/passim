@@ -620,13 +620,13 @@
        (partition-by first)))
 
 (defn link-spans
-  [spans [id name span link]]
+  [f spans [id name span link]]
   (loop [res nil
          s spans]
     (if (not (seq s))
       (conj res [id name span [link]])
       (let [[id2 name2 span2 links] (first s)]
-        (if (> (span-overlap span span2) 0.5)
+        (if (f span span2)
           (concat res
                   (list [id2 name2
                          {:start (min (:start span) (:start span2))
@@ -636,23 +636,24 @@
                  (rest s)))))))
 
 (defn merge-spans
-  [d]
-  (loop [top -1
-         spans nil
-         passages nil
-         in d]
-    (if (not (seq in))
-      (concat passages (reduce link-spans nil spans))
-      (let [[id name span link] (first in)]
-        (if (> (:start span) top)
-          (recur ^long (:end span)
-                 (list (first in))
-                 (concat passages (reduce link-spans nil spans))
-                 (rest in))
-          (recur (max top ^long (:end span))
-                 (conj spans (first in))
-                 passages
-                 (rest in)))))))
+  [f d]
+  (let [r (partial reduce (partial link-spans f) nil)]
+    (loop [top -1
+           spans nil
+           passages nil
+           in d]
+      (if (not (seq in))
+        (concat passages (r spans))
+        (let [[id name span link] (first in)]
+          (if (> (:start span) top)
+            (recur ^long (:end span)
+                   (list (first in))
+                   (concat passages (r spans))
+                   (rest in))
+            (recur (max top ^long (:end span))
+                   (conj spans (first in))
+                   passages
+                   (rest in))))))))
 
 (defn text-nodes
   "Merge aligned passages into nodes for clustering"
@@ -662,9 +663,17 @@
                   (str
                    "passim text-nodes [options]\n\n"
                    (var-doc #'text-nodes))
-                  ["-h" "--help" "Show help" :default false :flag true])]
+                  ["-m" "--min-overlap" "Minimum size of overlap" :default 0 :parse-fn #(Double/parseDouble %)]
+                  ["-o" "--relative-overlap" "Proportion of longer text that must overlap" :default 0.5 :parse-fn #(Double/parseDouble %)]
+                  ["-h" "--help" "Show help" :default false :flag true])
+        {:keys [min-overlap relative-overlap]} options]
     (doseq [[node [id name span links]]
-            (->> *in* jio/reader line-seq text-pass (mapcat merge-spans)
+            (->> *in* jio/reader line-seq text-pass
+                 (mapcat (partial
+                          merge-spans
+                          (if (> min-overlap 0)
+                            #(>= (absolute-overlap %1 %2) min-overlap)
+                            #(>= (span-overlap %1 %2) relative-overlap))))
                  (map-indexed vector))]
       (doseq [link links]
         (println id name (:start span) (:end span) link node)))))
