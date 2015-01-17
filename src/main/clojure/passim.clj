@@ -597,7 +597,7 @@
         (safe-cli argv
                   (str
                    "passim idtab [options]\n\n"
-                   (var-doc #'gexf-cluster))
+                   (var-doc #'idtab-cluster))
                   ["-h" "--help" "Show help" :default false :flag true])]
     (doseq [cluster (-> *in* jio/reader json-seq)]
       (let [prefix ((juxt :id :size) cluster)]
@@ -607,6 +607,67 @@
                    (concat
                     prefix
                     ((juxt :date :name #(or (:title %) (:id %)) :url :start :end :text) reprint)))))))))
+
+(defn text-pass
+  [x]
+  (->> x
+       (map
+        (fn [line]
+          (let [[id name s e link] (s/split line #" ")]
+            [(Long/parseLong id) name
+             {:start (Long/parseLong s) :end (Long/parseLong e)}
+             (Long/parseLong link)])))
+       (partition-by first)))
+
+(defn link-spans
+  [spans [id name span link]]
+  (loop [res nil
+         s spans]
+    (if (not (seq s))
+      (conj res [id name span [link]])
+      (let [[id2 name2 span2 links] (first s)]
+        (if (> (span-overlap span span2) 0.5)
+          (concat res
+                  (list [id2 name2
+                         {:start (min (:start span) (:start span2))
+                          :end (max (:end span) (:end span2))}
+                         (conj links link)]) (rest s))
+          (recur (conj res (first s))
+                 (rest s)))))))
+
+(defn merge-spans
+  [d]
+  (loop [top -1
+         spans nil
+         passages nil
+         in d]
+    (if (not (seq in))
+      (concat passages (reduce link-spans nil spans))
+      (let [[id name span link] (first in)]
+        (if (> (:start span) top)
+          (recur (:end span)
+                 (list (first in))
+                 (concat passages (reduce link-spans nil spans))
+                 (rest in))
+          (recur (max top (:end span))
+                 (conj spans (first in))
+                 passages
+                 (rest in)))))))
+
+(defn text-nodes
+  "Merge aligned passages into nodes for clustering"
+  [& argv]
+  (let [[options remaining banner]
+        (safe-cli argv
+                  (str
+                   "passim text-nodes [options]\n\n"
+                   (var-doc #'text-nodes))
+                  ["-h" "--help" "Show help" :default false :flag true])]
+    (doseq [[node [id name span links]]
+            (->> *in* jio/reader line-seq text-pass (mapcat merge-spans)
+                 (map-indexed vector))]
+      (doseq [link links]
+        (println id name (:start span) (:end span) link node)))))
 
 (defn diff-words
   [gram lines]
@@ -639,6 +700,7 @@
          "format" #'format-cluster
          "gexf" #'gexf-cluster
          "idtab" #'idtab-cluster
+         "nodes" #'text-nodes
          "qoac" #'passim.quotes/qoac
          "quotes" #'passim.quotes/dump-quotes}
         usage
