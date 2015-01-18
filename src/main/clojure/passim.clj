@@ -613,22 +613,22 @@
   (->> x
        (map
         (fn [line]
-          (let [[id name s e link] (s/split line #" ")]
-            [(Long/parseLong id) name
+          (let [[id s e link] (s/split line #" ")]
+            [(Long/parseLong id)
              {:start (Long/parseLong s) :end (Long/parseLong e)}
              (Long/parseLong link)])))
        (partition-by first)))
 
 (defn link-spans
-  [f spans [id name span link]]
+  [f spans [id span link]]
   (loop [res nil
          s spans]
     (if (not (seq s))
-      (conj res [id name span [link]])
-      (let [[id2 name2 span2 links] (first s)]
+      (conj res [id span [link]])
+      (let [[id2 span2 links] (first s)]
         (if (f span span2)
           (concat res
-                  (list [id2 name2
+                  (list [id2
                          {:start (min (:start span) (:start span2))
                           :end (max (:end span) (:end span2))}
                          (conj links link)]) (rest s))
@@ -644,7 +644,7 @@
            in d]
       (if (not (seq in))
         (concat passages (r spans))
-        (let [[id name span link] (first in)]
+        (let [[id span link] (first in)]
           (if (> (:start span) top)
             (recur ^long (:end span)
                    (list (first in))
@@ -667,7 +667,7 @@
                   ["-o" "--relative-overlap" "Proportion of longer text that must overlap" :default 0.5 :parse-fn #(Double/parseDouble %)]
                   ["-h" "--help" "Show help" :default false :flag true])
         {:keys [min-overlap relative-overlap]} options]
-    (doseq [[node [id name span links]]
+    (doseq [[node [id span links]]
             (->> *in* jio/reader line-seq text-pass
                  (mapcat (partial
                           merge-spans
@@ -676,7 +676,7 @@
                             #(>= (span-overlap %1 %2) relative-overlap))))
                  (map-indexed vector))]
       (doseq [link links]
-        (println id name (:start span) (:end span) link node)))))
+        (println id (:start span) (:end span) link node)))))
 
 (defn diff-words
   [gram lines]
