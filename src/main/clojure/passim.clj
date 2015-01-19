@@ -445,6 +445,19 @@
        vals
        (reduce max)))
 
+(defn max-series-repeat
+  [series ids]
+  (->> ids
+       ;; NB: Not unique series, but same series with multiple IDs.
+       (map #(vector % (series %)))
+       (into {})
+       vals
+       ;; Remove dummy negative series
+       (remove #(< % 0))
+       frequencies
+       vals
+       (reduce max)))
+
 (defn cluster-scores
   "Single-link clustering of reprints"
   [& argv]
@@ -501,8 +514,9 @@
           :members
           (sort-by
            :date
-           (for [[name start end] members]
-             (let [m (doc-meta ri name)
+           (for [[docid start end] members]
+             (let [name (.getDocumentName ri (int docid))
+                   m (doc-meta ri name)
                    base-url (m "url")
                    text (doc-text ri name start end)
                    url (if (re-find #"<w p=" text)
@@ -621,8 +635,8 @@
 
 (defn link-spans
   [f spans [id span link]]
-  (loop [res nil
-         s spans]
+  (loop [res []
+         s (sort-by #(- (:start (second %)) (:end (second %))) spans)]
     (if (not (seq s))
       (conj res [id span [link]])
       (let [[id2 span2 links] (first s)]
@@ -661,7 +675,7 @@
   (let [[options remaining banner]
         (safe-cli argv
                   (str
-                   "passim text-nodes [options]\n\n"
+                   "passim nodes [options]\n\n"
                    (var-doc #'text-nodes))
                   ["-m" "--min-overlap" "Minimum size of overlap" :default 0 :parse-fn #(Double/parseDouble %)]
                   ["-o" "--relative-overlap" "Proportion of longer text that must overlap" :default 0.5 :parse-fn #(Double/parseDouble %)]
@@ -677,6 +691,78 @@
                  (map-indexed vector))]
       (doseq [link links]
         (println id (:start span) (:end span) link node)))))
+
+(defn make-passage-graph
+  [links]
+  (->> links
+       (map (fn [x] (mapv #(Long/parseLong %) (s/split x #" "))))
+       (partition 2)
+       (reduce
+        (fn [[adj pass] [[d1 s1 e1 l1 p1] [d2 s2 e2 l2 p2]]]
+          ;; If we wanted to use vectors rather than hashes,
+          ;; we'd do some hacky vector growing here.
+          [(-> adj
+               (assoc p1 (conj (get adj p1) p2))
+               (assoc p2 (conj (get adj p2) p1)))
+           (-> pass
+               (assoc p1 [d1 s1 e1])
+               (assoc p2 [d2 s2 e2]))])
+        [{} {}])))
+
+(defn find-components
+  [adj]
+  (reduce
+   (fn [[cluster-count m] [node neighbors]]
+     (if (m node)
+       [cluster-count m]
+       (let [cno (inc cluster-count)
+             cluster
+             (loop [seen {node cno}
+                    q neighbors]
+               (if (not (seq q))
+                 seen
+                 (if (seen (first q))
+                   (recur seen (rest q))
+                   (recur (assoc seen (first q) cno)
+                          (concat (rest q) (adj (first q)))))))]
+         [cno (merge m cluster)])))
+   [0 {}]
+   adj))
+
+(defn connect-passages
+  "Output connected components of passages"
+  [& argv]
+  (let [[options remaining banner]
+        (safe-cli argv
+                  (str
+                   "passim connect [options]\n\n"
+                   (var-doc #'connect-passages))
+                  ["-m" "--series-map" "Map internal ids documents to integer series ids"]
+                  ["-p" "--max-proportion" "Maximum proportion of cluster from one series" :default 1.0 :parse-fn #(Double/parseDouble %)]
+                  ["-r" "--max-repeats" "Maximum number of texts from one series" :default 4 :parse-fn #(Integer/parseInt %)]
+
+                  ["-h" "--help" "Show help" :default false :flag true])
+        {:keys [max-proportion max-repeats series-map]} options
+        series (if series-map
+                 (read-series-map series-map)
+                 identity)
+        [adj-matrix passages] (-> *in* jio/reader line-seq make-passage-graph)
+        [n cluster] (find-components adj-matrix)]
+    (doseq [[id c] (->> cluster keys (group-by cluster) vals
+                        (map #(map passages %))
+                        (remove
+                         (if (< max-proportion 1)
+                           #(> (double (/ (max-series-repeat series (map first %)) (count %)))
+                               max-proportion)
+                           #(> (max-series-repeat series (map first %))
+                               max-repeats)))
+                        (sort-by #(- (count %))) (map-indexed vector))]
+      (json/write
+       {:size (count c)
+        :id (inc id)
+        :members c}
+       *out* :escape-slash false)
+      (println))))
 
 (defn diff-words
   [gram lines]
@@ -710,6 +796,7 @@
          "gexf" #'gexf-cluster
          "idtab" #'idtab-cluster
          "nodes" #'text-nodes
+         "connect" #'connect-passages
          "qoac" #'passim.quotes/qoac
          "quotes" #'passim.quotes/dump-quotes}
         usage
