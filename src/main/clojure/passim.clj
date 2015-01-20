@@ -724,7 +724,7 @@
                  (if (seen (first q))
                    (recur seen (rest q))
                    (recur (assoc seen (first q) cno)
-                          (concat (rest q) (adj (first q)))))))]
+                          (vec (concat (rest q) (adj (first q))))))))]
          [cno (merge m cluster)])))
    [0 {}]
    adj))
