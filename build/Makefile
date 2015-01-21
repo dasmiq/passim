@@ -122,6 +122,8 @@ endif
 dir=$(COLL)/$(pairs)
 
 cluster=$(dir)/cl$(MINALG)-flover$(subst .,,$(RELOVER))-rep$(MAXREP).cluster.gz
+pass=$(dir)/cl$(MINALG).pass.gz
+nodes=$(dir)/cl$(MINALG)-flover$(subst .,,$(RELOVER)).nodes.gz
 clinfo=$(patsubst %.cluster.gz,%.clinfo.gz,$(cluster))
 idtab=$(patsubst %.cluster.gz,%.idtab.gz,$(cluster))
 gexf=$(patsubst %.cluster.gz,%.gexf.gz,$(cluster))
@@ -135,6 +137,10 @@ clinfo:	$(clinfo)
 idtab:	$(idtab)
 
 gexf:	$(gexf)
+
+nodes:	$(nodes)
+
+pass:	$(pass)
 
 cluster:	$(cluster)
 
@@ -236,8 +242,17 @@ else
 	ls -1 $*.clinfo.tmp/out* | xargs cat | gzip -c > $@
 endif
 
-$(cluster):	$(dir)/pall.proc.srt.gz
-	$(QRUN) 'gzip -dc $< | awk "\$$1 >= $(MINALG)" | java -d64 -Xmx32g ${passimopt} cluster --relative-overlap $(RELOVER) --max-repeats $(MAXREP) | gzip -c > $@'
+$(pass):	$(dir)/pall.proc.srt.gz
+	$(QRUN) /bin/bash -c 'gzip -dc $< | awk "\$$4 / \$$1 >= 2 { print }" | cut -f 1,7,8,11-14 | awk "\$$1 >= $(MINALG) { print \$$2,\$$4,\$$5,NR; print \$$3,\$$6,\$$7,NR; }" | sort -k1,1n -k2,2n -k3,3n | gzip -c > $@'
+
+$(nodes):	$(pass)
+	$(QRUN) 'gzip -dc $< | passim nodes --relative-overlap $(RELOVER) | sort -k4,4n -k5,5n | gzip -c > $@'
+
+# $(cluster):	$(dir)/pall.proc.srt.gz
+# 	$(QRUN) 'gzip -dc $< | awk "\$$1 >= $(MINALG)" | java -d64 -Xmx32g ${passimopt} cluster --relative-overlap $(RELOVER) --max-repeats $(MAXREP) | gzip -c > $@'
+
+$(cluster):	$(nodes)
+	$(QRUN) -R 'mem>32000' 'gzip -dc $< | java -d64 -Xmx32g ${passimopt} connect --series-map $(COLL)/idx/names.smap --max-repeats $(MAXREP) | gzip -c > $@'
 
 %.idtab.gz:	%.clinfo.gz
 	$(QRUN) 'gzip -dc $< | ${passim} idtab | sort -k1,1n -k3,4 | gzip -c > $@'
