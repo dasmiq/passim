@@ -710,24 +710,26 @@
         [{} {}])))
 
 (defn find-components
-  [adj]
-  (reduce
-   (fn [[cluster-count m] [node neighbors]]
-     (if (m node)
-       [cluster-count m]
-       (let [cno (inc cluster-count)
-             cluster
-             (loop [seen {node cno}
-                    q neighbors]
-               (if (not (seq q))
-                 seen
-                 (if (seen (first q))
-                   (recur seen (rest q))
-                   (recur (assoc seen (first q) cno)
-                          (vec (concat (rest q) (adj (first q))))))))]
-         [cno (merge m cluster)])))
-   [0 {}]
-   adj))
+  ([adj] (find-components adj 0 {} adj))
+  ([adj cluster-count seen coll]
+   (lazy-seq
+    (when-let [s (seq coll)]
+      (let [[node neighbors] (first s)]
+        (if (seen node)
+          (find-components adj cluster-count seen (rest s))
+          (let [cno (inc cluster-count)
+                cluster
+                (loop [m {node cno}
+                       q (vec neighbors)]
+                  (if (empty? q)
+                    m
+                    (let [cur (peek q)]
+                      (if (m cur)
+                        (recur m (pop q))
+                        (recur (assoc m cur cno)
+                               (apply conj (pop q) (adj cur)))))))]
+            (cons (vec (keys cluster))
+                  (find-components adj cno (conj seen cluster) (rest s))))))))))
 
 (defn connect-passages
   "Output connected components of passages"
@@ -746,10 +748,13 @@
         series (if series-map
                  (read-series-map series-map)
                  identity)
-        [adj-matrix passages] (-> *in* jio/reader line-seq make-passage-graph)
-        [n cluster] (find-components adj-matrix)]
-    (doseq [[id c] (->> cluster keys (group-by cluster) vals
+        [adj-matrix passages] (-> *in* jio/reader line-seq make-passage-graph)]
+    (doseq [[id c] (->> adj-matrix find-components
                         (map #(map passages %))
+                        (remove
+                         #(>
+                           (->> % (map first) frequencies vals (reduce max))
+                           max-repeats))
                         (remove
                          (if (< max-proportion 1)
                            #(> (double (/ (max-series-repeat series (map first %)) (count %)))
@@ -815,22 +820,3 @@
           (apply v args)
           (exit 1 usage)))
       (exit 1 usage))))
-
-      ;;   (condp = cmd
-      ;;     "diffs" (diff-words
-      ;;              (Long/parseLong (first args))
-      ;;              (-> System/in java.io.InputStreamReader. java.io.BufferedReader. line-seq))
-      ;;     ;; These are for debugging and aren't used much.
-      ;;     "gaps" (index-gaps (first args) (second args)
-      ;;                        (Integer/parseInt (nth args 2)) (Integer/parseInt (nth args 3))
-      ;;                        (Integer/parseInt (nth args 4)) (Integer/parseInt (nth args 5))
-      ;;                        (Integer/parseInt (nth args 6)))                       
-      ;;     "counts" (->> (first args) dump-index (map second) frequencies prn)
-      ;;     "entries"  (->> (first args) dump-index count prn)
-      ;;     "total"  (->> (first args) dump-index (rand-blat first 0.001) (map second) (reduce +) prn)
-      ;;     "dump" (doseq
-      ;;                [s (->> (first args) dump-index)]
-      ;;              (println s))
-      ;;     "easy-dump" (kv-dump (DiskIndex/openIndexPart (first args)))
-      ;;     (exit 1 usage)
-      ;; (exit 1 usage))))))
