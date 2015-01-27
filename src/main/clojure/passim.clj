@@ -448,10 +448,7 @@
 (defn max-series-repeat
   [series ids]
   (->> ids
-       ;; NB: Not unique series, but same series with multiple IDs.
-       (map #(vector % (series %)))
-       (into {})
-       vals
+       (map series)
        ;; Remove dummy negative series
        (remove #(< % 0))
        frequencies
@@ -669,6 +666,15 @@
                    passages
                    (rest in))))))))
 
+(defn cluster-cleanup
+  [c]
+  (->> c
+       sort
+       (map (fn [[id s e]] [id {:start s :end e} 1]))
+       (partition-by first)
+       (mapcat (partial merge-spans #(> (span-overlap %1 %2) 0)))
+       (map (fn [[id span links]] [id (:start span) (:end span)]))))
+
 (defn text-nodes
   "Merge aligned passages into nodes for clustering"
   [& argv]
@@ -755,6 +761,7 @@
                          #(>
                            (->> % (map first) frequencies vals (reduce max))
                            max-repeats))
+                        (map cluster-cleanup)
                         (remove
                          (if (< max-proportion 1)
                            #(> (double (/ (max-series-repeat series (map first %)) (count %)))
