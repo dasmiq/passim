@@ -224,7 +224,7 @@ endif
 
 %.clinfo.tmp/in000:	%.cluster.gz
 	mkdir -p $*.clinfo.tmp; \
-	gzip -fdc $< | ${SPLIT} -d -a 3 -l 2000 - $*.clinfo.tmp/in
+	gzip -fdc $< | ${SPLIT} -d -a 3 -l 5000 - $*.clinfo.tmp/in
 
 $(subst .gz,.tmp,$(clinfo))/out%:	$(subst .gz,.tmp,$(clinfo))/in%
 	${passim} format $(dir $@)/../../idx < $< > $@
@@ -252,7 +252,7 @@ $(nodes):	$(pass)
 # 	$(QRUN) 'gzip -dc $< | awk "\$$1 >= $(MINALG)" | java -d64 -Xmx32g ${passimopt} cluster --relative-overlap $(RELOVER) --max-repeats $(MAXREP) | gzip -c > $@'
 
 $(cluster):	$(nodes)
-	$(QRUN) -R 'mem>32000' 'gzip -dc $< | java -d64 -Xmx32g ${passimopt} connect --series-map $(COLL)/idx/names.smap --max-repeats $(MAXREP) | gzip -c > $@'
+	$(QRUN) -R 'mem>32000' 'gzip -dc $< | java -d64 -Xmx32g ${passimopt} connect --series-map $(COLL)/idx/names.smap --max-repeats $(MAXREP) | sort -t: -k2,2rn | perl -pe "\$$c++; s/^{/{\"id\":\$$c,/" | gzip -c > $@'
 
 %.idtab.gz:	%.clinfo.gz
 	$(QRUN) 'gzip -dc $< | ${passim} idtab | sort -k1,1n -k3,4 | gzip -c > $@'

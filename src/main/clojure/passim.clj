@@ -448,6 +448,8 @@
 (defn max-series-repeat
   [series ids]
   (->> ids
+       ;; NB: Not unique series, but same series with multiple IDs.
+       set
        (map series)
        ;; Remove dummy negative series
        (remove #(< % 0))
@@ -631,40 +633,45 @@
        (partition-by first)))
 
 (defn link-spans
-  [f spans [id span link]]
-  (loop [res []
-         s (sort-by #(- (:start (second %)) (:end (second %))) spans)]
-    (if (not (seq s))
-      (conj res [id span [link]])
-      (let [[id2 span2 links] (first s)]
-        (if (f span span2)
-          (concat res
-                  (list [id2
-                         {:start (min (:start span) (:start span2))
-                          :end (max (:end span) (:end span2))}
-                         (conj links link)]) (rest s))
-          (recur (conj res (first s))
-                 (rest s)))))))
+  [f init]
+  (->> init
+       (sort-by (fn [[_ span _]] (- (:start span) (:end span))))
+       (reduce
+        (fn [spans [id span link]]
+          (loop [res []
+                 s spans]
+            (if (not (seq s))
+              (conj res [id span [link]])
+              (let [[id2 span2 links] (first s)]
+                (if (f span span2)
+                  (concat res
+                          (list [id2
+                                 {:start (min (:start span) (:start span2))
+                                  :end (max (:end span) (:end span2))}
+                                 (conj links link)]) (rest s))
+                  (recur (conj res (first s))
+                         (rest s)))))))
+        [])))
 
 (defn merge-spans
   [f d]
-  (let [r (partial reduce (partial link-spans f) nil)]
-    (loop [top -1
-           spans nil
-           passages nil
-           in d]
-      (if (not (seq in))
-        (concat passages (r spans))
-        (let [[id span link] (first in)]
-          (if (> (:start span) top)
-            (recur ^long (:end span)
-                   (list (first in))
-                   (concat passages (r spans))
-                   (rest in))
-            (recur (max top ^long (:end span))
-                   (conj spans (first in))
-                   passages
-                   (rest in))))))))
+  (loop [top -1
+         spans []
+         passages []
+         in d]
+    (if (not (seq in))
+      (concat passages (link-spans f spans))
+      (let [cur (first in)
+            [id span link] cur]
+        (if (> (:start span) top)
+          (recur ^long (:end span)
+                 [cur]
+                 (concat passages (link-spans f spans))
+                 (rest in))
+          (recur (max top ^long (:end span))
+                 (conj spans cur)
+                 passages
+                 (rest in)))))))
 
 (defn cluster-cleanup
   [c]
@@ -673,7 +680,7 @@
        (map (fn [[id s e]] [id {:start s :end e} 1]))
        (partition-by first)
        (mapcat (partial merge-spans #(> (span-overlap %1 %2) 0)))
-       (map (fn [[id span links]] [id (:start span) (:end span)]))))
+       (mapv (fn [[id span links]] [id (:start span) (:end span)]))))
 
 (defn text-nodes
   "Merge aligned passages into nodes for clustering"
@@ -754,27 +761,21 @@
         series (if series-map
                  (read-series-map series-map)
                  identity)
+        remover (if (< max-proportion 1)
+                  #(> (double (/ (max-series-repeat series (map first %)) (count %)))
+                      max-proportion)
+                  #(> (max-series-repeat series (map first %))
+                      max-repeats))
         [adj-matrix passages] (-> *in* jio/reader line-seq make-passage-graph)]
-    (doseq [[id c] (->> adj-matrix find-components
-                        (map #(map passages %))
-                        (remove
-                         #(>
-                           (->> % (map first) frequencies vals (reduce max))
-                           max-repeats))
-                        (map cluster-cleanup)
-                        (remove
-                         (if (< max-proportion 1)
-                           #(> (double (/ (max-series-repeat series (map first %)) (count %)))
-                               max-proportion)
-                           #(> (max-series-repeat series (map first %))
-                               max-repeats)))
-                        (sort-by #(- (count %))) (map-indexed vector))]
-      (json/write
-       {:size (count c)
-        :id (inc id)
-        :members c}
-       *out* :escape-slash false)
-      (println))))
+    (doseq [c (find-components adj-matrix)]
+      (let [spans (mapv passages c)]
+        (when-not (remover spans)
+          (let [cleaned (cluster-cleanup spans)]
+            (json/write
+             {:size (count cleaned)
+              :members cleaned}
+             *out* :escape-slash false)
+            (println)))))))
 
 (defn diff-words
   [gram lines]
