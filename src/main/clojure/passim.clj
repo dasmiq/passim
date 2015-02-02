@@ -329,24 +329,6 @@
   [set1 set2]
   (/ (count (set/intersection set1 set2)) (count (set/union set1 set2))))
 
-(defn complete-cluster-matches
-  [m thresh voc id]
-  (let [members (get-in m [:members id])]
-    (= (count members)
-       (count
-        (filter
-         #(> (jaccard voc (:vocabulary %)) thresh)
-         members)))))
-
-(defn single-cluster-matches
-  [m thresh voc id]
-  (let [members (get-in m [:members id])]
-    (<= 1
-        (count
-         (filter
-          #(> (jaccard voc (:vocabulary %)) thresh)
-          members)))))
-
 (defn absolute-overlap
   [rec1 rec2]
   (let [s1 ^long (:start rec1)
@@ -367,84 +349,6 @@
     (/ (max 0 (- (min e1 e2) (max s1 s2)))
        (max len1 len2))))
 
-(defn single-link-matches
-  [match-fn thresh m clusters1 clusters2 rec1 rec2]
-  (let [id1 (:id rec1)
-        id2 (:id rec2)]
-    (set/union
-     (set
-      (filter #(>= (match-fn rec1 (get-in m [:members % id1])) thresh) clusters1))
-     (set
-      (filter #(>= (match-fn rec2 (get-in m [:members % id2])) thresh) clusters2)))))
-
-(defn greedy-cluster-reducer
-  [match-fn m line]
-  (let [[sscore prop1 prop2 matches gaps ascore sid1 sid2 name1 name2 s1 e1 s2 e2 raw1 raw2]
-        (s/split line #"\t")
-        id1 (Integer/parseInt sid1)
-        id2 (Integer/parseInt sid2)
-        score (Double/parseDouble sscore)
-        rec1 {:id id1 :name name1 :series (doc-series name1) :score score
-              :start (Long/parseLong s1) :end (Long/parseLong e1) :text nil}
-        rec2 {:id id2 :name name2 :series (doc-series name2) :score score
-              :start (Long/parseLong s2) :end (Long/parseLong e2) :text nil}
-        nextid (inc (get m :top 0))
-        clusters1 (get-in m [:clusters id1] #{})
-        clusters2 (get-in m [:clusters id2] #{})
-        matches (match-fn m clusters1 clusters2 rec1 rec2)
-        match (or (first matches) nextid)]
-    (assoc
-        (if (> (count matches) 1)
-          (let [others (rest matches)
-                orecs (map (partial get (:members m)) others)
-                newrec (merge {id1 rec1 id2 rec2} (reduce merge orecs) (get-in m [:members match]))
-                docs (keys newrec)
-                newidx
-                (into
-                 {} (map
-                     vector docs
-                     (map #(conj (apply disj (get (:clusters m) % #{}) others) match) docs)))]
-            ;; (println match "\t" others)
-            ;; (println id1 "clusters1:" clusters1)
-            ;; (println id2 "clusters2:" clusters2)
-            ;; (println "docs:" docs)
-            ;; (println "newidx:" newidx)
-            ;; Need to dissociate the old cluster numbers from
-            ;; *all* documents, not just id1 and id2
-            ;; To test, take the first 877
-            (-> m
-                ;; need to dissoc old members entries
-                (assoc :members (apply dissoc (:members m) others))
-                (assoc-in [:members match] newrec)
-                (assoc :clusters (merge (:clusters m) newidx))))
-          (-> m
-              (assoc-in [:members match] (merge {id1 rec1 id2 rec2} (get-in m [:members match])))
-              (assoc-in [:clusters id1] (conj clusters1 match))
-              (assoc-in [:clusters id2] (conj clusters2 match))))
-      :top nextid)))
-
-(defn- cluster-member-text
-  [^Retrieval ri rec]
-  (s/join " " (subvec (doc-words ri (:name rec)) (:start rec) (:end rec))))
-
-(defn dump-cluster
-  [cluster]
-  [(->> cluster (map :name) set count)
-   (mapv
-    #((juxt :name :start :end) %)
-    cluster)])
-
-(defn top-rep-cluster
-  [cluster]
-  (->> cluster
-       ;; NB: Not unique series, but same series with multiple IDs.
-       (map (juxt :id :series))
-       (into {})
-       vals
-       frequencies
-       vals
-       (reduce max)))
-
 (defn max-series-repeat
   [series ids]
   (->> ids
@@ -456,43 +360,6 @@
        frequencies
        vals
        (reduce max)))
-
-(defn cluster-scores
-  "Single-link clustering of reprints"
-  [& argv]
-  (let [[options remaining banner]
-        (safe-cli argv
-                  (str
-                   "passim cluster [options]\n\n"
-                   (var-doc #'cluster-scores))
-                  ["-m" "--min-overlap" "Minimum size of overlap" :default 0 :parse-fn #(Double/parseDouble %)]
-                  ["-o" "--relative-overlap" "Proportion of longer text that must overlap" :default 0.5 :parse-fn #(Double/parseDouble %)]
-                  ["-p" "--max-proportion" "Maximum proportion of cluster from one series" :default 1.0 :parse-fn #(Double/parseDouble %)]
-                  ["-r" "--max-repeats" "Maximum number of texts from one series" :default 4 :parse-fn #(Integer/parseInt %)]
-                  ["-h" "--help" "Show help" :default false :flag true])
-        lines (-> *in* jio/reader line-seq)
-        {:keys [min-overlap relative-overlap max-proportion max-repeats]} options]
-    (doseq
-        [cluster
-         (->> lines
-              (reduce (partial greedy-cluster-reducer
-                               (if (> min-overlap 0)
-                                 (partial single-link-matches absolute-overlap min-overlap)
-                                 (partial single-link-matches span-overlap relative-overlap)))
-                      {})
-              :members
-              vals
-              (map vals)
-              (remove
-               (if (< max-proportion 1)
-                 #(> (double (/ (top-rep-cluster %) (count %))) max-proportion)
-                 #(> (top-rep-cluster %) max-repeats)))
-              (map dump-cluster)
-              (sort (comp - compare))
-              (map-indexed
-               #(hash-map :id (inc %1) :size (first %2) :members (second %2))))]
-      (json/write cluster *out* :escape-slash false)
-      (println))))
 
 (defn format-cluster
   "Format cluster data"
@@ -804,7 +671,6 @@
         {"pairs" #'dump-pairs
          "merge" #'merge-pairs
          "scores" #'dump-scores
-         "cluster" #'cluster-scores
          "format" #'format-cluster
          "gexf" #'gexf-cluster
          "idtab" #'idtab-cluster
