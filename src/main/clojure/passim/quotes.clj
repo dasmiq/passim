@@ -351,17 +351,18 @@
 ;; that their ngrams show up as occurring at least once.  We should
 ;; therefore also remove hits to these texts from the results below.
 (defn quoted-passages
-  [docs gram bad-docs ^KeyIterator ki ^Retrieval ri lm {:keys [max-count max-gap min-score words]}]
+  [docs gram bad-docs ^KeyIterator ki ^Retrieval ri lm
+   {:keys [max-count max-gap min-score raw words]}]
   (let [idx (index-tokens docs gram)
         page-hits (get-page-hits idx ki ri max-count max-gap bad-docs)
         ;; book-hits (frequencies (map (comp first doc-id-parts first) page-hits))
         ]
-    (->> page-hits
-         sort
-         ;; We keep a single record for each page, with multiple
-         ;; spans, so we can save time and look up the text for a
-         ;; page once.
-         (mapcat (partial proc-page idx ri lm min-score words)))))
+    (if raw
+      page-hits
+      ;; We keep a single record for each page, with multiple
+      ;; spans, so we can save time and look up the text for a
+      ;; page once.
+      (mapcat (partial proc-page idx ri lm min-score words) (sort page-hits)))))
 
 (defn- get-bad-docs
   [dir]
@@ -382,6 +383,7 @@
                   ["-g" "--max-gap" "Maximum gap in n-gram hits within a passage" :default 200 :parse-fn #(Integer/parseInt %)]
                   ["-s" "--min-score" "Minimum score for n-gram matches" :default 0 :parse-fn #(Double/parseDouble %)]
                   ["-p" "--pretty" "Pretty-print JSON output" :default false :flag true]
+                  ["-r" "--raw" "Output raw span information" :default false :flag true]
                   ["-w" "--words" "Output alignments at the word level" :default false :flag true]
                   ["-l" "--lm" "Language model binary" :default nil]
                   ["-h" "--help" "Show help" :default false :flag true])]
