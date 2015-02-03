@@ -80,6 +80,7 @@ MINMINALG=10
 MINALG=20
 RELOVER=0.5
 MAXREP=4
+MAXPROP=1
 
 ifeq ($(MODP),1)
 pairs=pairs-n$(NGRAM)u$(UPPER)
@@ -121,9 +122,15 @@ endif
 
 dir=$(COLL)/$(pairs)
 
-cluster=$(dir)/cl$(MINALG)-flover$(subst .,,$(RELOVER))-rep$(MAXREP).cluster.gz
 pass=$(dir)/cl$(MINALG).pass.gz
 nodes=$(dir)/cl$(MINALG)-flover$(subst .,,$(RELOVER)).nodes.gz
+
+ifeq ($(MAXPROP),1)
+cluster=$(dir)/cl$(MINALG)-flover$(subst .,,$(RELOVER))-rep$(MAXREP).cluster.gz
+else
+cluster=$(dir)/cl$(MINALG)-flover$(subst .,,$(RELOVER))-rep$(MAXREP)-prop$(subst .,,$(MAXPROP)).cluster.gz
+endif
+
 clinfo=$(patsubst %.cluster.gz,%.clinfo.gz,$(cluster))
 idtab=$(patsubst %.cluster.gz,%.idtab.gz,$(cluster))
 gexf=$(patsubst %.cluster.gz,%.gexf.gz,$(cluster))
@@ -248,11 +255,8 @@ $(pass):	$(dir)/pall.proc.srt.gz
 $(nodes):	$(pass)
 	$(QRUN) 'gzip -dc $< | passim nodes --relative-overlap $(RELOVER) | sort -k4,4n -k5,5n | gzip -c > $@'
 
-# $(cluster):	$(dir)/pall.proc.srt.gz
-# 	$(QRUN) 'gzip -dc $< | awk "\$$1 >= $(MINALG)" | java -d64 -Xmx32g ${passimopt} cluster --relative-overlap $(RELOVER) --max-repeats $(MAXREP) | gzip -c > $@'
-
 $(cluster):	$(nodes)
-	$(QRUN) -R 'mem>32000' 'gzip -dc $< | java -d64 -Xmx32g ${passimopt} connect --series-map $(COLL)/idx/names.smap --max-repeats $(MAXREP) | sort -t: -k2,2rn | perl -pe "\$$c++; s/^{/{\"id\":\$$c,/" | gzip -c > $@'
+	$(QRUN) -R 'mem>32000' 'gzip -dc $< | java -d64 -Xmx32g ${passimopt} connect --series-map $(COLL)/idx/names.smap --max-repeats $(MAXREP) --max-proportion $(MAXPROP) | sort -t: -k2,2rn | perl -pe "\$$c++; s/^{/{\"id\":\$$c,/" | gzip -c > $@'
 
 %.idtab.gz:	%.clinfo.gz
 	$(QRUN) 'gzip -dc $< | ${passim} idtab | sort -k1,1n -k3,4 | gzip -c > $@'
