@@ -145,7 +145,7 @@
         eoff (.get wends (dec end))
         esuff (.get wends (dec (min len (+ end context))))
         raw (subs (.text d) soff eoff)
-        m (into {} (.metadata d))
+        m (doc-meta d)
         base-url (m "url")
         info {:series series
               :n n
@@ -279,7 +279,7 @@
           term-count (count (:words idx))
           pterms (vec (.terms doc-data))
           n2 (count pterms)
-          m (into {} (.metadata doc-data))
+          m (doc-meta doc-data)
           title (m "title")
           date (m "date")
           language (m "language")]

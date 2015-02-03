@@ -382,9 +382,10 @@
            :date
            (for [[docid start end] members]
              (let [name (.getDocumentName ri (int docid))
-                   m (doc-meta ri name)
+                   d (get-index-doc ri name)
+                   m (doc-meta d)
                    base-url (m "url")
-                   text (doc-text ri name start end)
+                   text (doc-text d start end)
                    url (if (re-find #"<w p=" text)
                          (loc-url base-url text)
                          base-url)

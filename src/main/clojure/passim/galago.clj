@@ -104,10 +104,13 @@
   (vec (.terms (get-index-doc ri dname))))
 
 (defn doc-text
-  [ri dname start end]
-  (let [d (get-index-doc ri dname)]
-    (subs (.text d) (.get (.termCharBegin d) start) (.get (.termCharEnd d) (dec end)))))
+  ([^Document d start end]
+   (subs (.text d) (.get (.termCharBegin d) start) (.get (.termCharEnd d) (dec end))))
+  ([^Retrieval ri dname start end]
+   (doc-text (get-index-doc ri dname) start end)))
 
 (defn doc-meta
-  [ri dname]
-  (into {} (.metadata (get-index-doc ri dname))))
+  ([^Document d]
+   (into {} (.metadata d)))
+  ([^Retrieval ri dname]
+   (doc-meta (get-index-doc ri dname))))
