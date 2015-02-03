@@ -518,7 +518,8 @@
                                  (conj links link)]) (rest s))
                   (recur (conj res (first s))
                          (rest s)))))))
-        [])))
+        [])
+       vec))
 
 (defn merge-spans
   [f d]
@@ -527,13 +528,13 @@
          passages []
          in d]
     (if (not (seq in))
-      (concat passages (link-spans f spans))
+      (vec (concat passages (link-spans f spans)))
       (let [cur (first in)
             [id span link] cur]
         (if (> (:start span) top)
           (recur ^long (:end span)
                  [cur]
-                 (concat passages (link-spans f spans))
+                 (vec (concat passages (link-spans f spans)))
                  (rest in))
           (recur (max top ^long (:end span))
                  (conj spans cur)
@@ -628,15 +629,13 @@
         series (if series-map
                  (read-series-map series-map)
                  identity)
-        remover (if (< max-proportion 1)
-                  #(> (double (/ (max-series-repeat series (map first %)) (count %)))
-                      max-proportion)
-                  #(> (max-series-repeat series (map first %))
-                      max-repeats))
         [adj-matrix passages] (-> *in* jio/reader line-seq make-passage-graph)]
     (doseq [c (find-components adj-matrix)]
-      (let [spans (mapv passages c)]
-        (when-not (remover spans)
+      (let [spans (mapv passages c)
+            top-rep (max-series-repeat series (map first spans))]
+        (when (and (<= top-rep max-repeats)
+                   (or (>= max-proportion 1)
+                       (<= (double (/ top-rep (count spans))) max-proportion)))
           (let [cleaned (cluster-cleanup spans)]
             (json/write
              {:size (count cleaned)
