@@ -431,13 +431,13 @@
     (cons rec (lazy-seq (json-seq rdr)))))
 
 (defn gexf-stats
-  [recs binf]
+  [recs binf ids]
   (->> recs
        (mapcat
         (fn [rec]
           (let [{:keys [id size members]} rec]
             (map
-             #(conj (vec (sort (map :name %))) (binf %))
+             #(conj (->> % (map (comp ids :name)) sort vec) (binf %))
              (combinations members 2)))))
        frequencies))
 
@@ -456,7 +456,9 @@
                       (map #(vector (str (:id %)) (:master_name %)) info)
                       (->> info (mapcat :publication_names)
                            (map #(vector (str (:sn %)) (:name %))))))
-        bins (gexf-stats (-> *in* jio/reader json-seq) max-year)]
+        ids (into {}
+                  (mapcat #(map vector (map :sn (:publication_names %)) (repeat (str (:id %)))) info))
+        bins (gexf-stats (-> *in* jio/reader json-seq) max-year #(get ids % %))]
     (println "<gexf>")
     (println "<graph defaultedgetype=\"undirected\" mode=\"dynamic\" timeformat=\"date\">")
     (println "<nodes>")
