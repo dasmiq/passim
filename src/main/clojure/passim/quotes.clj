@@ -323,8 +323,11 @@
                      {:words (proc-aligned-doc
                               out1 out2 idx sword1 eword1 doc-data sword2 eword2)})
                    {:text1 (subs (:text idx) start stop)
+                    ;; Character offsets in reference text used by highbrow
                     :start start
                     :stop stop
+                    :sword1 sword1 :eword1 eword1
+                    :sword2 sword2 :eword2 eword2
                     :len1 (- eword1 sword1)
                     :len2 (- eword2 sword2)
                     :prop1 (double (/ (- eword1 sword1) term-count))
