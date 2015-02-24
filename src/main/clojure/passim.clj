@@ -514,11 +514,11 @@
               (conj res [id span [link]])
               (let [[id2 span2 links] (first s)]
                 (if (f span span2)
-                  (concat res
-                          (list [id2
-                                 {:start (min (:start span) (:start span2))
-                                  :end (max (:end span) (:end span2))}
-                                 (conj links link)]) (rest s))
+                  (vec (concat res
+                               (list [id2
+                                      {:start (min (:start span) (:start span2))
+                                       :end (max (:end span) (:end span2))}
+                                      (conj links link)]) (rest s)))
                   (recur (conj res (first s))
                          (rest s)))))))
         [])
