@@ -79,6 +79,7 @@ MINMINALG=10
 ## Clustering parameters
 MINALG=20
 RELOVER=0.5
+MINOVER=0
 MAXREP=4
 MAXPROP=1
 
@@ -123,12 +124,18 @@ endif
 dir=$(COLL)/$(pairs)
 
 pass=$(dir)/cl$(MINALG).pass.gz
+
+ifeq ($(MINOVER),0)
 nodes=$(dir)/cl$(MINALG)-flover$(subst .,,$(RELOVER)).nodes.gz
 
 ifeq ($(MAXPROP),1)
 cluster=$(dir)/cl$(MINALG)-flover$(subst .,,$(RELOVER))-rep$(MAXREP).cluster.gz
 else
 cluster=$(dir)/cl$(MINALG)-flover$(subst .,,$(RELOVER))-rep$(MAXREP)-prop$(subst .,,$(MAXPROP)).cluster.gz
+endif
+else
+nodes=$(dir)/cl$(MINALG)-absover$(subst .,,$(MINOVER)).nodes.gz
+cluster=$(dir)/cl$(MINALG)-absover$(subst .,,$(MINOVER))-rep$(MAXREP).cluster.gz
 endif
 
 clinfo=$(patsubst %.cluster.gz,%.clinfo.gz,$(cluster))
@@ -190,7 +197,7 @@ ifneq ($(GAP),1)
 algram=1
 endif
 
-$(dir)/bins/%/pall.proc.tmp/in000.algin.gz:
+$(dir)/bins/%/pall.proc.tmp/in000.algin.gz:	$(dir)/bins/job
 	mkdir -p $(dir)/bins/$*/pall.proc.tmp
 	$(QRUN) 'gzip -fdc $(dir)/bins/$*/[0-9]*.gz | sort | ${passim} merge -m ${MINREP} | ${SPLIT} -d -a 3 -l 10000 - $(dir)/bins/$*/pall.proc.tmp/in; touch $(dir)/bins/$*/pall.proc.tmp/in000; for i in $(dir)/bins/$*/pall.proc.tmp/in*[0-9]; do gzip $$i; mv $$i.gz $$i.algin.gz; done'
 
@@ -253,7 +260,7 @@ $(pass):	$(dir)/pall.proc.srt.gz
 	$(QRUN) /bin/bash -c 'gzip -dc $< | awk "\$$4 / \$$1 >= 2 { print }" | cut -f 1,7,8,11-14 | awk "\$$1 >= $(MINALG) { print \$$2,\$$4,\$$5,NR; print \$$3,\$$6,\$$7,NR; }" | sort -k1,1n -k2,2n -k3,3n | gzip -c > $@'
 
 $(nodes):	$(pass)
-	$(QRUN) 'gzip -dc $< | passim nodes --relative-overlap $(RELOVER) | sort -k4,4n -k5,5n | gzip -c > $@'
+	$(QRUN) 'gzip -dc $< | passim nodes --relative-overlap $(RELOVER) --min-overlap $(MINOVER) | sort -k4,4n -k5,5n | gzip -c > $@'
 
 $(cluster):	$(nodes)
 	$(QRUN) -R 'mem>32000' 'gzip -dc $< | java -d64 -Xmx32g ${passimopt} connect --series-map $(COLL)/idx/names.smap --max-repeats $(MAXREP) --max-proportion $(MAXPROP) | sort -t: -k2,2rn | perl -pe "\$$c++; s/^{/{\"id\":\$$c,/" | gzip -c > $@'
