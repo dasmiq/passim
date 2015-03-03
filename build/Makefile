@@ -190,14 +190,15 @@ $(dir)/bins/step%.out:
 	$(QRUN) '${passim} pairs $(stops) --max-series $(UPPER) --max-df $(MAXDF) --modp $(MODP) --modrec $(MODREC) --step $* --stride ${STRIDE} --hash-bins ${BINS} $(pairopts) $(idx) | ./fsplit.pl $(dir)/bins $*.gz'; touch $@
 
 $(dir)/bins/job:	$(dir)/od.siz $(dir)/bins/0
-	$(MAKE) $(foreach s,$(shell seq 0 `cat $(dir)/od.siz`),$(dir)/bins/step$(s).out)
+	$(MAKE) $(foreach s,$(shell seq 0 `cat $(dir)/od.siz`),$(dir)/bins/step$(s).out); \
+	touch $@
 
 algram=$(NGRAM)
 ifneq ($(GAP),1)
 algram=1
 endif
 
-$(dir)/bins/%/pall.proc.tmp/in000.algin.gz:	$(dir)/bins/job
+$(dir)/bins/%/pall.proc.tmp/in000.algin.gz:
 	mkdir -p $(dir)/bins/$*/pall.proc.tmp
 	$(QRUN) 'gzip -fdc $(dir)/bins/$*/[0-9]*.gz | sort | ${passim} merge -m ${MINREP} | ${SPLIT} -d -a 3 -l 10000 - $(dir)/bins/$*/pall.proc.tmp/in; touch $(dir)/bins/$*/pall.proc.tmp/in000; for i in $(dir)/bins/$*/pall.proc.tmp/in*[0-9]; do gzip $$i; mv $$i.gz $$i.algin.gz; done'
 
