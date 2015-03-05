@@ -491,6 +491,53 @@
                     prefix
                     ((juxt :date :name #(or (:title %) (:id %)) :url :start :end :text) reprint)))))))))
 
+(defn passage-clean
+  [s]
+  (-> s
+      (s/replace "<br/>" " ")
+      (s/replace #"[ ]+" " ")))
+
+(defn find-parents
+  [history cur]
+  (let [s2 (jaligner.Sequence. (-> cur :text passage-clean))
+        algs
+        (->> history
+             (map (fn [prev]
+                    (let [s1 (jaligner.Sequence. (-> prev :text passage-clean))
+                          alg (jaligner.NeedlemanWunschGotoh/align s1 s2 match-matrix 5 0.5)]
+                      {:score (.getScore alg)
+                       :gaps (.getGaps alg)
+                       :matches (.getIdentity alg)
+                       :id (:id prev)
+                       :start (:start prev)
+                       :end (:end prev)
+                       :date (:date prev)
+                       ;; Yes, this looks backwards, but the aligned
+                       ;; version of s1 is accessed by getSequence2.
+                       :curalign (String. (.getSequence1 alg))
+                       :prevalign (String. (.getSequence2 alg))
+                       })))
+             (sort-by (comp - :score)))]
+    (conj history (assoc cur
+                    :parents (vec (take-while
+                                   #(>= (:score %) (* 0.90 (:score (first algs))))
+                                   algs))))))
+
+(defn dag-cluster
+  "Produce DAG from clustered data"
+  [& argv]
+  (let [[options remaining banner]
+        (safe-cli argv
+                  (str
+                   "passim dag [options]\n\n"
+                   (var-doc #'dag-cluster))
+                  ["-h" "--help" "Show help" :default false :flag true])]
+    (doseq [cluster (-> *in* jio/reader json-seq)]
+      (let [members (reduce find-parents [] (:members cluster))]
+        (json/pprint
+         (assoc cluster :members members)
+         :escape-slash false :escape-unicode false)))))
+
 (defn text-pass
   [x]
   (->> x
@@ -676,6 +723,7 @@
          "format" #'format-cluster
          "gexf" #'gexf-cluster
          "idtab" #'idtab-cluster
+         "dag" #'dag-cluster
          "nodes" #'text-nodes
          "connect" #'connect-passages
          "qoac" #'passim.quotes/qoac

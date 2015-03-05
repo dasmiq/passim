@@ -18,6 +18,7 @@ package jaligner;
 import jaligner.matrix.Matrix;
 
 import java.util.logging.Logger;
+import java.util.logging.Level;
 
 /**
  * An implementation of the Needleman-Wunsch algorithm with Gotoh's improvement
@@ -62,6 +63,7 @@ public final class NeedlemanWunschGotoh {
 	 */
 	public static Alignment align(Sequence s1, Sequence s2, Matrix matrix,
 			float o, float e) {
+		logger.setLevel(Level.WARNING);
 
 		float[][] scores = matrix.getScores();
 
