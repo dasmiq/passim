@@ -523,14 +523,14 @@
                                    #(>= (:score %) (* 0.90 (:score (first algs))))
                                    algs))))))
 
-(defn dag-cluster
+(defn cluster-parents
   "Produce DAG from clustered data"
   [& argv]
   (let [[options remaining banner]
         (safe-cli argv
                   (str
-                   "passim dag [options]\n\n"
-                   (var-doc #'dag-cluster))
+                   "passim parents [options]\n\n"
+                   (var-doc #'cluster-parents))
                   ["-h" "--help" "Show help" :default false :flag true])]
     (doseq [cluster (-> *in* jio/reader json-seq)]
       (let [members (reduce find-parents [] (:members cluster))]
@@ -723,7 +723,7 @@
          "format" #'format-cluster
          "gexf" #'gexf-cluster
          "idtab" #'idtab-cluster
-         "dag" #'dag-cluster
+         "parents" #'cluster-parents
          "nodes" #'text-nodes
          "connect" #'connect-passages
          "qoac" #'passim.quotes/qoac
