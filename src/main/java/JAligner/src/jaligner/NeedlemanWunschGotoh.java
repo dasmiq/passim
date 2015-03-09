@@ -170,7 +170,8 @@ public final class NeedlemanWunschGotoh {
 			v[0] = -o - (i - 1) * e;
 			for (int j = 1, l = k + 1; j < n; j++, l++) { // for all columns
 
-				similarityScore = matrix[a1[i - 1]][a2[j - 1]];
+			    // similarityScore = matrix[a1[i - 1]][a2[j - 1]];
+				similarityScore = a1[i - 1] == a2[j - 1] ? 2 : -1;
 
 				f = vDiagonal + similarityScore;// from diagonal
 
@@ -301,9 +302,9 @@ public final class NeedlemanWunschGotoh {
 					reversed3[len3++] = Markups.IDENTITY;
 					identity++;
 					similarity++;
-				} else if (scores[c1][c2] > 0) {
-					reversed3[len3++] = Markups.SIMILARITY;
-					similarity++;
+				// } else if (scores[c1][c2] > 0) {
+				// 	reversed3[len3++] = Markups.SIMILARITY;
+				// 	similarity++;
 				} else {
 					reversed3[len3++] = Markups.MISMATCH;
 				}
@@ -326,9 +327,9 @@ public final class NeedlemanWunschGotoh {
 					reversed3[len3++] = Markups.IDENTITY;
 					identity++;
 					similarity++;
-				} else if (scores[c1][c2] > 0) {
-					reversed3[len3++] = Markups.SIMILARITY;
-					similarity++;
+				// } else if (scores[c1][c2] > 0) {
+				// 	reversed3[len3++] = Markups.SIMILARITY;
+				// 	similarity++;
 				} else {
 					reversed3[len3++] = Markups.MISMATCH;
 				}
@@ -359,9 +360,9 @@ public final class NeedlemanWunschGotoh {
 					reversed3[len3++] = Markups.IDENTITY;
 					identity++;
 					similarity++;
-				} else if (scores[c1][c2] > 0) {
-					reversed3[len3++] = Markups.SIMILARITY;
-					similarity++;
+				// } else if (scores[c1][c2] > 0) {
+				// 	reversed3[len3++] = Markups.SIMILARITY;
+				// 	similarity++;
 				} else {
 					reversed3[len3++] = Markups.MISMATCH;
 				}
