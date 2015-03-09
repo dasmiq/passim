@@ -502,21 +502,21 @@
   (let [s2 (jaligner.Sequence. (-> cur :text passage-clean))
         algs
         (->> history
-             (map (fn [prev]
-                    (let [s1 (jaligner.Sequence. (-> prev :text passage-clean))
-                          alg (jaligner.NeedlemanWunschGotoh/align s1 s2 match-matrix 5 0.5)]
-                      {:score (.getScore alg)
-                       :gaps (.getGaps alg)
-                       :matches (.getIdentity alg)
-                       :id (:id prev)
-                       :start (:start prev)
-                       :end (:end prev)
-                       :date (:date prev)
-                       ;; Yes, this looks backwards, but the aligned
-                       ;; version of s1 is accessed by getSequence2.
-                       :curalign (String. (.getSequence1 alg))
-                       :prevalign (String. (.getSequence2 alg))
-                       })))
+             (mapv (fn [prev]
+                     (let [s1 (jaligner.Sequence. (-> prev :text passage-clean))
+                           alg (jaligner.NeedlemanWunschGotoh/align s1 s2 match-matrix 5 0.5)]
+                       {:score (.getScore alg)
+                        :gaps (.getGaps alg)
+                        :matches (.getIdentity alg)
+                        :id (:id prev)
+                        :start (:start prev)
+                        :end (:end prev)
+                        :date (:date prev)
+                        ;; Yes, this looks backwards, but the aligned
+                        ;; version of s1 is accessed by getSequence2.
+                        :curalign (String. (.getSequence1 alg))
+                        :prevalign (String. (.getSequence2 alg))
+                        })))
              (sort-by (comp - :score)))]
     (conj history (assoc cur
                     :parents (vec (take-while
