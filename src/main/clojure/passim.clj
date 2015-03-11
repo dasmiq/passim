@@ -670,15 +670,18 @@
                   (str
                    "passim connect [options]\n\n"
                    (var-doc #'connect-passages))
+                  ["-i" "--index" "Index directory"]
                   ["-m" "--series-map" "Map internal ids documents to integer series ids"]
                   ["-p" "--max-proportion" "Maximum proportion of cluster from one series" :default 1.0 :parse-fn #(Double/parseDouble %)]
                   ["-r" "--max-repeats" "Maximum number of texts from one series" :default 4 :parse-fn #(Integer/parseInt %)]
 
                   ["-h" "--help" "Show help" :default false :flag true])
-        {:keys [max-proportion max-repeats series-map]} options
+        {:keys [max-proportion max-repeats series-map index]} options
         series (if series-map
                  (read-series-map series-map)
-                 identity)
+                 (if index
+                   (make-series-map index)
+                   identity))
         [adj-matrix passages] (-> *in* jio/reader line-seq make-passage-graph)]
     (doseq [c (find-components adj-matrix)]
       (let [spans (mapv passages c)
