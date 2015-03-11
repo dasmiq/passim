@@ -267,7 +267,7 @@ $(nodes):	$(pass)
 	$(QRUN) 'gzip -dc $< | passim nodes --relative-overlap $(RELOVER) --min-overlap $(MINOVER) | sort -k4,4n -k5,5n | gzip -c > $@'
 
 $(cluster):	$(nodes)
-	$(QRUN) $(call memreq,32000) 'gzip -dc $< | java -d64 -Xmx32g ${passimopt} connect $(pairopts) --index $(idx) --max-repeats $(MAXREP) --max-proportion $(MAXPROP) | sort -t: -k2,2rn | perl -pe "\$$c++; s/^{/{\"id\":\$$c,/" | gzip -c > $@'
+	$(QRUN) $(call memreq,32000) 'gzip -dc $< | java -d64 -Xmx32g ${passimopt} connect $(pairopts) --index $(dir $(idx)) --max-repeats $(MAXREP) --max-proportion $(MAXPROP) | sort -t: -k2,2rn | perl -pe "\$$c++; s/^{/{\"id\":\$$c,/" | gzip -c > $@'
 
 %.idtab.gz:	%.clinfo.gz
 	$(QRUN) 'gzip -dc $< | ${passim} idtab | sort -k1,1n -k3,4 | gzip -c > $@'
