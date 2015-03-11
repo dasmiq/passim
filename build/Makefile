@@ -17,6 +17,8 @@ export PATH
 galagoIndex=galago
 galagoMode=
 
+memreq=
+
 ifneq ($(shell which bsub 2>/dev/null),)
 q=lsf
 else ifneq ($(shell which qsub 2>/dev/null),)
@@ -30,6 +32,7 @@ q=lsf
 sub=bsub -n 1 -q ser-par-10g
 QRUN=${sub} -K -e $@.err
 galagoIndex=lsf-galago
+memreq=-R 'mem>$(1)'
 else ifeq (${q},sge)
 q=sge
 sub=qsub -b y -j y -cwd -V -S /bin/bash
@@ -203,7 +206,7 @@ $(dir)/bins/%/pall.proc.tmp/in000.algin.gz:
 	$(QRUN) 'gzip -fdc $(dir)/bins/$*/[0-9]*.gz | sort | ${passim} merge -m ${MINREP} | ${SPLIT} -d -a 3 -l 10000 - $(dir)/bins/$*/pall.proc.tmp/in; touch $(dir)/bins/$*/pall.proc.tmp/in000; for i in $(dir)/bins/$*/pall.proc.tmp/in*[0-9]; do gzip $$i; mv $$i.gz $$i.algin.gz; done'
 
 %.algout.gz:	%.algin.gz
-	$(QRUN) -R 'mem>16000' 'gzip -dc $< | java -Xmx15900m ${passimopt} scores -n $(algram) $(dir)/../idx | awk "\$$1 >= $(MINMINALG)" | sort -rn | gzip -c > $@'
+	$(QRUN) $(call memreq,16000) 'gzip -dc $< | java -Xmx15900m ${passimopt} scores -n $(algram) $(dir)/../idx | awk "\$$1 >= $(MINMINALG)" | sort -rn | gzip -c > $@'
 
 %.tmp/job:	%.tmp/in000.algin.gz
 	$(MAKE) $(subst .algin.gz,.algout.gz,$(shell if [ -f $< ]; then echo `ls -1 $*.tmp/in*.algin.gz`; else echo $<; fi))
@@ -226,7 +229,7 @@ $(dir)/pall.sw.tmp/out%:	$(dir)/pall.sw.tmp/in%
 
 $(dir)/pall.sw.srt.gz:	$(dir)/pall.srt.gz $(dir)/pall.sw.tmp/in000 $(if ${q},,$(dir)/pall.sw.tmp/job)
 ifeq (${q},lsf)
-	${sub} -R 'mem>8000' -J "$(dir)/pall.sw[1-`ls -1 $(dir)/pall.sw.tmp/in* | wc -l`]%${CONCUR}" -eo "$(dir)/pall.sw.tmp/err%I" \
+	${sub} $(call memreq,8000) -J "$(dir)/pall.sw[1-`ls -1 $(dir)/pall.sw.tmp/in* | wc -l`]%${CONCUR}" -eo "$(dir)/pall.sw.tmp/err%I" \
 	    'ofile=$(dir)/pall.sw.tmp/out`printf "%03d" $$(( \$$LSB_JOBINDEX - 1 ))`; [ -f $$ofile ] || java -Xmx7900m ${passimopt} scores -n 0 $(dir)/../idx < $(dir)/pall.sw.tmp/in`printf "%03d" $$(( \$$LSB_JOBINDEX - 1 ))` | awk "\$$1 >= $(MINMINALG)" | sort -rn > $$ofile'
 	${sub} -K -w "$(dir)/pall.sw" 'ls -1 $(dir)/pall.sw.tmp/out* | xargs sort -rnm | gzip -c > $@'
 else ifeq (${q},sge)
@@ -264,13 +267,13 @@ $(nodes):	$(pass)
 	$(QRUN) 'gzip -dc $< | passim nodes --relative-overlap $(RELOVER) --min-overlap $(MINOVER) | sort -k4,4n -k5,5n | gzip -c > $@'
 
 $(cluster):	$(nodes)
-	$(QRUN) -R 'mem>32000' 'gzip -dc $< | java -d64 -Xmx32g ${passimopt} connect --series-map $(COLL)/idx/names.smap --max-repeats $(MAXREP) --max-proportion $(MAXPROP) | sort -t: -k2,2rn | perl -pe "\$$c++; s/^{/{\"id\":\$$c,/" | gzip -c > $@'
+	$(QRUN) $(call memreq,32000) 'gzip -dc $< | java -d64 -Xmx32g ${passimopt} connect --series-map $(COLL)/idx/names.smap --max-repeats $(MAXREP) --max-proportion $(MAXPROP) | sort -t: -k2,2rn | perl -pe "\$$c++; s/^{/{\"id\":\$$c,/" | gzip -c > $@'
 
 %.idtab.gz:	%.clinfo.gz
 	$(QRUN) 'gzip -dc $< | ${passim} idtab | sort -k1,1n -k3,4 | gzip -c > $@'
 
 %.gexf.gz:	%.clinfo.gz publications.json
-	$(QRUN) 'gzip -dc $< | ${passim} gexf publications.json | gzip -c > $@'
+	$(QRUN) $(call memreq,8000) 'gzip -dc $< | java -d64 -Xmx8g ${passimopt} gexf publications.json | gzip -c > $@'
 
 $(dir)/od.siz:	$(idx)
 	mkdir -p $(dir)
