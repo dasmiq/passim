@@ -261,7 +261,7 @@ else
 endif
 
 $(pass):	$(dir)/pall.proc.srt.gz
-	$(QRUN) /bin/bash -c 'gzip -dc $< | awk "\$$4 / \$$1 >= 2 { print }" | cut -f 1,7,8,11-14 | awk "\$$1 >= $(MINALG) { print \$$2,\$$4,\$$5,NR; print \$$3,\$$6,\$$7,NR; }" | sort -k1,1n -k2,2n -k3,3n | gzip -c > $@'
+	$(QRUN) 'gzip -dc $< | awk "\$$4 / \$$1 >= 2 { print }" | cut -f 1,7,8,11-14 | awk "\$$1 >= $(MINALG) { print \$$2,\$$4,\$$5,NR; print \$$3,\$$6,\$$7,NR; }" | sort -k1,1n -k2,2n -k3,3n | gzip -c > $@'
 
 $(nodes):	$(pass)
 	$(QRUN) 'gzip -dc $< | passim nodes --relative-overlap $(RELOVER) --min-overlap $(MINOVER) | sort -k4,4n -k5,5n | gzip -c > $@'
