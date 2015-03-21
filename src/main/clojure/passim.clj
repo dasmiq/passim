@@ -437,10 +437,17 @@
         (fn [rec]
           (let [{:keys [id size members]} rec]
             (map
-             #(conj (->> % (map (comp ids :name)) sort vec) (binf %))
-             (combinations members 2)))))
-       frequencies))
-
+             #(vector
+               (->> % (map :name) sort vec)
+               (binf %))
+             (combinations
+              (map #(assoc % :name (ids (:name %))) members)
+              2)))))
+       (reduce
+        (fn [m ks]
+          (update-in m ks (fnil inc 0)))
+        {})))
+                 
 (defn gexf-cluster
   "Produce GEXF from cluster data for display by Gephi"
   [& argv]
@@ -460,18 +467,20 @@
                   (mapcat #(map vector (map :sn (:publication_names %)) (repeat (str (:id %)))) info))
         bins (gexf-stats (-> *in* jio/reader json-seq) max-year #(get ids % %))]
     (println "<gexf>")
-    (println "<graph defaultedgetype=\"undirected\" mode=\"dynamic\" timeformat=\"date\">")
-    (println "<nodes>")
-    (doseq [n (set (mapcat (fn [[[s t b] w]] [s t]) bins))]
+    (println "  <graph defaultedgetype=\"undirected\" mode=\"dynamic\" timeformat=\"date\">")
+    (println "    <nodes>")
+    (doseq [n (set (mapcat (fn [[[s t] _]] [s t]) bins))]
       (printf
-       "<node id=\"%s\" label=\"%s\" />\n"
+       "      <node id=\"%s\" label=\"%s\" />\n"
        n (get labels n n)))
-    (println "</nodes>\n<edges>")
-    (doseq [[[s t b] w] bins]
-      (printf
-       "<edge id=\"%s--%s--%d\" source=\"%s\" target=\"%s\" weight=\"%d\" start=\"%d\" label=\"%d\" />\n"
-       s t b s t w b b))
-    (println "</edges>\n</graph>\n</gexf>")))
+    (println "    </nodes>\n    <edges>")
+    (doseq [[[s t] b] bins]
+      (printf "      <edge id=\"%s--%s\" source=\"%s\" target=\"%s\">\n\t<attvalues>\n" s t s t)
+      (doseq [[date weight] (sort b)]
+        (printf "\t  <attvalue for=\"reprint_count\" start=\"%s\" end=\"%s\" value=\"%d\" />\n"
+                date date weight))
+      (println "\t</attvalues>\n      </edge>"))
+    (println "    </edges>\n  </graph>\n</gexf>")))
 
 (defn idtab-cluster
   "Produce idtab format from cluster data for Viral Texts website"
