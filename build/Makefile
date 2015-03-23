@@ -29,7 +29,8 @@ endif
 
 ifeq (${q},lsf)
 q=lsf
-sub=bsub -n 1 -q ser-par-10g
+QUEUE=ser-par-10g
+sub=bsub -n 1 -q $(QUEUE)
 QRUN=${sub} -K -e $@.err
 galagoIndex=lsf-galago
 memreq=-R 'mem>$(1)'
