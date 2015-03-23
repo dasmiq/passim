@@ -202,64 +202,37 @@ ifneq ($(GAP),1)
 algram=1
 endif
 
-$(dir)/bins/%/pall.proc.tmp/in000.algin.gz:
+$(dir)/bins/%/pall.proc.tmp/in000.algin.gz:	$(dir)/bins/job
 	mkdir -p $(dir)/bins/$*/pall.proc.tmp
 	$(QRUN) 'gzip -fdc $(dir)/bins/$*/[0-9]*.gz | sort | ${passim} merge -m ${MINREP} | ${SPLIT} -d -a 3 -l 10000 - $(dir)/bins/$*/pall.proc.tmp/in; touch $(dir)/bins/$*/pall.proc.tmp/in000; for i in $(dir)/bins/$*/pall.proc.tmp/in*[0-9]; do gzip $$i; mv $$i.gz $$i.algin.gz; done'
 
 %.algout.gz:	%.algin.gz
 	$(QRUN) $(call memreq,16000) 'gzip -dc $< | java -Xmx15900m ${passimopt} scores -n $(algram) $(dir)/../idx | awk "\$$1 >= $(MINMINALG)" | sort -rn | gzip -c > $@'
 
-%.tmp/job:	%.tmp/in000.algin.gz
-	$(MAKE) $(subst .algin.gz,.algout.gz,$(shell if [ -f $< ]; then echo `ls -1 $*.tmp/in*.algin.gz`; else echo $<; fi))
+%.proc.tmp/job:	%.proc.tmp/in000.algin.gz
+	$(MAKE) $(subst .algin.gz,.algout.gz,$(shell if [ -f $< ]; then echo `ls -1 $*.proc.tmp/in*.algin.gz`; else echo $<; fi))
 
 $(dir)/bins/%/pall.proc.srt.gz:	$(dir)/bins/%/pall.proc.tmp/in000.algin.gz $(dir)/bins/%/pall.proc.tmp/job
 	$(QRUN) 'ls -1 $(dir)/bins/$*/pall.proc.tmp/in*.algout.gz | xargs gzip -dc | sort -rn | gzip -c > $@'
 
-%.tmp/job:	%.tmp/in000
-	$(MAKE) $(subst /in,/out,$(shell if [ -f $< ]; then echo `ls -1 $*.tmp/in*`; else echo $<; fi))
-
 $(dir)/pall.proc.srt.gz:	$(patsubst %,$(dir)/bins/%/pall.proc.srt.gz,$(bins))
 	$(QRUN) 'ls -1 $(dir)/bins/*/pall.proc.srt.gz | xargs gzip -dc | sort -rn | gzip -c > $@'
 
-$(dir)/pall.sw.tmp/in000:	$(dir)/pall.srt.gz
-	mkdir -p $(dir)/pall.sw.tmp
-	gzip -fdc $< | ${SPLIT} -d -a 3 -l 20000 - $(dir)/pall.sw.tmp/in
+#$(dir)/pall.sw.tmp/out%:	$(dir)/pall.sw.tmp/in%
+#	java -Xmx7900m ${passimopt} scores -n 0 $(dir)/../idx < $< | awk "\$$1 >= $(MINMINALG)" | sort -rn > $@
 
-$(dir)/pall.sw.tmp/out%:	$(dir)/pall.sw.tmp/in%
-	java -Xmx7900m ${passimopt} scores -n 0 $(dir)/../idx < $< | awk "\$$1 >= $(MINMINALG)" | sort -rn > $@
-
-$(dir)/pall.sw.srt.gz:	$(dir)/pall.srt.gz $(dir)/pall.sw.tmp/in000 $(if ${q},,$(dir)/pall.sw.tmp/job)
-ifeq (${q},lsf)
-	${sub} $(call memreq,8000) -J "$(dir)/pall.sw[1-`ls -1 $(dir)/pall.sw.tmp/in* | wc -l`]%${CONCUR}" -eo "$(dir)/pall.sw.tmp/err%I" \
-	    'ofile=$(dir)/pall.sw.tmp/out`printf "%03d" $$(( \$$LSB_JOBINDEX - 1 ))`; [ -f $$ofile ] || java -Xmx7900m ${passimopt} scores -n 0 $(dir)/../idx < $(dir)/pall.sw.tmp/in`printf "%03d" $$(( \$$LSB_JOBINDEX - 1 ))` | awk "\$$1 >= $(MINMINALG)" | sort -rn > $$ofile'
-	${sub} -K -w "$(dir)/pall.sw" 'ls -1 $(dir)/pall.sw.tmp/out* | xargs sort -rnm | gzip -c > $@'
-else ifeq (${q},sge)
-	${sub} -N $(subst /,_,$(dir)/pall.sw) -t "1-`ls -1 $(dir)/pall.sw.tmp/in* | wc -l`:1" -tc ${CONCUR} -o $(dir)/pall.sw.tmp \
-	    'ofile=$(dir)/pall.sw.tmp/out`printf "%03d" $$(( \$$SGE_TASK_ID - 1 ))`; [ -f $$ofile ] || java -Xmx7900m ${passimopt} scores -n 0 $(dir)/../idx < $(dir)/pall.sw.tmp/in`printf "%03d" $$(( \$$SGE_TASK_ID - 1 ))` | awk "\$$1 >= $(MINMINALG)" | sort -rn > $$ofile'
-	${sub} -sync y -hold_jid $(subst /,_,$(dir)/pall.sw) -o $(dir)/pall.sw.tmp 'ls -1 $(dir)/pall.sw.tmp/out* | xargs sort -rnm | gzip -c > $@'
-else
-	ls -1 $(dir)/pall.sw.tmp/out* | xargs sort -rnm | gzip -c > $@
-endif
-
-%.clinfo.tmp/in000:	%.cluster.gz
+%.clinfo.tmp/in000.clin.gz:	%.cluster.gz
 	mkdir -p $*.clinfo.tmp; \
-	gzip -fdc $< | ${SPLIT} -d -a 3 -l 5000 - $*.clinfo.tmp/in
+	$(QRUN) 'gzip -fdc $< | ${SPLIT} -d -a 3 -l 5000 - $*.clinfo.tmp/in; touch $*.clinfo.tmp/in000; for i in $*.clinfo.tmp/in*[0-9]; do gzip $$i; mv $$i.gz $$i.clin.gz; done'
 
-$(subst .gz,.tmp,$(clinfo))/out%:	$(subst .gz,.tmp,$(clinfo))/in%
-	${passim} format $(dir $@)/../../idx < $< > $@
+%.clout.gz:	%.clin.gz
+	$(QRUN) 'gzip -dc $< | ${passim} format $(dir $@)/../../idx | gzip -c > $@'
 
-%.clinfo.gz:	%.clinfo.tmp/in000 $(if ${q},,%.clinfo.tmp/job)
-ifeq (${q},lsf)
-	${sub} -J "$*.clinfo[1-`ls -1 $*.clinfo.tmp/in* | wc -l`]%${CONCUR}" -eo "$*.clinfo.tmp/err%I" \
-	    'ofile=$*.clinfo.tmp/out`printf "%03d" $$(( \$$LSB_JOBINDEX - 1 ))`; [ -f $$ofile ] || ${passim} format $(dir $@)/../idx < $*.clinfo.tmp/in`printf "%03d" $$(( \$$LSB_JOBINDEX - 1 ))` > $$ofile'
-	${sub} -K -w "$*.clinfo" 'ls -1 $*.clinfo.tmp/out* | xargs cat | gzip -c > $@'
-else ifeq (${q},sge)
-	${sub} -N $(subst /,_,$*.clinfo) -t `ls -1 $*.clinfo.tmp/in* | wc -l` -tc ${CONCUR} -o $*.clinfo.tmp \
-	    'ofile=$*.clinfo.tmp/out`printf "%03d" $$(( \$$SGE_TASK_ID - 1 ))`; [ -f $$ofile ] || ${passim} format $(dir $@)/../idx < $*.clinfo.tmp/in`printf "%03d" $$(( \$$SGE_TASK_ID - 1 ))` > $$ofile'
-	${sub} -sync y -hold_jid $(subst /,_,$*.clinfo) -o $*.clinfo.tmp 'ls -1 $*.clinfo.tmp/out* | xargs cat | gzip -c > $@'
-else
-	ls -1 $*.clinfo.tmp/out* | xargs cat | gzip -c > $@
-endif
+%.clinfo.tmp/job:	%.clinfo.tmp/in000.clin.gz
+	$(MAKE) $(subst .clin.gz,.clout.gz,$(shell if [ -f $< ]; then echo `ls -1 $*.clinfo.tmp/in*.clin.gz`; else echo $<; fi))
+
+%.clinfo.gz:	%.clinfo.tmp/in000.clin.gz %.clinfo.tmp/job
+	$(QRUN) 'ls -1 $*.clinfo.tmp/in*.clout.gz | xargs gzip -dc | gzip -c > $@'
 
 $(pass):	$(dir)/pall.proc.srt.gz
 	$(QRUN) 'gzip -dc $< | awk "\$$4 / \$$1 >= 2 { print }" | cut -f 1,7,8,11-14 | awk "\$$1 >= $(MINALG) { print \$$2,\$$4,\$$5,NR; print \$$3,\$$6,\$$7,NR; }" | sort -k1,1n -k2,2n -k3,3n | gzip -c > $@'
