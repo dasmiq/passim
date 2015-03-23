@@ -201,7 +201,7 @@ ifneq ($(GAP),1)
 algram=1
 endif
 
-$(dir)/bins/%/pall.proc.tmp/in000.algin.gz:
+$(dir)/bins/%/pall.proc.tmp/in000.algin.gz:	$(dir)/bins/job
 	mkdir -p $(dir)/bins/$*/pall.proc.tmp
 	$(QRUN) 'gzip -fdc $(dir)/bins/$*/[0-9]*.gz | sort | ${passim} merge -m ${MINREP} | ${SPLIT} -d -a 3 -l 10000 - $(dir)/bins/$*/pall.proc.tmp/in; touch $(dir)/bins/$*/pall.proc.tmp/in000; for i in $(dir)/bins/$*/pall.proc.tmp/in*[0-9]; do gzip $$i; mv $$i.gz $$i.algin.gz; done'
 
