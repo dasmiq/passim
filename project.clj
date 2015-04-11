@@ -10,6 +10,7 @@
                  ["edu.umass.ciir.snapshots"
                   "http://scm-ciir.cs.umass.edu:8080/nexus/content/repositories/snapshots"]]
   :dependencies [[org.clojure/clojure "1.6.0"]
+                 [org.clojure/core.memoize "0.5.6"]
                  [org.clojure/data.csv "0.1.2"]
                  [org.clojure/data.json "0.2.4"]
                  [org.clojure/math.combinatorics "0.0.4"]

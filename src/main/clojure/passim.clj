@@ -1,6 +1,7 @@
 (ns passim
   (:require [clojure.string :as s]
             [clojure.set :as set]
+            [clojure.core.memoize :as memo]
             [clojure.data.csv :as csv]
             [clojure.data.json :as json]
             [clojure.edn :as edn]
@@ -248,12 +249,12 @@
                    (dict w2))))))))))
 
 (defn score-pair
-  [^String s ^Retrieval ri ^long gram]
+  [^String s ^Retrieval ri dwords ^long gram]
   (let [[[id1 id2] matches] (edn/read-string s)
         name1 (.getDocumentName ri (int id1))
         name2 (.getDocumentName ri (int id2))
-        words1 (doc-words ri name1)
-        words2 (doc-words ri name2)
+        words1 (dwords name1)
+        words2 (dwords name2)
         approx-pass
         (try
           (if-let [p (seq (best-passages words1 words2 matches
@@ -320,10 +321,11 @@
                   ["-h" "--help" "Show help" :default false :flag true])
         idx ^String (first remaining)
         gram (:ngram options)]
-  (let [ri (RetrievalFactory/instance idx (Parameters.))]
-    (doseq [line (-> *in* jio/reader line-seq)]
-      (doseq [out (score-pair line ri gram)]
-        (println out))))))
+    (let [ri (RetrievalFactory/instance idx (Parameters.))
+          dwords (memo/lu (partial doc-words ri) :lu/threshold 4)]
+      (doseq [line (-> *in* jio/reader line-seq)]
+        (doseq [out (score-pair line ri dwords gram)]
+          (println out))))))
 
 (defn jaccard
   [set1 set2]
