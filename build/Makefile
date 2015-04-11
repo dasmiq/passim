@@ -47,6 +47,7 @@ endif
 
 ## Number of concurrent jobs (could be smaller than total number of tasks GDISTRIB).
 CONCUR=50
+CLUSTERMEM=32000
 
 SHELL=/bin/bash -o pipefail -c
 #.SHELLFLAGS=-o pipefail -c
@@ -187,15 +188,14 @@ $(idx):	$(dir $(idx))postings
 	cd $(COLL); ${galagoIndex} build-window ${CURDIR}/window.json --n=$(NGRAM) --width=$(WIDTH) --gap=$(GAP) ${galagoMode} --distrib=$(GDISTRIB) --galagoJobDir=$(notdir $@).tmp --outputIndexName=$(notdir $@)
 
 ## Separate target to avoid race condition in parallel make.
-$(dir)/bins/0:
-	mkdir -p $(foreach b,$(bins),$(dir)/bins/$(b))
+#$(dir)/bins/0:
+#	mkdir -p $(foreach b,$(bins),$(dir)/bins/$(b))
 
 $(dir)/bins/step%.out:
 	$(QRUN) '${passim} pairs $(stops) --max-series $(UPPER) --max-df $(MAXDF) --modp $(MODP) --modrec $(MODREC) --step $* --stride ${STRIDE} --hash-bins ${BINS} $(pairopts) $(idx) | ./fsplit.pl $(dir)/bins $*.gz'; touch $@
 
-$(dir)/bins/job:	$(dir)/od.siz $(dir)/bins/0
-	$(MAKE) $(foreach s,$(shell seq 0 `cat $(dir)/od.siz`),$(dir)/bins/step$(s).out); \
-	touch $@
+$(dir)/bins/job:	$(dir)/od.siz
+	mkdir -p $(foreach b,$(bins),$(dir)/bins/$(b)) && $(MAKE) $(foreach s,$(shell seq 0 `cat $(dir)/od.siz`),$(dir)/bins/step$(s).out) && touch $@
 
 algram=$(NGRAM)
 ifneq ($(GAP),1)
@@ -216,14 +216,14 @@ $(dir)/bins/%/pall.proc.srt.gz:	$(dir)/bins/%/pall.proc.tmp/in000.algin.gz $(dir
 	$(QRUN) 'ls -1 $(dir)/bins/$*/pall.proc.tmp/in*.algout.gz | xargs gzip -dc | sort -rn | gzip -c > $@'
 
 $(dir)/pall.proc.srt.gz:	$(patsubst %,$(dir)/bins/%/pall.proc.srt.gz,$(bins))
-	$(QRUN) 'ls -1 $(dir)/bins/*/pall.proc.srt.gz | xargs gzip -dc | sort -rn | gzip -c > $@'
+	$(QRUN) 'bash -c "sort -m -rn $(patsubst %,<(gzip -dc $(dir)/bins/%/pall.proc.srt.gz),$(bins)) | gzip -c > $@"'
 
 #$(dir)/pall.sw.tmp/out%:	$(dir)/pall.sw.tmp/in%
 #	java -Xmx7900m ${passimopt} scores -n 0 $(dir)/../idx < $< | awk "\$$1 >= $(MINMINALG)" | sort -rn > $@
 
 %.clinfo.tmp/in000.clin.gz:	%.cluster.gz
 	mkdir -p $*.clinfo.tmp; \
-	$(QRUN) 'gzip -fdc $< | ${SPLIT} -d -a 3 -l 5000 - $*.clinfo.tmp/in; touch $*.clinfo.tmp/in000; for i in $*.clinfo.tmp/in*[0-9]; do gzip $$i; mv $$i.gz $$i.clin.gz; done'
+	$(QRUN) 'gzip -fdc $< | ${SPLIT} -d -a 3 -l 15000 - $*.clinfo.tmp/in; touch $*.clinfo.tmp/in000; for i in $*.clinfo.tmp/in*[0-9]; do gzip $$i; mv $$i.gz $$i.clin.gz; done'
 
 %.clout.gz:	%.clin.gz
 	$(QRUN) 'gzip -dc $< | ${passim} format $(dir $@)/../../idx | gzip -c > $@'
@@ -241,7 +241,7 @@ $(nodes):	$(pass)
 	$(QRUN) 'gzip -dc $< | passim nodes --relative-overlap $(RELOVER) --min-overlap $(MINOVER) | sort -k4,4n -k5,5n | gzip -c > $@'
 
 $(cluster):	$(nodes)
-	$(QRUN) $(call memreq,32000) 'gzip -dc $< | java -d64 -Xmx32g ${passimopt} connect $(pairopts) --index $(dir $(idx)) --max-repeats $(MAXREP) --max-proportion $(MAXPROP) | sort -t: -k2,2rn | perl -pe "\$$c++; s/^{/{\"id\":\$$c,/" | gzip -c > $@'
+	$(QRUN) $(call memreq,$(CLUSTERMEM)) 'gzip -dc $< | java -d64 -Xmx$(CLUSTERMEM)m ${passimopt} connect $(pairopts) --index $(dir $(idx)) --max-repeats $(MAXREP) --max-proportion $(MAXPROP) | sort -t: -k2,2rn | perl -pe "\$$c++; s/^{/{\"id\":\$$c,/" | gzip -c > $@'
 
 %.idtab.gz:	%.clinfo.gz
 	$(QRUN) 'gzip -dc $< | ${passim} idtab | sort -k1,1n -k3,4 | gzip -c > $@'
