@@ -283,7 +283,7 @@
           title (m "title")
           date (m "date")
           language (m "language")]
-      (map (fn [[score s e min2 max2]]
+      (pmap (fn [[score s e min2 max2]]
              (merge
               {:date date
                :title title
