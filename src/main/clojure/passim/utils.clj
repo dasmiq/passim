@@ -1,5 +1,6 @@
 (ns passim.utils
-  (:require [clojure.string :as s]))
+  (:require [clojure.string :as s]
+            [ciir.utils :refer :all]))
 
 (defn doc-id-parts
   [docid]
@@ -264,3 +265,38 @@
                      (s/join " " (map (comp s/trim :sequence1) vspan))
                      (s/join " " (map (comp s/trim :sequence2) vspan))
                      (:start1 head) (:start2 head) (:end1 tail) (:end2 tail)))))))))
+
+(defn- pass-length
+  [pass]
+  (let [gram 5
+        [s1 s2] (first pass)
+        [e1 e2] (peek pass)]
+    (+ gram (min (- e1 s1) (- e2 s2)))))
+
+(defn pair-stats
+  [matches]
+  (let [full-idf (->> matches
+                      (map second)
+                      (map #(Math/log1p (/ 1 %)))
+                      (reduce + 0))
+        anch (find-match-anchors matches)
+        inc-anch (increasing-matches anch)
+        gap-words 100
+        pass (->> inc-anch
+                  (partition-all 2 1)
+                  ;; Should abstract away a "partition-at" function
+                  (partition-when
+                   (fn [[[s1 s2] b]]
+                     (when-let [[e1 e2] b]
+                       (and (> (- e1 s1) gap-words) (> (- e2 s2) gap-words)))))
+                  (map (partial mapv first)))
+        passage-lengths (map pass-length pass)
+        ]
+    {:matches (count matches)
+     :hapax-matches (count anch)
+     :lcs-matches (count inc-anch)
+     :passages (count pass)
+     :max-passage-matches (reduce max 0 (map count pass))
+     :max-passage-length (reduce max 0 passage-lengths)
+     :full-idf full-idf
+     :pass pass}))

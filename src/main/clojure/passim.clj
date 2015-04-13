@@ -327,6 +327,27 @@
         (doseq [out (score-pair line ri dwords gram)]
           (println out))))))
 
+(defn dump-stats
+  "Estimate document pair scores based on n-gram overlap"
+  [& argv]
+  (let [[options remaining banner]
+        (safe-cli argv
+                  (str
+                   "passim stats [options] <index>\n\n"
+                   (var-doc #'dump-stats))
+                  ["-n" "--ngram" "N-gram order" :default 5 :parse-fn #(Integer/parseInt %)]
+                  ["-h" "--help" "Show help" :default false :flag true])
+        gram (:ngram options)]
+    (doseq [line (-> *in* jio/reader line-seq)]
+      (let [[[id1 id2] matches] (edn/read-string line)
+            stats (pair-stats matches)]
+        (println (s/join "\t"
+                         (concat [(str id1 "," id2)]
+                                 ((juxt :matches :hapax-matches :lcs-matches
+                                        :passages :max-passage-matches :max-passage-length
+                                        :full-idf) stats))))))))
+        ;; (prn id1 id2 stats)))))
+
 (defn jaccard
   [set1 set2]
   (/ (count (set/intersection set1 set2)) (count (set/union set1 set2))))
@@ -734,6 +755,7 @@
         {"pairs" #'dump-pairs
          "merge" #'merge-pairs
          "scores" #'dump-scores
+         "stats" #'dump-stats
          "format" #'format-cluster
          "gexf" #'gexf-cluster
          "idtab" #'idtab-cluster
