@@ -77,6 +77,8 @@
     (format "%s/%s/print/image_%dx%d_from_%d%%2C%d_to_%d%%2C%d/" base p
             600 600 x1 y1 x2 y2)))
 
+(defrecord MatchAnchor [^String s ^int freq ^int start1 ^int start2])
+
 (defn hapax-positions
   "Returns map of hapax terms to their positions in sequence"
   [s]
@@ -100,15 +102,10 @@
 
 (defn- find-match-anchors
   [matches]
-  (let [res (->> matches
-                 (map
-                  (fn [[gram df p1 p2]]
-                    (when (= 1 (count p1) (count p2))
-                      (vector (first p1) (first p2)))))
-                 (remove nil?)
-                 sort
-                 vec)]
-    (when (not-empty res) res)))
+  (->> matches
+       (filter (fn [[gram freq p1 p2]] (= 1 (count p1) (count p2))))
+       (map (fn [[gram freq p1 p2]] (->MatchAnchor gram freq (first p1) (first p2))))
+       (sort-by :start1)))
 
 (defn largest-binary-search
   [pred low high default]
@@ -204,8 +201,8 @@
 
 (defn- increasing-matches
   [matches]
-  (let [lis (longest-increasing-subsequence (map second matches))]
-    (mapv (partial get matches) lis)))
+  (let [lis (longest-increasing-subsequence (map :start2 matches))]
+    (mapv (partial get (vec matches)) lis)))
 
 (defn- trim-gram
   [^Alignment alg ^long gram]
@@ -226,7 +223,7 @@
           gap-words 100
           add-gram (partial + (dec gram))
           middles (mapcat
-                   (fn [[[s1 s2] [e1 e2]]]
+                   (fn [[{s1 :start1 s2 :start2} {e1 :start1 e2 :start2}]]
                      (if (> (max (- e1 s1) (- e2 s2)) 1)
                        (if (and (> (- e1 s1) gap-words) (> (- e2 s2) gap-words))
                          (list (align-words [s1 s2] [] w1 w2 gap-words)
@@ -247,11 +244,16 @@
                    (partition 2 1 inc-anch))
           ;; removing trailing tacked-on words
           leading (when-let
-                      [res (align-words [] (mapv add-gram (first inc-anch)) w1 w2 gap-words)]
+                      [res (align-words
+                            []
+                            (mapv add-gram ((juxt :start1 :start2) (first inc-anch)))
+                            w1 w2 gap-words)]
                     (list (trim-gram res gram)))
           ;; Problem: not properly anchored at the left edge
           trailing (when-let
-                       [res (align-words (nth inc-anch (dec (count inc-anch))) [] w1 w2 gap-words)]
+                       [res (align-words
+                             (nth ((juxt :start1 :start2) inc-anch) (dec (count inc-anch)))
+                             [] w1 w2 gap-words)]
                      (list res))]
       ;; (prn inc-anch)
       ;; (prn leading middles trailing)
@@ -269,9 +271,24 @@
 (defn- pass-length
   [pass]
   (let [gram 5
-        [s1 s2] (first pass)
-        [e1 e2] (peek pass)]
+        {s1 :start1 s2 :start2} (first pass)
+        {e1 :start1 e2 :start2} (peek pass)]
     (+ gram (min (- e1 s1) (- e2 s2)))))
+
+(defn- pass-gap
+  [[{s1 :start1 s2 :start2}
+    b]]
+  (if-let [{e1 :start1 e2 :start2} b]
+    (let [[less more] (sort [(- e1 s1) (- e2 s2)])]
+      [less (- more less)])
+    [0 0]))
+
+(defn- count-gaps
+  [pass]
+  (->> pass
+       (partition-all 2 1)
+       (map (comp second pass-gap))
+       (reduce + 0)))
 
 (defn pair-stats
   [matches]
@@ -286,17 +303,25 @@
                   (partition-all 2 1)
                   ;; Should abstract away a "partition-at" function
                   (partition-when
-                   (fn [[[s1 s2] b]]
-                     (when-let [[e1 e2] b]
+                   (fn [[{s1 :start1 s2 :start2} b]]
+                     (when-let [{e1 :start1 e2 :start2} b]
                        (and (> (- e1 s1) gap-words) (> (- e2 s2) gap-words)))))
                   (map (partial mapv first)))
         passage-lengths (map pass-length pass)
+        passage-gaps (map count-gaps pass)
+        passage-lfs (map #(->> % (map (fn [x] (Math/log (:freq x)))) (reduce + 0)) pass)
         ]
-    {:matches (count matches)
-     :hapax-matches (count anch)
-     :lcs-matches (count inc-anch)
-     :passages (count pass)
-     :max-passage-matches (reduce max 0 (map count pass))
-     :max-passage-length (reduce max 0 passage-lengths)
-     :full-idf full-idf
-     :pass pass}))
+    (merge
+     {:matches (count matches)
+      :hapax-matches (count anch)
+      :lcs-matches (count inc-anch)
+      :passages (count pass)
+      ;; :max-passage-matches (reduce max 0 (map count pass))
+      ;; :max-passage-length (reduce max 0 passage-lengths)
+      :full-idf full-idf}
+     (->> (map vector (map count pass) passage-lengths passage-gaps passage-lfs)
+          (reduce (partial max-key first) [0 0 0 0])
+          (zipmap [:max-passage-matches :max-passage-length
+                   :max-passage-gaps :max-passage-lfs])))
+     ;;:pass pass
+     ))

@@ -343,9 +343,10 @@
             stats (pair-stats matches)]
         (println (s/join "\t"
                          (concat [(str id1 "," id2)]
-                                 ((juxt :matches :hapax-matches :lcs-matches
+                                 ((juxt :matches :hapax-matches :lcs-matches :full-idf
                                         :passages :max-passage-matches :max-passage-length
-                                        :full-idf) stats))))))))
+                                        :max-passage-gaps :max-passage-lfs
+                                        ) stats))))))))
         ;; (prn id1 id2 stats)))))
 
 (defn jaccard
