@@ -95,10 +95,9 @@
   [terms1 terms2]
   (->>
    (merge-with vector (hapax-positions terms1) (hapax-positions terms2))
-   vals
-   (filter vector?)
-   sort
-   vec))
+   (filter (comp vector? second))
+   (sort-by second)
+   (mapv (fn [[gram [p1 p2]]] [(s/join "~" gram) 1 [p1] [p2]]))))
 
 (defn- find-match-anchors
   [matches]
@@ -216,10 +215,7 @@
 (defn best-passages
   [w1 w2 matches gram]
   (when-let [anch (find-match-anchors matches)]
-    (let [
-          ;; (find-hapax-anchors (partition gram 1 w1) (partition gram 1 w2))
-          ;; (->> matches vals first rest (map second) (map first) vec vector))
-          inc-anch (increasing-matches anch)
+    (let [inc-anch (increasing-matches anch)
           gap-words 100
           add-gram (partial + (dec gram))
           middles (mapcat
@@ -252,7 +248,7 @@
           ;; Problem: not properly anchored at the left edge
           trailing (when-let
                        [res (align-words
-                             (nth ((juxt :start1 :start2) inc-anch) (dec (count inc-anch)))
+                             ((juxt :start1 :start2) (peek inc-anch))
                              [] w1 w2 gap-words)]
                      (list res))]
       ;; (prn inc-anch)
