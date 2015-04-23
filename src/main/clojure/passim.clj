@@ -102,8 +102,9 @@
         recs (->> *in* jio/reader line-seq  (map edn/read-string) (partition-by first))]
     (doseq [rec recs]
       (let [k (ffirst rec)
-            v (vec (mapcat second rec))]
-        (when (>= (count v) min-matches)
+            v (vec (mapcat second rec))
+            stats (pair-stats v)]
+        (when (>= (:lcs-matches stats) min-matches)
           (prn [k v]))))))
 
 (defn mean
