@@ -303,6 +303,28 @@
                      (when-let [{e1 :start1 e2 :start2} b]
                        (and (> (- e1 s1) gap-words) (> (- e2 s2) gap-words)))))
                   (map (partial mapv first)))
+        alg-jobs (->> inc-anch
+                       (partition 2 1)
+                       (map
+                        (fn [[{s1 :start1 s2 :start2} {e1 :start1 e2 :start2}]]
+                          (if (and (> (- e1 s1) gap-words) (> (- e2 s2) gap-words))
+                            (* 2 (* gap-words gap-words))
+                            (* (- e1 s1) (- e2 s2)))))
+                       (concat [(* 2 gap-words gap-words)])
+                       (reduce + 0))
+        alg-jobs2 (->> inc-anch
+                       (partition 2 1)
+                       (map
+                        (fn [[{s1 :start1 s2 :start2} {e1 :start1 e2 :start2}]]
+                          (let [[less more] (sort [(- e1 s1) (- e2 s2)])]
+                            (if
+                                (> (* less more) (* gap-words gap-words))
+                                ;; (or (> less gap-words)
+                                ;;     (> (- more less) gap-words))
+                              (* 2 (* gap-words gap-words))
+                              (* (- e1 s1) (- e2 s2))))))
+                       (concat [(* 2 gap-words gap-words)])
+                       (reduce + 0))
         passage-lengths (map pass-length pass)
         passage-gaps (map count-gaps pass)
         passage-lfs (map #(->> % (map (fn [x] (Math/log (:freq x)))) (reduce + 0)) pass)
@@ -312,6 +334,7 @@
       :hapax-matches (count anch)
       :lcs-matches (count inc-anch)
       :passages (count pass)
+      :alg-jobs alg-jobs :alg-jobs2 alg-jobs2
       ;; :max-passage-matches (reduce max 0 (map count pass))
       ;; :max-passage-length (reduce max 0 passage-lengths)
       :full-idf full-idf}
