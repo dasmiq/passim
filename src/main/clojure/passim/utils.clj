@@ -217,11 +217,12 @@
   (when-let [anch (find-match-anchors matches)]
     (let [inc-anch (increasing-matches anch)
           gap-words 100
+          gap-square (* gap-words gap-words)
           add-gram (partial + (dec gram))
           middles (mapcat
                    (fn [[{s1 :start1 s2 :start2} {e1 :start1 e2 :start2}]]
                      (if (> (max (- e1 s1) (- e2 s2)) 1)
-                       (if (and (> (- e1 s1) gap-words) (> (- e2 s2) gap-words))
+                       (if (> (* (- e1 s1) (- e2 s2)) gap-square)
                          (list (align-words [s1 s2] [] w1 w2 gap-words)
                                nil
                                ;; shorten gap-words?
@@ -286,6 +287,22 @@
        (map (comp second pass-gap))
        (reduce + 0)))
 
+(defn- dense-matches
+  [gap-words matches]
+  (when (seq matches)
+    (let [gap-square (* gap-words gap-words)]
+      (->> matches
+           (concat [nil])
+           (partition 3 1 [nil])
+           (filter
+            (fn [[before {s1 :start1 s2 :start2} after]]
+              (and
+               (or (nil? before)
+                   (<= (* (- s1 (:start1 before)) (- s2 (:start2 before))) gap-square))
+               (or (nil? after)
+                   (<= (* (- (:start1 after) s1) (- (:start2 after) s2)) gap-square)))))
+           (mapv second)))))
+
 (defn pair-stats
   [matches]
   (let [full-idf (->> matches
@@ -313,6 +330,7 @@
                        (concat [(* 2 gap-words gap-words)])
                        (reduce + 0))
         alg-jobs2 (->> inc-anch
+                       (dense-matches gap-words)
                        (partition 2 1)
                        (map
                         (fn [[{s1 :start1 s2 :start2} {e1 :start1 e2 :start2}]]
