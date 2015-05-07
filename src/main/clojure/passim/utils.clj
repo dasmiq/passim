@@ -212,12 +212,28 @@
       :sequence1 (s/join " " (drop-last gram (s/split (:sequence1 alg) #" ")))
       :sequence2 (s/join " " (drop-last gram (s/split (:sequence2 alg) #" "))))))
 
+(defn- dense-matches
+  [gap-words matches]
+  (when (seq matches)
+    (let [gap-square (* gap-words gap-words)]
+      (->> matches
+           (concat [nil])
+           (partition 3 1 [nil])
+           (filter
+            (fn [[before {s1 :start1 s2 :start2} after]]
+              (and
+               (or (nil? before)
+                   (<= (* (- s1 (:start1 before)) (- s2 (:start2 before))) gap-square))
+               (or (nil? after)
+                   (<= (* (- (:start1 after) s1) (- (:start2 after) s2)) gap-square)))))
+           (mapv second)))))
+
 (defn best-passages
   [w1 w2 matches gram]
   (when-let [anch (find-match-anchors matches)]
-    (let [inc-anch (increasing-matches anch)
-          gap-words 100
+    (let [gap-words 100
           gap-square (* gap-words gap-words)
+	  inc-anch (dense-matches gap-words (increasing-matches anch))
           add-gram (partial + (dec gram))
           middles (mapcat
                    (fn [[{s1 :start1 s2 :start2} {e1 :start1 e2 :start2}]]
@@ -286,22 +302,6 @@
        (partition-all 2 1)
        (map (comp second pass-gap))
        (reduce + 0)))
-
-(defn- dense-matches
-  [gap-words matches]
-  (when (seq matches)
-    (let [gap-square (* gap-words gap-words)]
-      (->> matches
-           (concat [nil])
-           (partition 3 1 [nil])
-           (filter
-            (fn [[before {s1 :start1 s2 :start2} after]]
-              (and
-               (or (nil? before)
-                   (<= (* (- s1 (:start1 before)) (- s2 (:start2 before))) gap-square))
-               (or (nil? after)
-                   (<= (* (- (:start1 after) s1) (- (:start2 after) s2)) gap-square)))))
-           (mapv second)))))
 
 (defn pair-stats
   [matches]
