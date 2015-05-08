@@ -312,6 +312,7 @@
         anch (find-match-anchors matches)
         inc-anch (increasing-matches anch)
         gap-words 100
+        dense-anch (dense-matches gap-words inc-anch)
         pass (->> inc-anch
                   (partition-all 2 1)
                   ;; Should abstract away a "partition-at" function
@@ -351,6 +352,7 @@
      {:matches (count matches)
       :hapax-matches (count anch)
       :lcs-matches (count inc-anch)
+      :dense-matches (count dense-anch)
       :passages (count pass)
       :alg-jobs alg-jobs :alg-jobs2 alg-jobs2
       ;; :max-passage-matches (reduce max 0 (map count pass))

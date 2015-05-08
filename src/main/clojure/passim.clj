@@ -344,7 +344,7 @@
             stats (pair-stats matches)]
         (println (s/join "\t"
                          (concat [(str id1 "," id2)]
-                                 ((juxt :matches :hapax-matches :lcs-matches :full-idf
+                                 ((juxt :matches :hapax-matches :lcs-matches :dense-matches :full-idf
                                         :alg-jobs :alg-jobs2
                                         :passages :max-passage-matches :max-passage-length
                                         :max-passage-gaps :max-passage-lfs
