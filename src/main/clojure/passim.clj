@@ -30,26 +30,23 @@
 
 (defn make-series-map
   [idx]
-  (let [nidx (-> idx (jio/file "names.reverse") str)
-        asize (inc (->> nidx dump-index (map #(Integer/parseInt (second %))) (reduce max)))
-        res (make-array Integer/TYPE asize)]
-    ;; (prn asize)
-    (doseq [series (partition-by (comp doc-series first) (dump-index nidx))]
-      (let [snum (Integer/parseInt (second (first series)))]
-        (doseq [doc series]
-          ;;(prn (Integer/parseInt (second doc)) snum)
-          (aset-int res (Integer/parseInt (second doc)) snum))))
-    #(get res %)))
+  (->> (jio/file idx "names.reverse")
+       str
+       dump-index
+       (map (fn [[name id]] [name (Long/parseLong id)]))
+       (partition-by (comp doc-series first))
+       (mapcat #(let [snum (second (first %))]
+                  (map (fn [[name id]] [id snum]) %)))
+       (into {})))
 
 (defn read-series-map
   [fname]
-  (let [asize (-> (sh/sh "tail" "-1" fname) :out (s/split #"\t") first Integer/parseInt inc)
-        res (make-array Integer/TYPE asize)]
-    (with-open [in (jio/reader fname)]
-      (doseq [line (line-seq in)]
-        (let [[id series] (s/split line #"\t")]
-          (aset-int res (Integer/parseInt id) (Integer/parseInt series)))))
-    #(get res %)))
+  (with-open [in (jio/reader fname)]
+    (->> in
+         line-seq
+         (map #(let [[id series] (s/split % #"\t")]
+                 [(Long/parseLong id) (Long/parseLong series)]))
+         (into {}))))
 
 ;; Sort by series, then multiply group sizes.
 (defn cross-counts
