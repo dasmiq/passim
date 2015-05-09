@@ -30,7 +30,7 @@ endif
 ifeq (${q},lsf)
 q=lsf
 QUEUE=ser-par-10g
-sub=bsub -n 1 -q $(QUEUE)
+sub=bsub -n 4 -R "span[ptile=16]" -q $(QUEUE)
 QRUN=${sub} -K -e $@.err
 galagoIndex=lsf-galago
 memreq=-R 'mem>$(1)'
@@ -216,7 +216,7 @@ $(dir)/bins/%/pall.proc.srt.gz:	$(dir)/bins/%/pall.proc.tmp/in000.algin.gz $(dir
 	$(QRUN) 'ls -1 $(dir)/bins/$*/pall.proc.tmp/in*.algout.gz | xargs gzip -dc | sort -rn | gzip -c > $@'
 
 $(dir)/pall.proc.srt.gz:	$(patsubst %,$(dir)/bins/%/pall.proc.srt.gz,$(bins))
-	$(QRUN) 'bash -c "sort -m -rn $(patsubst %,<(gzip -dc $(dir)/bins/%/pall.proc.srt.gz),$(bins)) | gzip -c > $@"'
+	$(QRUN) 'bash -c "sort -m -rn -T $(dir) $(patsubst %,<(gzip -dc $(dir)/bins/%/pall.proc.srt.gz),$(bins)) | gzip -c > $@"'
 
 #$(dir)/pall.sw.tmp/out%:	$(dir)/pall.sw.tmp/in%
 #	java -Xmx7900m ${passimopt} scores -n 0 $(dir)/../idx < $< | awk "\$$1 >= $(MINMINALG)" | sort -rn > $@
