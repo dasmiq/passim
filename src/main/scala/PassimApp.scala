@@ -92,6 +92,6 @@ object PassimApp {
 
     val pairs = indexer.index(corpus).flatMap(x => for ( a <- x._2; b <- x._2; if a._1.id < b._1.id && a._1.series != b._1.series && a._2.size == 1 && b._2.size == 1 ) yield ((a._1, b._1), (a._2(0), b._2(0), x._2.size))).groupByKey.filter(x => x._2.size >= minRep).mapValues(_.toList.sorted)
 
-    pairs.saveAsTextFile("qwe")
+    pairs.saveAsTextFile(args(1))
   }
 }
