@@ -14,6 +14,7 @@ import org.lemurproject.galago.core.parse.Document
 import org.lemurproject.galago.core.parse.TagTokenizer
 
 import collection.JavaConversions._
+import scala.collection.mutable.ListBuffer
 
 case class TokDoc(name: String, text: String, metadata: Map[String,String],
 		  terms: Array[String],
@@ -76,7 +77,34 @@ class NgramIndexer(val n: Int, val maxSeries: Int) extends Serializable {
 object PairFun {
   def increasingMatches(matches: Array[(Int,Int,Int)]): Array[(Int,Int,Int)] = {
     val in = matches.sorted
-    in
+    val X = in.map(_._2).toArray
+    val N = X.size
+    var P = Array.fill(N)(0)
+    var M = Array.fill(N + 1)(0)
+    var L = 0
+    for ( i <- 0 until N ) {
+      var low = 1
+      var high = L
+      while ( low <= high ) {
+	val mid = Math.ceil( (low + high) / 2).toInt
+	if ( X(M(mid)) < X(i) )
+	  low = mid + 1
+	else
+	  high = mid - 1
+      }
+      val newL = low
+      P(i) = M(newL - 1)
+      M(newL) = i
+      if ( newL > L ) L = newL
+    }
+    // Backtrace
+    var res = Array.fill(L)((0,0,0))
+    var k = M(L)
+    for ( i <- (L - 1) to 0 by -1 ) {
+      res(i) = in(k)
+      k = P(k)
+    }
+    res.toArray
   }
 }
 
@@ -98,15 +126,34 @@ object PassimApp {
     val maxSeries: Int = 100
     val n: Int = 5
     val minRep: Int = 5
+    val gap: Int = 100
+
+    val gap2 = gap * gap
 
     val indexer = new NgramIndexer(n, maxSeries)
 
     val pairs = indexer.index(corpus)
       .flatMap(x => for ( a <- x._2; b <- x._2; if a._1.id < b._1.id && a._1.series != b._1.series && a._2.size == 1 && b._2.size == 1 ) yield ((a._1, b._1), (a._2(0), b._2(0), x._2.size)))
       .groupByKey.filter(x => x._2.size >= minRep)
-      .mapValues(x => {
-	PairFun.increasingMatches(x.toArray)
+      .mapValues(x => PairFun.increasingMatches(x.toArray))
+      .filter(x => x._2.size >= minRep)
+      .flatMap(x => {
+	val matches = x._2
+	val N = matches.size
+	var i = 0
+	var res = new ListBuffer[((IdSeries,IdSeries),Array[(Int,Int,Int)])]
+	for ( j <- 0 until N ) {
+	  val j1 = j + 1
+	  if ( j == (N-1) || ((matches(j1)._1 - matches(j)._1) * (matches(j1)._2 - matches(j)._2)) > gap2) {
+	    if ( j > i ) {		// This is where we'd score the spans
+	      res += ((x._1, matches.slice(i, j1)))
+	    }
+	    i = j1
+	  }
+	}
+	res.toList
       })
+//      .flatMap(x => List((x._1, Array(x._2(0))), (x._1, Array(x._2(1)))))
 
     pairs.mapValues(_.toList).saveAsTextFile(args(1))
   }
