@@ -73,16 +73,27 @@ class NgramIndexer(val n: Int, val maxSeries: Int) extends Serializable {
   }
 }
 
+object PairFun {
+  def increasingMatches(matches: Array[(Int,Int,Int)]): Array[(Int,Int,Int)] = {
+    val in = matches.sorted
+    in
+  }
+}
+
 object PassimApp {
   def main(args: Array[String]) {
     val conf = new SparkConf().setAppName("Passim Application")
     val sc = new SparkContext(conf)
 
-    val rawCorpus = sc.textFile(args(0)).map(CorpusFun.stringJSON).map(CorpusFun.parseDocument).zipWithUniqueId.map(x => (x._2, x._1))
+    val rawCorpus = sc.textFile(args(0))
+      .map(CorpusFun.stringJSON).map(CorpusFun.parseDocument)
+      .zipWithUniqueId
+      .map(x => (x._2, x._1))
     
     val series = SeriesFun.makeSeries(rawCorpus)
 
-    val corpus = rawCorpus.keys.map(series).zip(rawCorpus).map(x => (IdSeries(x._2._1, x._1), x._2._2))
+    val corpus = rawCorpus.keys.map(series).zip(rawCorpus)
+      .map(x => (IdSeries(x._2._1, x._1), x._2._2))
 
     val maxSeries: Int = 100
     val n: Int = 5
@@ -90,8 +101,13 @@ object PassimApp {
 
     val indexer = new NgramIndexer(n, maxSeries)
 
-    val pairs = indexer.index(corpus).flatMap(x => for ( a <- x._2; b <- x._2; if a._1.id < b._1.id && a._1.series != b._1.series && a._2.size == 1 && b._2.size == 1 ) yield ((a._1, b._1), (a._2(0), b._2(0), x._2.size))).groupByKey.filter(x => x._2.size >= minRep).mapValues(_.toList.sorted)
+    val pairs = indexer.index(corpus)
+      .flatMap(x => for ( a <- x._2; b <- x._2; if a._1.id < b._1.id && a._1.series != b._1.series && a._2.size == 1 && b._2.size == 1 ) yield ((a._1, b._1), (a._2(0), b._2(0), x._2.size)))
+      .groupByKey.filter(x => x._2.size >= minRep)
+      .mapValues(x => {
+	PairFun.increasingMatches(x.toArray)
+      })
 
-    pairs.saveAsTextFile(args(1))
+    pairs.mapValues(_.toList).saveAsTextFile(args(1))
   }
 }
