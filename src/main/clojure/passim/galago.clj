@@ -1,4 +1,5 @@
 (ns passim.galago
+  (:require [passim.utils :refer [largest-binary-search]])
   (:import (org.lemurproject.galago.core.index IndexPartReader KeyIterator)
            (org.lemurproject.galago.core.index.corpus CorpusReader
                                                       DocumentReader$DocumentIterator)
@@ -7,7 +8,7 @@
            (org.lemurproject.galago.core.retrieval Retrieval RetrievalFactory)
            (org.lemurproject.galago.core.retrieval.iterator ExtentIterator CountIterator)
            (org.lemurproject.galago.core.retrieval.processing ScoringContext)
-           (org.lemurproject.galago.tupleflow Parameters Utility)))
+           (org.lemurproject.galago.tupleflow Parameters Utility FakeParameters)))
 
 (defprotocol LocalValueIterator
   (value-iterator-seq [this]))
@@ -97,7 +98,11 @@
 
 (defn ^Document get-index-doc
   [^Retrieval ri ^String dname]
-  (.getDocument ri dname (Document$DocumentComponents. true true true)))
+  (let [d
+        (.getDocument ri dname (Document$DocumentComponents. true true false))
+        tok (TagTokenizer. (FakeParameters. (doto (Parameters.) (.set "fields" ["pb" "w"]))))]
+    (.tokenize tok d)
+    d))
 
 (defn doc-words
   [^Retrieval ri ^String dname]
@@ -114,3 +119,44 @@
    (into {} (.metadata d)))
   ([^Retrieval ri dname]
    (doc-meta (get-index-doc ri dname))))
+
+(defn- loc-scale
+  [in]
+  (int (/ in 4)))
+
+(defn doc-url
+  [^Document d start end]
+  (let [m (doc-meta d)]
+    (when-let [base (m "url")]
+      (str
+       base
+       (when-let [purl (m "pageurl")]
+         (let [startChar (.get (.termCharBegin d) start)
+               endChar (.get (.termCharEnd d) (dec end))
+               tags (.tags d)
+               pages (vec (filter #(= "pb" (.name %)) tags))
+               startPage (largest-binary-search #(< (.charBegin (pages %)) startChar) 0 (dec (count pages)) 0)]
+           ;; (println startChar endChar pages)
+           ;; (println (get (.attributes (pages startPage)) "n"))
+           (str
+            (format purl (get (.attributes (pages startPage)) "n"))
+            (when-let [iurl (m "imgurl")]
+              (let [span (->> tags
+                              (drop-while #(< (.charEnd %) (dec startChar)))
+                              (take-while #(< (.charBegin %) endChar))
+                              (mapcat
+                               (fn [t]
+                                 (when (and (= "w" (.name t))
+                                            (re-matches #"^\d+,\d+,\d+,\d+"
+                                                        (get (.attributes t) "coords")))
+                                   [(mapv #(Integer/parseInt %)
+                                         (clojure.string/split
+                                          (get (.attributes t) "coords") #","))]))))
+                    qwe (when (<= (count span) 0) (println "#" start end base purl iurl))
+                    x1 (->> span (map first) (reduce min Integer/MAX_VALUE) loc-scale)
+                    y1 (->> span (map second) (reduce min Integer/MAX_VALUE) loc-scale)
+                    x2 (->> span (map (fn [[x y w h]] (+ x w))) (reduce max 0) loc-scale)
+                    y2 (->> span (map (fn [[x y w h]] (+ y h))) (reduce max 0) loc-scale)]
+
+                (format (clojure.string/replace iurl #"print/image%" "print/image_%") 600 600 x1 y1 x2 y2)
+                )))))))))
