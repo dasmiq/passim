@@ -162,7 +162,8 @@ object PassimApp {
 	res.toList
       })
 
-    def linkSpans(init: List[((Int, Int), Long)]): Array[((Int, Int), Array[Long])] = {
+    def linkSpans(rover: Double,
+		  init: List[((Int, Int), Long)]): Array[((Int, Int), Array[Long])] = {
       var passages = new ArrayBuffer[((Int, Int), Array[Long])]
       for ( cur <- init.sortWith((a, b) => (a._1._1 - a._1._2) < (b._1._1 - b._1._2)) ) {
 	val curLen = cur._1._2 - cur._1._1
@@ -170,7 +171,7 @@ object PassimApp {
 	var pmod = false
 	for ( i <- 0 until N; if !pmod ) {
 	  val pass = passages(i)
-	  if ( Math.max(0.0, Math.min(cur._1._2, pass._1._2) - Math.max(cur._1._1, pass._1._1)) / Math.max(curLen, pass._1._2 - pass._1._1) >= relOver ) {
+	  if ( Math.max(0.0, Math.min(cur._1._2, pass._1._2) - Math.max(cur._1._1, pass._1._1)) / Math.max(curLen, pass._1._2 - pass._1._1) > rover ) {
 	    passages(i) = ((Math.min(cur._1._1, pass._1._1),
 			    Math.max(cur._1._2, pass._1._2)),
 			   pass._2 ++ Array(cur._2))
@@ -184,14 +185,8 @@ object PassimApp {
       passages.toArray
     }
 
-    // Unique IDs will serve as edge IDs in connected component graph
-    val pass = pairs.zipWithUniqueId
-      .flatMap(x => Array((x._1._1._1, (x._1._2._1, x._2)),
-			  (x._1._1._2, (x._1._2._2, x._2)))
-	     )
-    .groupByKey
-    .flatMap(x => {
-      val in = x._2.toArray.sorted
+    def mergeSpans(rover: Double, init: Array[((Int, Int), Long)]): Seq[((Int, Int), Array[Long])] = {
+      val in = init.sorted
       var top = -1
       var passages = new ListBuffer[((Int, Int), Array[Long])]
       var spans = new ListBuffer[((Int, Int), Long)]
@@ -199,7 +194,7 @@ object PassimApp {
 	val span = cur._1
 	if ( span._1 > top ) {
 	  top = span._2
-	  passages ++= linkSpans(spans.toList)
+	  passages ++= linkSpans(rover, spans.toList)
 	  spans.clear
 	}
 	else {
@@ -207,9 +202,18 @@ object PassimApp {
 	}
 	spans += cur
       }
-      passages ++= linkSpans(spans.toList)
-      passages.toList.map(p => (x._1, p))
-    }).zipWithUniqueId
+      passages ++= linkSpans(rover, spans.toList)
+      passages.toList
+    }
+
+    // Unique IDs will serve as edge IDs in connected component graph
+    val pass = pairs.zipWithUniqueId
+      .flatMap(x => Array((x._1._1._1, (x._1._2._1, x._2)),
+			  (x._1._1._2, (x._1._2._2, x._2)))
+	     )
+    .groupByKey
+    .flatMap(x => mergeSpans(relOver, x._2.toArray).map(p => (x._1, p)))
+    .zipWithUniqueId
 
     val passNodes = pass.map(v => {
       val ((doc, (span, edges)), id) = v
