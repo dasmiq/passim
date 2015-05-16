@@ -2,6 +2,7 @@ import org.apache.spark.SparkContext
 import org.apache.spark.SparkContext._
 import org.apache.spark.SparkConf
 import org.apache.spark.rdd.RDD
+import org.apache.spark.graphx._
 
 import com.fasterxml.jackson.module.scala.DefaultScalaModule
 import com.fasterxml.jackson.module.scala.experimental.ScalaObjectMapper
@@ -207,11 +208,52 @@ object PassimApp {
 	spans += cur
       }
       passages ++= linkSpans(spans.toList)
-      passages.toList.map(p => (x._1, (p._1, p._2.toList)))
+      passages.toList.map(p => (x._1, p))
+    }).zipWithUniqueId
+
+    val passNodes = pass.map(v => {
+      val ((doc, (span, edges)), id) = v
+      (id, (doc, span))
+    })
+    val passEdges = pass.flatMap(v => {
+      val ((doc, (span, edges)), id) = v
+      edges.map(e => (e, id))
+    }).groupByKey
+    .map(e => {
+      val nodes = e._2.toArray.sorted
+      Edge(nodes(0), nodes(1), 1)
     })
 
-//      .flatMap(x => List((x._1, Array(x._2(0))), (x._1, Array(x._2(1)))))
+    val passGraph = Graph(passNodes, passEdges)
+    passGraph.cache()
 
-    pass.saveAsTextFile(args(1))
+    val cc = passGraph.connectedComponents()
+
+    // This ought to prune clusters and then coalesce overlapping
+    // passages.
+    val clusters = passGraph.vertices.innerJoin(cc.vertices){
+      (id, pass, cid) => (pass._1, (pass._2, cid))
+    }
+
+    val clusterInfo = clusters.values.groupByKey.join(corpus).flatMap(x => {
+      val (id, (passages, doc)) = x
+      passages.map(p => {
+	val ((begin, end), cid) = p
+	(cid,
+	 Map("id" -> id.id,
+	     "date" -> doc.metadata.getOrElse("date", null),
+	     "text" -> doc.text.substring(doc.termCharBegin(begin),
+					  doc.termCharEnd(end))))
+      })
+    }).groupByKey.sortBy(_._2.size, ascending=false).map(x => {
+      val (cid, members) = x
+      val mapper  = new ObjectMapper()
+      mapper.registerModule(DefaultScalaModule)
+      mapper.writeValueAsString(
+	Map("id" -> cid,
+	    "size" -> members.size,
+	    "members" -> members))
+    })
+    clusterInfo.saveAsTextFile(args(1))
   }
 }
