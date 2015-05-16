@@ -15,6 +15,7 @@ import org.lemurproject.galago.core.parse.TagTokenizer
 
 import collection.JavaConversions._
 import scala.collection.mutable.ListBuffer
+import scala.collection.mutable.ArrayBuffer
 
 case class TokDoc(name: String, text: String, metadata: Map[String,String],
 		  terms: Array[String],
@@ -126,7 +127,9 @@ object PassimApp {
     val maxSeries: Int = 100
     val n: Int = 5
     val minRep: Int = 5
+    val minAlg: Int = 20
     val gap: Int = 100
+    val relOver = 0.5
 
     val gap2 = gap * gap
 
@@ -141,20 +144,74 @@ object PassimApp {
 	val matches = x._2
 	val N = matches.size
 	var i = 0
-	var res = new ListBuffer[((IdSeries,IdSeries),Array[(Int,Int,Int)])]
+	var res = new ListBuffer[((IdSeries,IdSeries), ((Int,Int), (Int,Int)))]
 	for ( j <- 0 until N ) {
 	  val j1 = j + 1
 	  if ( j == (N-1) || ((matches(j1)._1 - matches(j)._1) * (matches(j1)._2 - matches(j)._2)) > gap2) {
-	    if ( j > i ) {		// This is where we'd score the spans
-	      res += ((x._1, matches.slice(i, j1)))
+	    // This is where we'd score the spans
+	    if ( j > i && (matches(j)._1 + n - 1 - matches(i)._1) >= 10) {
+	      // res += ((x._1, matches.slice(i, j1)))
+	      res += ((x._1,
+		       ((matches(i)._1, matches(j)._1 + n - 1),
+			(matches(i)._2, matches(j)._2 + n - 1))))
 	    }
 	    i = j1
 	  }
 	}
 	res.toList
       })
+
+    def linkSpans(init: List[((Int, Int), Long)]): Array[((Int, Int), Array[Long])] = {
+      var passages = new ArrayBuffer[((Int, Int), Array[Long])]
+      for ( cur <- init.sortWith((a, b) => (a._1._1 - a._1._2) < (b._1._1 - b._1._2)) ) {
+	val curLen = cur._1._2 - cur._1._1
+	val N = passages.size
+	var pmod = false
+	for ( i <- 0 until N; if !pmod ) {
+	  val pass = passages(i)
+	  if ( Math.max(0.0, Math.min(cur._1._2, pass._1._2) - Math.max(cur._1._1, pass._1._1)) / Math.max(curLen, pass._1._2 - pass._1._1) >= relOver ) {
+	    passages(i) = ((Math.min(cur._1._1, pass._1._1),
+			    Math.max(cur._1._2, pass._1._2)),
+			   pass._2 ++ Array(cur._2))
+	    pmod = true
+	  }
+	}
+	if (!pmod) {
+	  passages += ((cur._1, Array(cur._2)))
+	}
+      }
+      passages.toArray
+    }
+
+    // Unique IDs will serve as edge IDs in connected component graph
+    val pass = pairs.zipWithUniqueId
+      .flatMap(x => Array((x._1._1._1, (x._1._2._1, x._2)),
+			  (x._1._1._2, (x._1._2._2, x._2)))
+	     )
+    .groupByKey
+    .flatMap(x => {
+      val in = x._2.toArray.sorted
+      var top = -1
+      var passages = new ListBuffer[((Int, Int), Array[Long])]
+      var spans = new ListBuffer[((Int, Int), Long)]
+      for ( cur <- in ) {
+	val span = cur._1
+	if ( span._1 > top ) {
+	  top = span._2
+	  passages ++= linkSpans(spans.toList)
+	  spans.clear
+	}
+	else {
+	  top = Math.max(top, span._2)
+	}
+	spans += cur
+      }
+      passages ++= linkSpans(spans.toList)
+      passages.toList.map(p => (x._1, (p._1, p._2.toList)))
+    })
+
 //      .flatMap(x => List((x._1, Array(x._2(0))), (x._1, Array(x._2(1)))))
 
-    pairs.mapValues(_.toList).saveAsTextFile(args(1))
+    pass.saveAsTextFile(args(1))
   }
 }
