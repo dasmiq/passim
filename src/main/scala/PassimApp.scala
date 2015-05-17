@@ -48,7 +48,7 @@ object CorpusFun {
 
 object SeriesFun {
   def makeSeries(corpus: RDD[(Long, TokDoc)]): Map[Long,Long] = {
-    corpus.mapValues(_.name.split("_")(0)).groupBy(_._2)
+    corpus.mapValues(_.name.split("[_/]")(0)).groupBy(_._2)
       .flatMap(x => {val s = x._2.head._1; x._2.map(p => (p._1, s))}).toLocalIterator.toMap
   }
 }
@@ -233,19 +233,26 @@ object PassimApp {
 
     val cc = passGraph.connectedComponents()
 
-    // This ought to prune clusters and then coalesce overlapping
-    // passages.
+    // This ought to prune clusters.
     val clusters = passGraph.vertices.innerJoin(cc.vertices){
       (id, pass, cid) => (pass._1, (pass._2, cid))
     }
 
     val clusterInfo = clusters.values.groupByKey.join(corpus).flatMap(x => {
       val (id, (passages, doc)) = x
-      passages.map(p => {
+      passages.groupBy(_._2).values.flatMap(p => {
+	mergeSpans(0, p.toArray).map(z => (z._1, z._2(0)))
+      }).map(p => {
 	val ((begin, end), cid) = p
 	(cid,
-	 Map("id" -> id.id,
-	     "date" -> doc.metadata.getOrElse("date", null),
+	 Map("id" -> doc.name,
+	     "uid" -> id.id,
+	     "name" -> doc.name.split("[_/]")(0),
+	     "title" -> doc.metadata.getOrElse("title", null),
+	     "date" -> doc.metadata.getOrElse("date", ""),
+	     "url" -> doc.metadata.getOrElse("url", null),
+	     "start" -> begin,
+	     "end" -> end,
 	     "text" -> doc.text.substring(doc.termCharBegin(begin),
 					  doc.termCharEnd(end))))
       })
@@ -256,7 +263,7 @@ object PassimApp {
       mapper.writeValueAsString(
 	Map("id" -> cid,
 	    "size" -> members.size,
-	    "members" -> members))
+	    "members" -> members.toArray.sortWith((a, b) => a("date").toString < b("date").toString)))
     })
     clusterInfo.saveAsTextFile(args(1))
   }
