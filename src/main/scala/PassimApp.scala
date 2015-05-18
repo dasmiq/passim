@@ -79,13 +79,6 @@ object CorpusFun {
 	   loc.toArray)
   }
 }
-
-object SeriesFun {
-  def makeSeries(corpus: RDD[(Long, TokDoc)]): Map[Long,Long] = {
-    corpus.mapValues(_.name.split("[_/]")(0)).groupBy(_._2)
-      .flatMap(x => {val s = x._2.head._1; x._2.map(p => (p._1, s))}).toLocalIterator.toMap
-  }
-}
   
 class NgramIndexer(val n: Int, val maxSeries: Int) extends Serializable {
   def index(corpus: RDD[(IdSeries, TokDoc)]) = {
@@ -147,17 +140,24 @@ object PairFun {
 object PassimApp {
   def main(args: Array[String]) {
     val conf = new SparkConf().setAppName("Passim Application")
+      .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+      .registerKryoClasses(Array(classOf[imgCoord], classOf[pageLoc],
+				 classOf[TokDoc], classOf[IdSeries]))
     val sc = new SparkContext(conf)
 
     val rawCorpus = sc.textFile(args(0))
       .map(CorpusFun.stringJSON).map(CorpusFun.parseDocument)
       .zipWithUniqueId
       .map(x => (x._2, x._1))
+    // rawCorpus.cache()
 
-    val series = SeriesFun.makeSeries(rawCorpus)
+    val series = rawCorpus.mapValues(_.name.split("[_/]")(0)).groupBy(_._2)
+      .flatMap(x => {val s = x._2.head._1; x._2.map(p => (p._1, s))}).toLocalIterator.toMap
 
     val corpus = rawCorpus.keys.map(series).zip(rawCorpus)
       .map(x => (IdSeries(x._2._1, x._1), x._2._2))
+    // corpus.cache()
+    // rawCorpus.unpersist()
 
     val maxSeries: Int = 100
     val n: Int = 5
@@ -286,7 +286,7 @@ object PassimApp {
 	     "name" -> doc.name.split("[_/]")(0),
 	     "title" -> doc.metadata.getOrElse("title", null),
 	     "date" -> doc.metadata.getOrElse("date", ""),
-	     "url" -> doc.metadata.getOrElse("url", null),
+	     "url" -> doc.metadata.getOrElse("url", null), // should get page coords
 	     "start" -> begin,
 	     "end" -> end,
 	     "text" -> doc.text.substring(doc.termCharBegin(begin),
