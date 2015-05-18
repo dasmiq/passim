@@ -185,8 +185,8 @@ object PassimApp {
 	  val j1 = j + 1
 	  if ( j == (N-1) || ((matches(j1)._1 - matches(j)._1) * (matches(j1)._2 - matches(j)._2)) > gap2) {
 	    // This is where we'd score the spans
-	    if ( j > i && (matches(j)._1 + n - 1 - matches(i)._1) >= 10) {
-	      // res += ((x._1, matches.slice(i, j1)))
+	    if ( j > i && (matches(j)._1 - matches(i)._1 + n - 1) >= 10
+		 && (matches(j)._2 - matches(i)._2 + n - 1) >= 10) {
 	      res += ((x._1,
 		       ((matches(i)._1, matches(j)._1 + n - 1),
 			(matches(i)._2, matches(j)._2 + n - 1))))
