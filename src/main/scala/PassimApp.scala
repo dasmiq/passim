@@ -131,6 +131,7 @@ object PassimApp {
     val minAlg: Int = 20
     val gap: Int = 100
     val relOver = 0.5
+    val maxRep: Int = 4
 
     val gap2 = gap * gap
 
@@ -233,12 +234,13 @@ object PassimApp {
 
     val cc = passGraph.connectedComponents()
 
-    // This ought to prune clusters.
     val clusters = passGraph.vertices.innerJoin(cc.vertices){
       (id, pass, cid) => (pass._1, (pass._2, cid))
     }
 
-    val clusterInfo = clusters.values.groupByKey.join(corpus).flatMap(x => {
+    val clusterInfo = clusters.values.groupBy(_._2._2).filter(x => {
+      x._2.groupBy(_._1.id).values.groupBy(_.head._1.series).map(_._2.size).max <= maxRep
+    }).flatMap(_._2).groupByKey.join(corpus).flatMap(x => {
       val (id, (passages, doc)) = x
       passages.groupBy(_._2).values.flatMap(p => {
 	mergeSpans(0, p.toArray).map(z => (z._1, z._2(0)))
