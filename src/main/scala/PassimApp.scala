@@ -18,9 +18,16 @@ import collection.JavaConversions._
 import scala.collection.mutable.ListBuffer
 import scala.collection.mutable.ArrayBuffer
 
+case class imgCoord(val x: Int, val y: Int, val w: Int, val h: Int) {
+  def x2 = x + w
+  def y2 = y + h
+}
+
+case class pageLoc(page: String, loc: imgCoord)
+
 case class TokDoc(name: String, text: String, metadata: Map[String,String],
 		  terms: Array[String],
-		  termCharBegin: Array[Int], termCharEnd: Array[Int])
+		  termCharBegin: Array[Int], termCharEnd: Array[Int], termPage: Array[pageLoc])
 
 case class IdSeries(id: Long, series: Long)
 
@@ -38,11 +45,14 @@ object CorpusFun {
     var d = new Document(m("id"), m("text"))
     tok.tokenize(d)
 
+    var loc = new ArrayBuffer[pageLoc]
+
     TokDoc(m("id"), m("text"),
 	   m - "id" - "text",
 	   d.terms.toSeq.toArray,
 	   d.termCharBegin.map(_.toInt).toArray,
-	   d.termCharEnd.map(_.toInt).toArray)
+	   d.termCharEnd.map(_.toInt).toArray,
+	   loc.toArray)
   }
 }
 
