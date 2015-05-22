@@ -61,6 +61,7 @@ object CorpusFun {
       else if ( t.name == "w" ) {
 	  t.attributes.getOrElse("coords", "") match {
 	    case p(x, y, w, h) => curCoord = imgCoord(x.toInt, y.toInt, w.toInt, h.toInt)
+	    case _ => curCoord
 	  }
 	}
     }
@@ -246,7 +247,7 @@ object PassimApp {
       .flatMap(x => Array((x._1._1._1, (x._1._2._1, x._2)),
 			  (x._1._1._2, (x._1._2._2, x._2)))
 	     )
-    .groupByKey
+    .groupByKey				// This is where we'd extend the spans by alignment.
     .flatMap(x => mergeSpans(relOver, x._2.toArray).map(p => (x._1, p)))
     .zipWithUniqueId
 
