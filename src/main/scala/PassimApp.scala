@@ -3,6 +3,10 @@ import org.apache.spark.SparkContext._
 import org.apache.spark.SparkConf
 import org.apache.spark.rdd.RDD
 import org.apache.spark.graphx._
+import org.apache.spark.sql.SQLContext
+import org.apache.spark.sql.Row
+import org.apache.spark.sql.functions._
+import org.apache.spark.storage.StorageLevel
 
 import com.fasterxml.jackson.module.scala.DefaultScalaModule
 import com.fasterxml.jackson.module.scala.experimental.ScalaObjectMapper
@@ -25,22 +29,20 @@ case class imgCoord(val x: Int, val y: Int, val w: Int, val h: Int) {
 
 case class pageLoc(page: String, loc: imgCoord)
 
-case class TokDoc(name: String, text: String, metadata: Map[String,String],
+case class TokDoc(name: String, text: String, metadata: Map[String,String], series: String,
 		  terms: Array[String],
 		  termCharBegin: Array[Int], termCharEnd: Array[Int], termPage: Array[pageLoc])
 
 case class IdSeries(id: Long, series: Long)
 
 object CorpusFun {
-  def stringJSON(s: String): scala.collection.immutable.Map[String,String] = {
-    val mapper  = new ObjectMapper()
-    mapper.registerModule(DefaultScalaModule)
-    mapper.readValue(s, classOf[scala.collection.immutable.Map[String, String]])
-  }
-  def parseDocument(m: scala.collection.immutable.Map[String, String]): TokDoc = {
+  def parseDocument(r: Row): TokDoc = {
     var tokp = new Parameters
     tokp.set("fields", List("pb", "w"))
     val tok = new TagTokenizer(new FakeParameters(tokp))
+
+    val names = r.schema.fieldNames
+    val m = (for ( i <- 0 until names.size ) yield (names(i), r.getString(i))).toMap
 
     var d = new Document(m("id"), m("text"))
     tok.tokenize(d)
@@ -73,7 +75,8 @@ object CorpusFun {
     }
 
     TokDoc(m("id"), m("text"),
-	   m - "id" - "text",
+	   m - "id" - "text" - "series",
+	   m("series"),
 	   d.terms.toSeq.toArray,
 	   d.termCharBegin.map(_.toInt).toArray,
 	   d.termCharEnd.map(_.toInt).toArray,
@@ -145,20 +148,26 @@ object PassimApp {
       .registerKryoClasses(Array(classOf[imgCoord], classOf[pageLoc],
 				 classOf[TokDoc], classOf[IdSeries]))
     val sc = new SparkContext(conf)
+    val sqlContext = new org.apache.spark.sql.SQLContext(sc)
 
-    val rawCorpus = sc.textFile(args(0))
-      .map(CorpusFun.stringJSON).map(CorpusFun.parseDocument)
+    val raw = sqlContext.jsonFile(args(0))
+    // Do simple series transformation; in future, could join with metadata.
+    val sname = udf {(x: String) => x.split("[_/]")(0) }
+    val data = raw.withColumn("series", sname(raw("id")))
+
+    val rawCorpus = data.map(CorpusFun.parseDocument)
       .zipWithUniqueId
       .map(x => (x._2, x._1))
-    // rawCorpus.cache()
+    rawCorpus.persist(StorageLevel.MEMORY_AND_DISK_SER)
 
-    val series = rawCorpus.mapValues(_.name.split("[_/]")(0)).groupBy(_._2)
+    val series = rawCorpus.mapValues(_.series).groupBy(_._2)
       .flatMap(x => {val s = x._2.head._1; x._2.map(p => (p._1, s))}).toLocalIterator.toMap
 
     val corpus = rawCorpus.keys.map(series).zip(rawCorpus)
       .map(x => (IdSeries(x._2._1, x._1), x._2._2))
-    // corpus.cache()
-    // rawCorpus.unpersist()
+      // .partitionBy(new org.apache.spark.HashPartitioner(10))
+      .persist(StorageLevel.MEMORY_AND_DISK_SER)
+    rawCorpus.unpersist()
 
     val maxSeries: Int = 100
     val n: Int = 5
@@ -177,20 +186,18 @@ object PassimApp {
       .groupByKey.filter(x => x._2.size >= minRep)
       .mapValues(x => PairFun.increasingMatches(x.toArray))
       .filter(x => x._2.size >= minRep)
-      .flatMap(x => {
-	val matches = x._2
+      .flatMapValues(matches => {
 	val N = matches.size
 	var i = 0
-	var res = new ListBuffer[((IdSeries,IdSeries), ((Int,Int), (Int,Int)))]
+	var res = new ListBuffer[((Int,Int), (Int,Int))]
 	for ( j <- 0 until N ) {
 	  val j1 = j + 1
 	  if ( j == (N-1) || ((matches(j1)._1 - matches(j)._1) * (matches(j1)._2 - matches(j)._2)) > gap2) {
 	    // This is where we'd score the spans
 	    if ( j > i && (matches(j)._1 - matches(i)._1 + n - 1) >= 10
 		 && (matches(j)._2 - matches(i)._2 + n - 1) >= 10) {
-	      res += ((x._1,
-		       ((matches(i)._1, matches(j)._1 + n - 1),
-			(matches(i)._2, matches(j)._2 + n - 1))))
+	      res += (((matches(i)._1, matches(j)._1 + n - 1),
+		       (matches(i)._2, matches(j)._2 + n - 1)))
 	    }
 	    i = j1
 	  }
@@ -242,13 +249,15 @@ object PassimApp {
       passages.toList
     }
 
+    pairs.saveAsTextFile(args(1) + ".pairs")
+
     // Unique IDs will serve as edge IDs in connected component graph
     val pass = pairs.zipWithUniqueId
       .flatMap(x => Array((x._1._1._1, (x._1._2._1, x._2)),
 			  (x._1._1._2, (x._1._2._2, x._2)))
 	     )
     .groupByKey				// This is where we'd extend the spans by alignment.
-    .flatMap(x => mergeSpans(relOver, x._2.toArray).map(p => (x._1, p)))
+    .flatMapValues(x => mergeSpans(relOver, x.toArray))
     .zipWithUniqueId
 
     val passNodes = pass.map(v => {
@@ -284,7 +293,7 @@ object PassimApp {
 	(cid,
 	 Map("id" -> doc.name,
 	     "uid" -> id.id,
-	     "name" -> doc.name.split("[_/]")(0),
+	     "name" -> doc.series,
 	     "title" -> doc.metadata.getOrElse("title", null),
 	     "date" -> doc.metadata.getOrElse("date", ""),
 	     "url" -> doc.metadata.getOrElse("url", null), // should get page coords
