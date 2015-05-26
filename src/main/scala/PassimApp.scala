@@ -49,7 +49,7 @@ object CorpusFun {
     var curPage = ""
     var curCoord = imgCoord(0, 0, 0, 0)
     var idx = 0
-    val p = """(\d+),(\d+),(\d+),(\d+)""".r
+    val p = """^(\d+),(\d+),(\d+),(\d+)$""".r
     for ( t <- d.tags ) {
       val off = t.begin
       while ( idx < off ) {
@@ -59,11 +59,11 @@ object CorpusFun {
       if ( t.name == "pb" )
 	curPage = t.attributes.getOrElse("n", "")
       else if ( t.name == "w" ) {
-	  t.attributes.getOrElse("coords", "") match {
-	    case p(x, y, w, h) => curCoord = imgCoord(x.toInt, y.toInt, w.toInt, h.toInt)
-	    case _ => curCoord
-	  }
-	}
+    	  t.attributes.getOrElse("coords", "") match {
+            case p(x, y, w, h) => curCoord = imgCoord(x.toInt, y.toInt, w.toInt, h.toInt)
+    	    case _ => curCoord
+    	  }
+    	}
     }
     if ( idx > 0 ) {
       while ( idx < d.terms.size ) {
