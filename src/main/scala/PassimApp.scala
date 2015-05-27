@@ -162,12 +162,13 @@ object PassimApp {
 
     rawCorpus.mapValues(_.name).saveAsTextFile(args(1) + ".names")
 
-    val series = rawCorpus.mapValues(_.series).groupBy(_._2)
-      .flatMap(x => {val s = x._2.head._1; x._2.map(p => (p._1, s))}).toLocalIterator.toMap
+    val series = rawCorpus.map(x => (x._2.series, x._1))
+      .reduceByKey((a, b) => Math.min(a, b))
+      .toLocalIterator.toMap
 
-    val corpus = rawCorpus.keys.map(series).zip(rawCorpus)
+    val corpus = rawCorpus.map(x => series(x._2.series)).zip(rawCorpus)
       .map(x => (IdSeries(x._2._1, x._1), x._2._2))
-      .partitionBy(new org.apache.spark.HashPartitioner(20))
+      // .partitionBy(new org.apache.spark.HashPartitioner(20))
       .persist(StorageLevel.MEMORY_AND_DISK_SER)
     rawCorpus.unpersist()
 
@@ -289,6 +290,8 @@ object PassimApp {
       x._2.groupBy(_._1.id).values.groupBy(_.head._1.series).map(_._2.size).max <= maxRep
     })
     .flatMap(_._2)
+
+    clusters.saveAsTextFile(args(1) + ".clusters")
 
     val clusterInfo = clusters.groupByKey
       .join(corpus)
