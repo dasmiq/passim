@@ -160,12 +160,14 @@ object PassimApp {
       .map(x => (x._2, x._1))
     rawCorpus.persist(StorageLevel.MEMORY_AND_DISK_SER)
 
+    rawCorpus.mapValues(_.name).saveAsTextFile(args(1) + ".names")
+
     val series = rawCorpus.mapValues(_.series).groupBy(_._2)
       .flatMap(x => {val s = x._2.head._1; x._2.map(p => (p._1, s))}).toLocalIterator.toMap
 
     val corpus = rawCorpus.keys.map(series).zip(rawCorpus)
       .map(x => (IdSeries(x._2._1, x._1), x._2._2))
-      // .partitionBy(new org.apache.spark.HashPartitioner(10))
+      .partitionBy(new org.apache.spark.HashPartitioner(20))
       .persist(StorageLevel.MEMORY_AND_DISK_SER)
     rawCorpus.unpersist()
 
@@ -204,6 +206,8 @@ object PassimApp {
 	}
 	res.toList
       })
+
+    pairs.saveAsTextFile(args(1) + ".pairs")
 
     def linkSpans(rover: Double,
 		  init: List[((Int, Int), Long)]): Array[((Int, Int), Array[Long])] = {
@@ -249,8 +253,6 @@ object PassimApp {
       passages.toList
     }
 
-    pairs.saveAsTextFile(args(1) + ".pairs")
-
     // Unique IDs will serve as edge IDs in connected component graph
     val pass = pairs.zipWithUniqueId
       .flatMap(x => Array((x._1._1._1, (x._1._2._1, x._2)),
@@ -281,28 +283,37 @@ object PassimApp {
     val clusters = passGraph.vertices.innerJoin(cc.vertices){
       (id, pass, cid) => (pass._1, (pass._2, cid))
     }
-
-    val clusterInfo = clusters.values.groupBy(_._2._2).filter(x => {
+    .values
+    .groupBy(_._2._2)
+    .filter(x => {
       x._2.groupBy(_._1.id).values.groupBy(_.head._1.series).map(_._2.size).max <= maxRep
-    }).flatMap(_._2).groupByKey.join(corpus).flatMap(x => {
-      val (id, (passages, doc)) = x
-      passages.groupBy(_._2).values.flatMap(p => {
-	mergeSpans(0, p.toArray).map(z => (z._1, z._2(0)))
-      }).map(p => {
-	val ((begin, end), cid) = p
-	(cid,
-	 Map("id" -> doc.name,
-	     "uid" -> id.id,
-	     "name" -> doc.series,
-	     "title" -> doc.metadata.getOrElse("title", null),
-	     "date" -> doc.metadata.getOrElse("date", ""),
-	     "url" -> doc.metadata.getOrElse("url", null), // should get page coords
-	     "start" -> begin,
-	     "end" -> end,
-	     "text" -> doc.text.substring(doc.termCharBegin(begin),
-					  doc.termCharEnd(end))))
+    })
+    .flatMap(_._2)
+
+    val clusterInfo = clusters.groupByKey
+      .join(corpus)
+      .flatMap(x => {
+	val (id, (passages, doc)) = x
+	passages.groupBy(_._2).values.flatMap(p => {
+	  mergeSpans(0, p.toArray).map(z => (z._1, z._2(0)))
+	}).map(p => {
+	  val ((begin, end), cid) = p
+	  (cid,
+	   Map("id" -> doc.name,
+	       "uid" -> id.id,
+	       "name" -> doc.series,
+	       "title" -> doc.metadata.getOrElse("title", null),
+	       "date" -> doc.metadata.getOrElse("date", ""),
+	       "url" -> doc.metadata.getOrElse("url", null), // should get page coords
+	       "start" -> begin,
+	       "end" -> end,
+	       "text" -> doc.text.substring(doc.termCharBegin(begin),
+					    doc.termCharEnd(end))))
+	})
       })
-    }).groupByKey.sortBy(_._2.size, ascending=false).map(x => {
+    .groupByKey
+    .sortBy(_._2.size, ascending=false)
+    .map(x => {
       val (cid, members) = x
       val mapper  = new ObjectMapper()
       mapper.registerModule(DefaultScalaModule)
