@@ -97,25 +97,34 @@ class NgramIndexer(val n: Int, val maxSeries: Int) extends Serializable {
       }
       res
     }
+    // // We could save space by hasing the n-grams, then checking for
+    // // equality when we actually do the alignment, but we need to keep
+    // // all the n-gram matches around, not just the ranges.
+    // java.nio.ByteBuffer.wrap(java.security.MessageDigest.getInstance("MD5")
+    //   .digest("a~b~c~d~e".getBytes).take(8)).getLong
+    // val ebuf = new ArrayBuffer[(IdSeries,Int)]()
     corpus.flatMap(d => {
       val (id, doc) = d
       doc.terms.zipWithIndex.sliding(n_)
 	.map(x => (x.map(_._1).mkString("~"), (id, x(0)._2)))
     })
-    .aggregateByKey(ArrayBuffer[(IdSeries,Int)]())(
-      (buf, v) => if ( buf.size <= upper ) buf += v else buf,
-      (c1, c2) => {
-	if ( c1.size > upper )
-	  c1
-	else {
-	  if (c2.size > upper )
-	    c2
-	  else
-	    c1 ++= c2
-	}
-      })
-    .filter(x => x._2.size >= 2 && x._2.size <= upper)
-    .filter(x => crossCounts(x._2.map(p => p._1.series).groupBy(identity).map(_._2.size).toArray) <= upper)
+    .groupByKey
+    // // Save this implementation in case we see lots of high-frequency n-grams
+    // .aggregateByKey(ebuf)(
+    //   (buf, v) => if ( buf.size <= upper ) buf += v else buf,
+    //   (c1, c2) => {
+    // 	if ( c1.size > upper )
+    // 	  c1
+    // 	else {
+    // 	  if (c2.size > upper )
+    // 	    c2
+    // 	  else
+    // 	    c1 ++= c2
+    // 	}
+    //   })
+    .filter(x => x._2.size >= 2 && x._2.size <= upper
+	    && ( crossCounts(x._2.map(p => p._1.series)
+			     .groupBy(identity).map(_._2.size).toArray) ) <= upper)
     .mapValues(x => x.groupBy(_._1).toArray.map(p => (p._1, p._2.map(_._2).toArray)).toArray)
   }
 }
@@ -173,7 +182,7 @@ object PassimApp {
       .map(x => (x._2, x._1))
     rawCorpus.persist(StorageLevel.MEMORY_AND_DISK_SER)
 
-    rawCorpus.mapValues(_.name).saveAsTextFile(args(1) + ".names")
+    rawCorpus.mapValues(x => (x.name, x.terms.size)).saveAsTextFile(args(1) + ".names")
 
     val series = rawCorpus.map(x => (x._2.series, x._1))
       .reduceByKey((a, b) => Math.min(a, b))
@@ -181,7 +190,7 @@ object PassimApp {
 
     val corpus = rawCorpus.map(x => series(x._2.series)).zip(rawCorpus)
       .map(x => (IdSeries(x._2._1, x._1), x._2._2))
-      // .partitionBy(new org.apache.spark.HashPartitioner(20))
+      //.partitionBy(new org.apache.spark.HashPartitioner(50))
       .persist(StorageLevel.MEMORY_AND_DISK_SER)
     rawCorpus.unpersist()
 
@@ -221,7 +230,7 @@ object PassimApp {
 	res.toList
       })
 
-    pairs.saveAsTextFile(args(1) + ".pairs")
+    // pairs.saveAsTextFile(args(1) + ".pairs")
 
     def linkSpans(rover: Double,
 		  init: List[((Int, Int), Long)]): Array[((Int, Int), Array[Long])] = {
@@ -384,7 +393,7 @@ object PassimApp {
     })
     .flatMap(_._2)
 
-    clusters.saveAsTextFile(args(1) + ".clusters")
+    // clusters.saveAsTextFile(args(1) + ".clusters")
 
     val clusterInfo = clusters.groupByKey
       .join(corpus)
