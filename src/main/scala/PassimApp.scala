@@ -363,7 +363,7 @@ object PassimApp {
       .groupByKey
       .flatMapValues(x => mergeSpans(relOver, x.toArray))
       .zipWithUniqueId
-    pass.saveAsTextFile(args(1) + ".pass")
+    // pass.saveAsTextFile(args(1) + ".pass")
 
     val passNodes = pass.map(v => {
       val ((doc, (span, edges)), id) = v
