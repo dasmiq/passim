@@ -268,13 +268,93 @@ object PassimApp {
     }
 
     // Unique IDs will serve as edge IDs in connected component graph
-    val pass = pairs.zipWithUniqueId
+    val pass1 = pairs.zipWithUniqueId
       .flatMap(x => Array((x._1._1._1, (x._1._2._1, x._2)),
 			  (x._1._1._2, (x._1._2._2, x._2)))
 	     )
-    .groupByKey				// This is where we'd extend the spans by alignment.
-    .flatMapValues(x => mergeSpans(relOver, x.toArray))
-    .zipWithUniqueId
+
+    val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
+    val pass2 = pass1
+      .groupByKey
+      .join(corpus)
+      .flatMap(x => {
+	val (id, (spans, doc)) = x
+	spans.map(s => {
+	  val ((start, end), pid) = s
+	  (pid,
+	   (id, (start, end),
+	    if (start <= 0) "" else doc.terms.slice(Math.max(0, start - 50), start + n).mkString(" "),
+	    if (end >= doc.terms.size) "" else doc.terms.slice(end + 1 - n, Math.min(doc.terms.size, end + 1 + 50)).mkString(" ")))
+	})
+      })
+    .groupByKey
+    .flatMap(x => {
+      val (pid, data) = x
+      val s = data.toArray
+      val (id1, span1, prefix1, suffix1) = s(0)
+      val (id2, span2, prefix2, suffix2) = s(1)
+      var (s1, e1) = span1
+      var (s2, e2) = span2
+
+      if ( s1 > 0 && s2 > 0 ) {
+	val palg = jaligner.SmithWatermanGotoh.align(new jaligner.Sequence(prefix1),
+						     new jaligner.Sequence(prefix2),
+						     matchMatrix, 5, 0.5f)
+	val ps1 = palg.getSequence1()
+	val ps2 = palg.getSequence2()
+	val plen1 = ps1.size - ps1.count(_ == '-')
+	val plen2 = ps2.size - ps2.count(_ == '-')
+	
+	if ( ps1.size > 0 && ps2.size > 0 && palg.getStart1() + plen1 >= prefix1.size
+	     && palg.getStart2() + plen2 >= prefix2.size ) {
+	  val pextra = palg.getIdentity() - prefix1.split(" ").takeRight(n).mkString(" ").size
+	  if ( pextra > 2 ) {
+	    s1 -= ps1.count(_ == ' ') - (if (ps1(0) == ' ') 1 else 0) - n + 1
+	    s2 -= ps2.count(_ == ' ') - (if (ps2(0) == ' ') 1 else 0) - n + 1
+	    // println((id1,id2))
+	    // println("prefix extra: " + pextra)
+	    // println(ps1.mkString)
+	    // println(palg.getMarkupLine().mkString)
+	    // println(ps2.mkString)
+	  }
+	}
+      }
+
+      if ( suffix1.size > 0 && suffix2.size > 0 ) {
+	val salg = jaligner.SmithWatermanGotoh.align(new jaligner.Sequence(suffix1),
+						     new jaligner.Sequence(suffix2),
+						     matchMatrix, 5, 0.5f)
+	val ss1 = salg.getSequence1()
+	val ss2 = salg.getSequence2()
+	
+	if ( ss1.size > 0 && ss2.size > 0 && salg.getStart1() == 0 && salg.getStart2() == 0 ) {
+	  val sextra = salg.getIdentity() - suffix1.split(" ").take(n).mkString(" ").size
+	  if ( sextra > 2 ) {
+	    e1 += ss1.count(_ == ' ') - (if (ss1(ss1.size - 1) == ' ') 1 else 0) - n + 1
+	    e2 += ss2.count(_ == ' ') - (if (ss2(ss2.size - 1) == ' ') 1 else 0) - n + 1
+	    // println((id1,id2))
+	    // println("suffix extra: " + sextra)
+	    // println(ss1.mkString)
+	    // println(salg.getMarkupLine().mkString)
+	    // println(ss2.mkString)
+	  }
+	}
+      }
+
+      if ( (e1 - s1 + 1) >= minAlg
+	   && (e2 - s2 + 1) >= minAlg ) {
+	Array((id1, ((s1, e1), pid)),
+	      (id2, ((s2, e2), pid)))
+      }
+      else
+	None
+    })
+    
+    val pass = pass2
+      .groupByKey
+      .flatMapValues(x => mergeSpans(relOver, x.toArray))
+      .zipWithUniqueId
+    pass.saveAsTextFile(args(1) + ".pass")
 
     val passNodes = pass.map(v => {
       val ((doc, (span, edges)), id) = v
