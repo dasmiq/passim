@@ -190,8 +190,8 @@ object PassimApp {
 
     val corpus = rawCorpus.map(x => series(x._2.series)).zip(rawCorpus)
       .map(x => (IdSeries(x._2._1, x._1), x._2._2))
-      //.partitionBy(new org.apache.spark.HashPartitioner(50))
-      .persist(StorageLevel.MEMORY_AND_DISK_SER)
+      .partitionBy(new org.apache.spark.HashPartitioner(20))
+    corpus.persist(StorageLevel.MEMORY_AND_DISK_SER)
     rawCorpus.unpersist()
 
     val maxSeries: Int = 100
@@ -395,6 +395,27 @@ object PassimApp {
 
     // clusters.saveAsTextFile(args(1) + ".clusters")
 
+    def passageURL(doc: TokDoc, begin: Int, end: Int): String = {
+      val m = doc.metadata
+      var res = new StringBuilder
+      if ( m.contains("url") ) {
+	res ++= m("url")
+	if ( m.contains("pageurl") && doc.termPage.size > end ) {
+	  val (page, locs) = doc.termPage.slice(begin, end).groupBy(_.page).head
+	  res ++= m("pageurl").format(page)
+	  if ( m.contains("imgurl") ) {
+	    val x1 = locs.map(_.loc.x).min / 4
+	    val y1 = locs.map(_.loc.y).min / 4
+	    val x2 = locs.map(_.loc.x2).max / 4
+	    val y2 = locs.map(_.loc.y2).max / 4
+	    if ( x2 > 0 && y2 > 0 )
+	      res ++= m("imgurl").format(600, 600, x1, y1, x2, y2)
+	  }
+	}
+      }
+      res.toString
+    }
+
     val clusterInfo = clusters.groupByKey
       .join(corpus)
       .flatMap(x => {
@@ -407,9 +428,9 @@ object PassimApp {
 	   Map("id" -> doc.name,
 	       "uid" -> id.id,
 	       "name" -> doc.series,
-	       "title" -> doc.metadata.getOrElse("title", null),
+	       "title" -> doc.metadata.getOrElse("title", ""),
 	       "date" -> doc.metadata.getOrElse("date", ""),
-	       "url" -> doc.metadata.getOrElse("url", null), // should get page coords
+	       "url" -> passageURL(doc, begin, end),
 	       "start" -> begin,
 	       "end" -> end,
 	       "text" -> doc.text.substring(doc.termCharBegin(begin),
