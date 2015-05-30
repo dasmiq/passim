@@ -190,7 +190,7 @@ object PassimApp {
 
     val corpus = rawCorpus.map(x => series(x._2.series)).zip(rawCorpus)
       .map(x => (IdSeries(x._2._1, x._1), x._2._2))
-      .partitionBy(new org.apache.spark.HashPartitioner(20))
+      //.partitionBy(new org.apache.spark.HashPartitioner(20))
     corpus.persist(StorageLevel.MEMORY_AND_DISK_SER)
     rawCorpus.unpersist()
 
@@ -292,8 +292,8 @@ object PassimApp {
 	  val ((start, end), pid) = s
 	  (pid,
 	   (id, (start, end),
-	    if (start <= 0) "" else doc.terms.slice(Math.max(0, start - 50), start + n).mkString(" "),
-	    if (end >= doc.terms.size) "" else doc.terms.slice(end + 1 - n, Math.min(doc.terms.size, end + 1 + 50)).mkString(" ")))
+	    if (start <= 0) "" else doc.terms.slice(Math.max(0, start - gap * 2/3), start + n).mkString(" "),
+	    if (end >= doc.terms.size) "" else doc.terms.slice(end + 1 - n, Math.min(doc.terms.size, end + 1 + gap * 2/3)).mkString(" ")))
 	})
       })
     .groupByKey
