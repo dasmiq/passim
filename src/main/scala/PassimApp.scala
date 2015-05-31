@@ -191,7 +191,7 @@ object PassimApp {
     val corpus = rawCorpus.map(x => series(x._2.series)).zip(rawCorpus)
       .map(x => (IdSeries(x._2._1, x._1), x._2._2))
       .repartition(rawCorpus.partitions.size)
-      .persist(StorageLevel.MEMORY_AND_DISK_SER)
+    corpus.persist(StorageLevel.MEMORY_AND_DISK_SER)
     rawCorpus.unpersist()
 
     val maxSeries: Int = 100
