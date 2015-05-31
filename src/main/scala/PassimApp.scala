@@ -82,21 +82,37 @@ object CorpusFun {
 	   d.termCharEnd.map(_.toInt).toArray,
 	   loc.toArray)
   }
-}
-  
-class NgramIndexer(val n: Int, val maxSeries: Int) extends Serializable {
-  def index(corpus: RDD[(IdSeries, TokDoc)]) = {
-    val n_ = n
-    val upper = maxSeries * (maxSeries - 1) / 2
-    def crossCounts(sizes: Array[Int]): Int = {
-      var res: Int = 0
-      for ( i <- 0 until sizes.size ) {
-	for ( j <- (i + 1) until sizes.size ) {
-	  res += sizes(i) * sizes(j)
+  def passageURL(doc: TokDoc, begin: Int, end: Int): String = {
+    val m = doc.metadata
+    var res = new StringBuilder
+    if ( m.contains("url") ) {
+      res ++= m("url")
+      if ( m.contains("pageurl") && doc.termPage.size > end ) {
+	val (page, locs) = doc.termPage.slice(begin, end).groupBy(_.page).head
+	res ++= m("pageurl").format(page)
+	if ( m.contains("imgurl") ) {
+	  val x1 = locs.map(_.loc.x).min / 4
+	  val y1 = locs.map(_.loc.y).min / 4
+	  val x2 = locs.map(_.loc.x2).max / 4
+	  val y2 = locs.map(_.loc.y2).max / 4
+	  if ( x2 > 0 && y2 > 0 )
+	    res ++= m("imgurl").format(600, 600, x1, y1, x2, y2)
 	}
       }
-      res
     }
+    res.toString
+  }
+  def crossCounts(sizes: Array[Int]): Int = {
+    var res: Int = 0
+    for ( i <- 0 until sizes.size ) {
+      for ( j <- (i + 1) until sizes.size ) {
+	res += sizes(i) * sizes(j)
+      }
+    }
+    res
+  }
+  def indexNgrams(n: Int, maxSeries: Int, corpus: RDD[(IdSeries, TokDoc)]) = {
+    val upper = maxSeries * (maxSeries - 1) / 2
     // // We could save space by hasing the n-grams, then checking for
     // // equality when we actually do the alignment, but we need to keep
     // // all the n-gram matches around, not just the ranges.
@@ -105,7 +121,7 @@ class NgramIndexer(val n: Int, val maxSeries: Int) extends Serializable {
     // val ebuf = new ArrayBuffer[(IdSeries,Int)]()
     corpus.flatMap(d => {
       val (id, doc) = d
-      doc.terms.zipWithIndex.sliding(n_)
+      doc.terms.zipWithIndex.sliding(n)
 	.map(x => (x.map(_._1).mkString("~"), (id, x(0)._2)))
     })
     .groupByKey
@@ -129,9 +145,9 @@ class NgramIndexer(val n: Int, val maxSeries: Int) extends Serializable {
   }
 }
 
-object PairFun {
-  def increasingMatches(matches: Array[(Int,Int,Int)]): Array[(Int,Int,Int)] = {
-    val in = matches.sorted
+object PassFun {
+  def increasingMatches(matches: Iterable[(Int,Int,Int)]): Array[(Int,Int,Int)] = {
+    val in = matches.toArray.sorted
     val X = in.map(_._2).toArray
     val N = X.size
     var P = Array.fill(N)(0)
@@ -160,6 +176,50 @@ object PairFun {
       k = P(k)
     }
     res.toArray
+  }
+  
+  def linkSpans(rover: Double,
+		init: List[((Int, Int), Long)]): Array[((Int, Int), Array[Long])] = {
+    var passages = new ArrayBuffer[((Int, Int), Array[Long])]
+    for ( cur <- init.sortWith((a, b) => (a._1._1 - a._1._2) < (b._1._1 - b._1._2)) ) {
+      val curLen = cur._1._2 - cur._1._1
+      val N = passages.size
+      var pmod = false
+      for ( i <- 0 until N; if !pmod ) {
+	val pass = passages(i)
+	if ( Math.max(0.0, Math.min(cur._1._2, pass._1._2) - Math.max(cur._1._1, pass._1._1)) / Math.max(curLen, pass._1._2 - pass._1._1) > rover ) {
+	  passages(i) = ((Math.min(cur._1._1, pass._1._1),
+			  Math.max(cur._1._2, pass._1._2)),
+			 pass._2 ++ Array(cur._2))
+	  pmod = true
+	}
+      }
+      if (!pmod) {
+	passages += ((cur._1, Array(cur._2)))
+      }
+    }
+    passages.toArray
+  }
+  
+  def mergeSpans(rover: Double, init: Iterable[((Int, Int), Long)]): Seq[((Int, Int), Array[Long])] = {
+    val in = init.toArray.sorted
+    var top = -1
+    var passages = new ListBuffer[((Int, Int), Array[Long])]
+    var spans = new ListBuffer[((Int, Int), Long)]
+    for ( cur <- in ) {
+      val span = cur._1
+      if ( span._1 > top ) {
+	top = span._2
+	passages ++= linkSpans(rover, spans.toList)
+	spans.clear
+      }
+      else {
+	top = Math.max(top, span._2)
+      }
+      spans += cur
+    }
+    passages ++= linkSpans(rover, spans.toList)
+    passages.toList
   }
 }
 
@@ -204,13 +264,11 @@ object PassimApp {
 
     val gap2 = gap * gap
 
-    val indexer = new NgramIndexer(n, maxSeries)
-
-    val pairs = indexer.index(corpus)
+    val pairs = CorpusFun.indexNgrams(n, maxSeries, corpus)
       .flatMap(x => for ( a <- x._2; b <- x._2; if a._1.id < b._1.id && a._1.series != b._1.series && a._2.size == 1 && b._2.size == 1 ) yield ((a._1, b._1), (a._2(0), b._2(0), x._2.size)))
-      .groupByKey.filter(x => x._2.size >= minRep)
-      .mapValues(x => PairFun.increasingMatches(x.toArray))
-      .filter(x => x._2.size >= minRep)
+      .groupByKey.filter(_._2.size >= minRep)
+      .mapValues(PassFun.increasingMatches)
+      .filter(_._2.size >= minRep)
       .flatMapValues(matches => {
 	val N = matches.size
 	var i = 0
@@ -231,50 +289,6 @@ object PassimApp {
       })
 
     // pairs.saveAsTextFile(args(1) + ".pairs")
-
-    def linkSpans(rover: Double,
-		  init: List[((Int, Int), Long)]): Array[((Int, Int), Array[Long])] = {
-      var passages = new ArrayBuffer[((Int, Int), Array[Long])]
-      for ( cur <- init.sortWith((a, b) => (a._1._1 - a._1._2) < (b._1._1 - b._1._2)) ) {
-	val curLen = cur._1._2 - cur._1._1
-	val N = passages.size
-	var pmod = false
-	for ( i <- 0 until N; if !pmod ) {
-	  val pass = passages(i)
-	  if ( Math.max(0.0, Math.min(cur._1._2, pass._1._2) - Math.max(cur._1._1, pass._1._1)) / Math.max(curLen, pass._1._2 - pass._1._1) > rover ) {
-	    passages(i) = ((Math.min(cur._1._1, pass._1._1),
-			    Math.max(cur._1._2, pass._1._2)),
-			   pass._2 ++ Array(cur._2))
-	    pmod = true
-	  }
-	}
-	if (!pmod) {
-	  passages += ((cur._1, Array(cur._2)))
-	}
-      }
-      passages.toArray
-    }
-
-    def mergeSpans(rover: Double, init: Array[((Int, Int), Long)]): Seq[((Int, Int), Array[Long])] = {
-      val in = init.sorted
-      var top = -1
-      var passages = new ListBuffer[((Int, Int), Array[Long])]
-      var spans = new ListBuffer[((Int, Int), Long)]
-      for ( cur <- in ) {
-	val span = cur._1
-	if ( span._1 > top ) {
-	  top = span._2
-	  passages ++= linkSpans(rover, spans.toList)
-	  spans.clear
-	}
-	else {
-	  top = Math.max(top, span._2)
-	}
-	spans += cur
-      }
-      passages ++= linkSpans(rover, spans.toList)
-      passages.toList
-    }
 
     // Unique IDs will serve as edge IDs in connected component graph
     val pass1 = pairs.zipWithUniqueId
@@ -361,7 +375,7 @@ object PassimApp {
     
     val pass = pass2
       .groupByKey
-      .flatMapValues(x => mergeSpans(relOver, x.toArray))
+      .flatMapValues(PassFun.mergeSpans(relOver, _))
       .zipWithUniqueId
     // pass.saveAsTextFile(args(1) + ".pass")
 
@@ -395,33 +409,12 @@ object PassimApp {
 
     // clusters.saveAsTextFile(args(1) + ".clusters")
 
-    def passageURL(doc: TokDoc, begin: Int, end: Int): String = {
-      val m = doc.metadata
-      var res = new StringBuilder
-      if ( m.contains("url") ) {
-	res ++= m("url")
-	if ( m.contains("pageurl") && doc.termPage.size > end ) {
-	  val (page, locs) = doc.termPage.slice(begin, end).groupBy(_.page).head
-	  res ++= m("pageurl").format(page)
-	  if ( m.contains("imgurl") ) {
-	    val x1 = locs.map(_.loc.x).min / 4
-	    val y1 = locs.map(_.loc.y).min / 4
-	    val x2 = locs.map(_.loc.x2).max / 4
-	    val y2 = locs.map(_.loc.y2).max / 4
-	    if ( x2 > 0 && y2 > 0 )
-	      res ++= m("imgurl").format(600, 600, x1, y1, x2, y2)
-	  }
-	}
-      }
-      res.toString
-    }
-
     val clusterInfo = clusters.groupByKey
       .join(corpus)
       .flatMap(x => {
 	val (id, (passages, doc)) = x
 	passages.groupBy(_._2).values.flatMap(p => {
-	  mergeSpans(0, p.toArray).map(z => (z._1, z._2(0)))
+	  PassFun.mergeSpans(0, p).map(z => (z._1, z._2(0)))
 	}).map(p => {
 	  val ((begin, end), cid) = p
 	  (cid,
@@ -430,7 +423,7 @@ object PassimApp {
 	       "name" -> doc.series,
 	       "title" -> doc.metadata.getOrElse("title", ""),
 	       "date" -> doc.metadata.getOrElse("date", ""),
-	       "url" -> passageURL(doc, begin, end),
+	       "url" -> CorpusFun.passageURL(doc, begin, end),
 	       "start" -> begin,
 	       "end" -> end,
 	       "text" -> doc.text.substring(doc.termCharBegin(begin),
