@@ -246,7 +246,7 @@ object PassimApp {
 
     val series = rawCorpus.map(x => (x._2.series, x._1))
       .reduceByKey((a, b) => Math.min(a, b))
-      .toLocalIterator.toMap
+      .collectAsMap
 
     val corpus = rawCorpus.map(x => series(x._2.series)).zip(rawCorpus)
       .map(x => (IdSeries(x._2._1, x._1), x._2._2))
