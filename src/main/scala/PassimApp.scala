@@ -242,8 +242,6 @@ object PassimApp {
       .map(x => (x._2, x._1))
     rawCorpus.persist(StorageLevel.MEMORY_AND_DISK_SER)
 
-    rawCorpus.mapValues(x => (x.name, x.terms.size)).saveAsTextFile(args(1) + ".names")
-
     val series = rawCorpus.map(x => (x._2.series, x._1))
       .reduceByKey((a, b) => Math.min(a, b))
       .collectAsMap
@@ -253,6 +251,8 @@ object PassimApp {
       .repartition(rawCorpus.partitions.size)
       .persist(StorageLevel.MEMORY_AND_DISK_SER)
     rawCorpus.unpersist()
+
+    corpus.mapValues(x => (x.name, x.terms.size)).saveAsTextFile(args(1) + ".names")
 
     val maxSeries: Int = 100
     val n: Int = 5
