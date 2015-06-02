@@ -177,6 +177,25 @@ object PassFun {
     }
     res.toArray
   }
+
+  def gappedMatches(n: Int, gapSize: Int, matches: Array[(Int, Int, Int)]) = {
+    val N = matches.size
+    var i = 0
+    var res = new ListBuffer[((Int,Int), (Int,Int))]
+    for ( j <- 0 until N ) {
+      val j1 = j + 1
+      if ( j == (N-1) || ((matches(j1)._1 - matches(j)._1) * (matches(j1)._2 - matches(j)._2)) > gapSize) {
+	// This is where we'd score the spans
+	if ( j > i && (matches(j)._1 - matches(i)._1 + n - 1) >= 10
+	     && (matches(j)._2 - matches(i)._2 + n - 1) >= 10) {
+	  res += (((matches(i)._1, matches(j)._1 + n - 1),
+		   (matches(i)._2, matches(j)._2 + n - 1)))
+	}
+	i = j1
+      }
+    }
+    res.toList
+  }
   
   def linkSpans(rover: Double,
 		init: List[((Int, Int), Long)]): Array[((Int, Int), Array[Long])] = {
@@ -269,24 +288,7 @@ object PassimApp {
       .groupByKey.filter(_._2.size >= minRep)
       .mapValues(PassFun.increasingMatches)
       .filter(_._2.size >= minRep)
-      .flatMapValues(matches => {
-	val N = matches.size
-	var i = 0
-	var res = new ListBuffer[((Int,Int), (Int,Int))]
-	for ( j <- 0 until N ) {
-	  val j1 = j + 1
-	  if ( j == (N-1) || ((matches(j1)._1 - matches(j)._1) * (matches(j1)._2 - matches(j)._2)) > gap2) {
-	    // This is where we'd score the spans
-	    if ( j > i && (matches(j)._1 - matches(i)._1 + n - 1) >= 10
-		 && (matches(j)._2 - matches(i)._2 + n - 1) >= 10) {
-	      res += (((matches(i)._1, matches(j)._1 + n - 1),
-		       (matches(i)._2, matches(j)._2 + n - 1)))
-	    }
-	    i = j1
-	  }
-	}
-	res.toList
-      })
+      .flatMapValues(PassFun.gappedMatches(n, gap2, _))
 
     // pairs.saveAsTextFile(args(1) + ".pairs")
 
