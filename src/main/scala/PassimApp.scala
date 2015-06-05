@@ -336,14 +336,16 @@ object BoilerApp {
 
     val corpus = data.sort("series", "date")
       .map(CorpusFun.parseDocument)
+      .zipWithUniqueId
+      .map(x => (IdSeries(x._2, 0), x._1))
 
     val n = 3
 
     val pairs = corpus.sliding(2)
-      .filter(x => x(0).series == x(1).series)
+      .filter(x => x(0)._2.series == x(1)._2.series)
       .flatMap(x => {
-	val d1 = x(0)
-	val d2 = x(1)
+	val (id1, d1) = x(0)
+	val (id2, d2) = x(1)
 	// Inefficient but easy to figure out
 	val m = hapaxIndex(n, d2.terms).toMap
 
@@ -351,13 +353,13 @@ object BoilerApp {
 	  .flatMap(x => if (m.contains(x._1)) Some((x._2, m(x._1), 1)) else None))
 	
 	PassFun.gappedMatches(n, 50 * 50, inc).map( x => {
-	  val(s1, s2) = x
-	  (CorpusFun.passageURL(d1, s1._1, s1._2),
-	   d1.text.substring(d1.termCharBegin(s1._1),
-			     d1.termCharEnd(s1._2)),
-	   CorpusFun.passageURL(d2, s2._1, s2._2),
-	   d2.text.substring(d2.termCharBegin(s2._1),
-			     d2.termCharEnd(s2._2)))
+	  val((s1, e1), (s2, e2)) = x
+	  (CorpusFun.passageURL(d1, s1, e1),
+	   d1.text.substring(d1.termCharBegin(s1),
+			     d1.termCharEnd(e1)),
+	   CorpusFun.passageURL(d2, s2, e2),
+	   d2.text.substring(d2.termCharBegin(s2),
+			     d2.termCharEnd(e2)))
 	})
       })
     .saveAsTextFile(args(1))
