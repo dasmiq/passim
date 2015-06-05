@@ -255,13 +255,11 @@ object PassFun {
       }
     }
 
-    if ( (e1 - s1 + 1) >= minAlg
-	 && (e2 - s2 + 1) >= minAlg ) {
-      Array((id1, ((s1, e1), pid)),
-	    (id2, ((s2, e2), pid)))
-    }
+    if ( ( e1 - s1 ) >= minAlg && ( e2 - s2 ) >= minAlg )
+      List((id1, ((s1, e1), pid)),
+	   (id2, ((s2, e2), pid)))
     else
-      Array[(IdSeries, ((Int, Int), Long))]()
+      Nil
   }
   
   def linkSpans(rover: Double,
