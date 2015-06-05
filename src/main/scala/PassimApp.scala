@@ -202,6 +202,13 @@ object PassFun {
     res.toList
   }
 
+  def edgeText(extent: Int, n: Int, id: IdSeries, doc: TokDoc, span: (Int,Int)) = {
+    val (start, end) = span
+    (id, span,
+     if (start <= 0) "" else doc.terms.slice(Math.max(0, start - extent), start + n).mkString(" "),
+     if (end >= doc.terms.size) "" else doc.terms.slice(end + 1 - n, Math.min(doc.terms.size, end + 1 + extent)).mkString(" "))
+  }
+
   type Passage = (IdSeries, (Int, Int), String, String)
   def alignEdges(matchMatrix: jaligner.matrix.Matrix, n: Int, minAlg: Int,
 		 pid: Long, pass1: Passage, pass2: Passage) = {
@@ -338,6 +345,12 @@ object BoilerApp {
       .map(x => (IdSeries(x._2, 0), x._1))
 
     val n = 3
+    val minAlg = 20
+    val gap = 50
+
+    val gap2 = 50 * 50
+
+    val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
 
     val pairs = corpus.sliding(2)
       .filter(x => x(0)._2.series == x(1)._2.series)
@@ -350,16 +363,27 @@ object BoilerApp {
 	val inc = PassFun.increasingMatches(hapaxIndex(n, d1.terms)
 	  .flatMap(x => if (m.contains(x._1)) Some((x._2, m(x._1), 1)) else None))
 	
-	PassFun.gappedMatches(n, 50 * 50, inc).map( x => {
-	  val((s1, e1), (s2, e2)) = x
-	  (CorpusFun.passageURL(d1, s1, e1),
-	   d1.text.substring(d1.termCharBegin(s1),
-			     d1.termCharEnd(e1)),
-	   CorpusFun.passageURL(d2, s2, e2),
-	   d2.text.substring(d2.termCharBegin(s2),
-			     d2.termCharEnd(e2)))
+	PassFun.gappedMatches(n, gap2, inc).flatMap( x => {
+	  val(span1, span2) = x
+	  PassFun.alignEdges(matchMatrix, n, minAlg, 0,
+			     PassFun.edgeText(20, n, id1, d1, span1),
+			     PassFun.edgeText(20, n, id2, d2, span2))
 	})
       })
+    .groupByKey
+    .mapValues(PassFun.mergeSpans(0, _))
+    .join(corpus)
+    .flatMap(x => {
+      val (id, (passages, doc)) = x
+      passages.map(p => {
+    	val ((begin, end), cid) = p
+    	(id, doc.name, begin, end,
+    	 doc.metadata.getOrElse("title", ""),
+    	 doc.metadata.getOrElse("date", ""),
+    	 CorpusFun.passageURL(doc, begin, end),
+    	 doc.text.substring(doc.termCharBegin(begin), doc.termCharEnd(end)))
+      })
+    })
     .saveAsTextFile(args(1))
   }
 }
@@ -426,13 +450,7 @@ object PassimApp {
       .join(corpus)
       .flatMap(x => {
 	val (id, (spans, doc)) = x
-	spans.map(s => {
-	  val ((start, end), pid) = s
-	  (pid,
-	   (id, (start, end),
-	    if (start <= 0) "" else doc.terms.slice(Math.max(0, start - gap * 2/3), start + n).mkString(" "),
-	    if (end >= doc.terms.size) "" else doc.terms.slice(end + 1 - n, Math.min(doc.terms.size, end + 1 + gap * 2/3)).mkString(" ")))
-	})
+	spans.map(s => (s._2, PassFun.edgeText(gap * 2/3, n, id, doc, s._1)))
       })
     .groupByKey
     .flatMap(x => {
