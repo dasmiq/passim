@@ -37,13 +37,14 @@ case class TokDoc(name: String, text: String, metadata: Map[String,String], seri
 case class IdSeries(id: Long, series: Long)
 
 object CorpusFun {
-  def parseDocument(r: Row): TokDoc = {
+  def rowToMap(r: Row): Map[String, String] = {
+    val names = r.schema.fieldNames
+    (for ( i <- 0 until names.size ) yield (names(i), r.getString(i))).toMap
+  }
+  def parseDocument(m: Map[String,String]): TokDoc = {
     var tokp = new Parameters
     tokp.set("fields", List("pb", "w"))
     val tok = new TagTokenizer(new FakeParameters(tokp))
-
-    val names = r.schema.fieldNames
-    val m = (for ( i <- 0 until names.size ) yield (names(i), r.getString(i))).toMap
 
     var d = new Document(m("id"), m("text"))
     tok.tokenize(d)
@@ -82,6 +83,9 @@ object CorpusFun {
 	   d.termCharBegin.map(_.toInt).toArray,
 	   d.termCharEnd.map(_.toInt).toArray,
 	   loc.toArray)
+  }
+  def parseDocument(r: Row): TokDoc = {
+    parseDocument(rowToMap(r))
   }
   def passageURL(doc: TokDoc, begin: Int, end: Int): String = {
     val m = doc.metadata
@@ -196,6 +200,68 @@ object PassFun {
       }
     }
     res.toList
+  }
+
+  type Passage = (IdSeries, (Int, Int), String, String)
+  def alignEdges(matchMatrix: jaligner.matrix.Matrix, n: Int, minAlg: Int,
+		 pid: Long, pass1: Passage, pass2: Passage) = {
+    val (id1, span1, prefix1, suffix1) = pass1
+    val (id2, span2, prefix2, suffix2) = pass2
+    var (s1, e1) = span1
+    var (s2, e2) = span2
+
+    if ( s1 > 0 && s2 > 0 ) {
+      val palg = jaligner.SmithWatermanGotoh.align(new jaligner.Sequence(prefix1),
+						   new jaligner.Sequence(prefix2),
+						   matchMatrix, 5, 0.5f)
+      val ps1 = palg.getSequence1()
+      val ps2 = palg.getSequence2()
+      val plen1 = ps1.size - ps1.count(_ == '-')
+      val plen2 = ps2.size - ps2.count(_ == '-')
+	
+      if ( ps1.size > 0 && ps2.size > 0 && palg.getStart1() + plen1 >= prefix1.size
+	   && palg.getStart2() + plen2 >= prefix2.size ) {
+	val pextra = palg.getIdentity() - prefix1.split(" ").takeRight(n).mkString(" ").size
+	if ( pextra > 2 ) {
+	  s1 -= ps1.count(_ == ' ') - (if (ps1(0) == ' ') 1 else 0) - n + 1
+	  s2 -= ps2.count(_ == ' ') - (if (ps2(0) == ' ') 1 else 0) - n + 1
+	  // println((id1,id2))
+	  // println("prefix extra: " + pextra)
+	  // println(ps1.mkString)
+	  // println(palg.getMarkupLine().mkString)
+	  // println(ps2.mkString)
+	}
+      }
+    }
+
+    if ( suffix1.size > 0 && suffix2.size > 0 ) {
+      val salg = jaligner.SmithWatermanGotoh.align(new jaligner.Sequence(suffix1),
+						   new jaligner.Sequence(suffix2),
+						   matchMatrix, 5, 0.5f)
+      val ss1 = salg.getSequence1()
+      val ss2 = salg.getSequence2()
+	
+      if ( ss1.size > 0 && ss2.size > 0 && salg.getStart1() == 0 && salg.getStart2() == 0 ) {
+	val sextra = salg.getIdentity() - suffix1.split(" ").take(n).mkString(" ").size
+	if ( sextra > 2 ) {
+	  e1 += ss1.count(_ == ' ') - (if (ss1(ss1.size - 1) == ' ') 1 else 0) - n + 1
+	  e2 += ss2.count(_ == ' ') - (if (ss2(ss2.size - 1) == ' ') 1 else 0) - n + 1
+	  // println((id1,id2))
+	  // println("suffix extra: " + sextra)
+	  // println(ss1.mkString)
+	  // println(salg.getMarkupLine().mkString)
+	  // println(ss2.mkString)
+	}
+      }
+    }
+
+    if ( (e1 - s1 + 1) >= minAlg
+	 && (e2 - s2 + 1) >= minAlg ) {
+      Array((id1, ((s1, e1), pid)),
+	    (id2, ((s2, e2), pid)))
+    }
+    else
+      Array[(IdSeries, ((Int, Int), Long))]()
   }
   
   def linkSpans(rover: Double,
@@ -370,67 +436,10 @@ object PassimApp {
       })
     .groupByKey
     .flatMap(x => {
-      val (pid, data) = x
-      val s = data.toArray
-      val (id1, span1, prefix1, suffix1) = s(0)
-      val (id2, span2, prefix2, suffix2) = s(1)
-      var (s1, e1) = span1
-      var (s2, e2) = span2
-
-      if ( s1 > 0 && s2 > 0 ) {
-	val palg = jaligner.SmithWatermanGotoh.align(new jaligner.Sequence(prefix1),
-						     new jaligner.Sequence(prefix2),
-						     matchMatrix, 5, 0.5f)
-	val ps1 = palg.getSequence1()
-	val ps2 = palg.getSequence2()
-	val plen1 = ps1.size - ps1.count(_ == '-')
-	val plen2 = ps2.size - ps2.count(_ == '-')
-	
-	if ( ps1.size > 0 && ps2.size > 0 && palg.getStart1() + plen1 >= prefix1.size
-	     && palg.getStart2() + plen2 >= prefix2.size ) {
-	  val pextra = palg.getIdentity() - prefix1.split(" ").takeRight(n).mkString(" ").size
-	  if ( pextra > 2 ) {
-	    s1 -= ps1.count(_ == ' ') - (if (ps1(0) == ' ') 1 else 0) - n + 1
-	    s2 -= ps2.count(_ == ' ') - (if (ps2(0) == ' ') 1 else 0) - n + 1
-	    // println((id1,id2))
-	    // println("prefix extra: " + pextra)
-	    // println(ps1.mkString)
-	    // println(palg.getMarkupLine().mkString)
-	    // println(ps2.mkString)
-	  }
-	}
-      }
-
-      if ( suffix1.size > 0 && suffix2.size > 0 ) {
-	val salg = jaligner.SmithWatermanGotoh.align(new jaligner.Sequence(suffix1),
-						     new jaligner.Sequence(suffix2),
-						     matchMatrix, 5, 0.5f)
-	val ss1 = salg.getSequence1()
-	val ss2 = salg.getSequence2()
-	
-	if ( ss1.size > 0 && ss2.size > 0 && salg.getStart1() == 0 && salg.getStart2() == 0 ) {
-	  val sextra = salg.getIdentity() - suffix1.split(" ").take(n).mkString(" ").size
-	  if ( sextra > 2 ) {
-	    e1 += ss1.count(_ == ' ') - (if (ss1(ss1.size - 1) == ' ') 1 else 0) - n + 1
-	    e2 += ss2.count(_ == ' ') - (if (ss2(ss2.size - 1) == ' ') 1 else 0) - n + 1
-	    // println((id1,id2))
-	    // println("suffix extra: " + sextra)
-	    // println(ss1.mkString)
-	    // println(salg.getMarkupLine().mkString)
-	    // println(ss2.mkString)
-	  }
-	}
-      }
-
-      if ( (e1 - s1 + 1) >= minAlg
-	   && (e2 - s2 + 1) >= minAlg ) {
-	Array((id1, ((s1, e1), pid)),
-	      (id2, ((s2, e2), pid)))
-      }
-      else
-	None
+      val pass = x._2.toArray
+      PassFun.alignEdges(matchMatrix, n, minAlg, x._1, pass(0), pass(1))
     })
-    
+
     val pass = pass2
       .groupByKey
       .flatMapValues(PassFun.mergeSpans(relOver, _))
