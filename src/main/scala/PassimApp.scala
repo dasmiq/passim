@@ -3,6 +3,7 @@ import org.apache.spark.SparkContext._
 import org.apache.spark.SparkConf
 import org.apache.spark.rdd.RDD
 import org.apache.spark.graphx._
+import org.apache.spark.mllib.rdd.RDDFunctions._
 import org.apache.spark.sql.SQLContext
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.functions._
@@ -239,6 +240,61 @@ object PassFun {
     }
     passages ++= linkSpans(rover, spans.toList)
     passages.toList
+  }
+}
+
+object BoilerApp {
+  def hapaxIndex(n: Int, w: Seq[String]) = {
+    w.sliding(n)
+      .map(_.mkString("~"))
+      .zipWithIndex
+      .toArray
+      .groupBy(_._1)
+      .mapValues(_.map(_._2))
+      .filter(_._2.size == 1)
+      .mapValues(_(0))
+  }
+  
+  def main(args: Array[String]) = {
+    val conf = new SparkConf().setAppName("Passim Application")
+      .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+      .registerKryoClasses(Array(classOf[imgCoord], classOf[pageLoc],
+				 classOf[TokDoc], classOf[IdSeries]))
+    val sc = new SparkContext(conf)
+    val sqlContext = new org.apache.spark.sql.SQLContext(sc)
+
+    val raw = sqlContext.jsonFile(args(0))
+    // Do simple series transformation; in future, could join with metadata.
+    val sname = udf {(x: String) => x.split("[_/]")(0) }
+    val data = raw.withColumn("series", sname(raw("id")))
+
+    val corpus = data.sort("series", "date")
+      .map(CorpusFun.parseDocument)
+
+    val n = 3
+
+    val pairs = corpus.sliding(2)
+      .filter(x => x(0).series == x(1).series)
+      .flatMap(x => {
+	val d1 = x(0)
+	val d2 = x(1)
+	// Inefficient but easy to figure out
+	val m = hapaxIndex(n, d2.terms).toMap
+
+	val inc = PassFun.increasingMatches(hapaxIndex(n, d1.terms)
+	  .flatMap(x => if (m.contains(x._1)) Some((x._2, m(x._1), 1)) else None))
+	
+	PassFun.gappedMatches(n, 50 * 50, inc).map( x => {
+	  val(s1, s2) = x
+	  (CorpusFun.passageURL(d1, s1._1, s1._2),
+	   d1.text.substring(d1.termCharBegin(s1._1),
+			     d1.termCharEnd(s1._2)),
+	   CorpusFun.passageURL(d2, s2._1, s2._2),
+	   d2.text.substring(d2.termCharBegin(s2._1),
+			     d2.termCharEnd(s2._2)))
+	})
+      })
+    .saveAsTextFile(args(1))
   }
 }
 
