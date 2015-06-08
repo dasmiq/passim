@@ -346,45 +346,94 @@ object BoilerApp {
 
     val n = 3
     val minAlg = 20
+    val relOver = 0.8
     val gap = 50
 
-    val gap2 = 50 * 50
+    val gap2 = gap * gap
 
     val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
 
-    val pairs = corpus.sliding(2)
-      .filter(x => x(0)._2.series == x(1)._2.series)
+    val pass = corpus
+      .mapValues(d => (d, hapaxIndex(n, d.terms)))
+      .sliding(3)
       .flatMap(x => {
-	val (id1, d1) = x(0)
-	val (id2, d2) = x(1)
-	// Inefficient but easy to figure out
-	val m = hapaxIndex(n, d2.terms).toMap
+	val (cid, (cdoc, cidx)) = x.last
+	val m = cidx.toMap
+	x.filter(_._1 != cid)
+	  .flatMap(y => {
+	    val (pid, (pdoc, pidx)) = y
+	    val inc = PassFun.increasingMatches(pidx
+	      .flatMap(z => if (m.contains(z._1)) Some((z._2, m(z._1), 1)) else None))
+	    PassFun.gappedMatches(n, gap2, inc)
+	      .map(z => (PassFun.edgeText(gap, n, pid, pdoc, z._1),
+	    		 PassFun.edgeText(gap, n, cid, cdoc, z._2)))
+	  })
+      })
+    .zipWithUniqueId.map(_.swap)
+    .flatMap(x => PassFun.alignEdges(matchMatrix, n, minAlg, x._1, x._2._1, x._2._2))
+    .groupByKey
+    .flatMapValues(PassFun.mergeSpans(relOver, _))
+    .zipWithUniqueId
+    
+    val passNodes = pass.map(v => {
+      val ((doc, (span, edges)), id) = v
+      (id, (doc, span))
+    })
+    val passEdges = pass.flatMap(v => {
+      val ((doc, (span, edges)), id) = v
+      edges.map(e => (e, id))
+    }).groupByKey
+    .map(e => {
+      val nodes = e._2.toArray.sorted
+      Edge(nodes(0), nodes(1), 1)
+    })
 
-	val inc = PassFun.increasingMatches(hapaxIndex(n, d1.terms)
-	  .flatMap(x => if (m.contains(x._1)) Some((x._2, m(x._1), 1)) else None))
-	
-	PassFun.gappedMatches(n, gap2, inc).flatMap( x => {
-	  val(span1, span2) = x
-	  PassFun.alignEdges(matchMatrix, n, minAlg, 0,
-			     PassFun.edgeText(20, n, id1, d1, span1),
-			     PassFun.edgeText(20, n, id2, d2, span2))
+    val passGraph = Graph(passNodes, passEdges)
+    passGraph.cache()
+
+    val cc = passGraph.connectedComponents()
+
+    val clusters = passGraph.vertices.innerJoin(cc.vertices){
+      (id, pass, cid) => (pass._1, (pass._2, cid))
+    }
+    .values
+    .groupBy(_._2._2)
+    .flatMap(_._2)
+
+    val clusterInfo = clusters.groupByKey
+      .join(corpus)
+      .flatMap(x => {
+	val (id, (passages, doc)) = x
+	passages.groupBy(_._2).values.flatMap(p => {
+	  PassFun.mergeSpans(0, p).map(z => (z._1, z._2(0)))
+	}).map(p => {
+	  val ((begin, end), cid) = p
+	  (cid,
+	   Map("id" -> doc.name,
+	       "uid" -> id.id,
+	       "name" -> doc.series,
+	       "title" -> doc.metadata.getOrElse("title", ""),
+	       "date" -> doc.metadata.getOrElse("date", ""),
+	       "url" -> CorpusFun.passageURL(doc, begin, end),
+	       "start" -> begin,
+	       "end" -> end,
+	       "text" -> doc.text.substring(doc.termCharBegin(begin),
+					    doc.termCharEnd(end))))
 	})
       })
     .groupByKey
-    .mapValues(PassFun.mergeSpans(0, _))
-    .join(corpus)
-    .flatMap(x => {
-      val (id, (passages, doc)) = x
-      passages.map(p => {
-    	val ((begin, end), cid) = p
-    	(id, doc.name, begin, end,
-    	 doc.metadata.getOrElse("title", ""),
-    	 doc.metadata.getOrElse("date", ""),
-    	 CorpusFun.passageURL(doc, begin, end),
-    	 doc.text.substring(doc.termCharBegin(begin), doc.termCharEnd(end)))
-      })
+    .sortBy(_._2.size, ascending=false)
+    .map(x => {
+      val (cid, members) = x
+      val mapper  = new ObjectMapper()
+      mapper.registerModule(DefaultScalaModule)
+      mapper.writeValueAsString(
+	Map("id" -> cid,
+	    "size" -> members.size,
+	    "members" -> members.toArray.sortWith((a, b) => a("date").toString < b("date").toString)))
     })
-    .saveAsTextFile(args(1))
+    clusterInfo
+      .saveAsTextFile(args(1))
   }
 }
 
@@ -403,8 +452,7 @@ object PassimApp {
     val data = raw.withColumn("series", sname(raw("id")))
 
     val rawCorpus = data.map(CorpusFun.parseDocument)
-      .zipWithUniqueId
-      .map(x => (x._2, x._1))
+      .zipWithUniqueId.map(_.swap)
     rawCorpus.persist(StorageLevel.MEMORY_AND_DISK_SER)
 
     val series = rawCorpus.map(x => (x._2.series, x._1))
