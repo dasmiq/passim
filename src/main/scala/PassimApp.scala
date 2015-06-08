@@ -344,7 +344,7 @@ object BoilerApp {
       .zipWithUniqueId
       .map(x => (IdSeries(x._2, 0), x._1))
 
-    val n = 3
+    val n = 5
     val minAlg = 20
     val relOver = 0.8
     val gap = 50
@@ -365,10 +365,6 @@ object BoilerApp {
 	    val inc = PassFun.increasingMatches(pidx
 	      .flatMap(z => if (m.contains(z._1)) Some((z._2, m(z._1), 1)) else None))
 	    PassFun.gappedMatches(n, gap2, inc)
-	      .filter(z => {		// More conservative filter
-		val ((s1, e1), (s2, e2)) = z
-		Math.abs((e1 - s1) - (e2 - s2)) <= gap
-	      })
 	    .map(z => PassFun.alignEdges(matchMatrix, n, minAlg, 0,
 					 PassFun.edgeText(gap, n, pid, pdoc, z._1),
 	      				 PassFun.edgeText(gap, n, cid, cdoc, z._2))
@@ -404,7 +400,22 @@ object BoilerApp {
 	mapper.registerModule(DefaultScalaModule)
 	mapper.writeValueAsString(x)
       })
-    .saveAsTextFile(args(1))
+    .saveAsTextFile(args(1) + ".align")
+
+    pass
+      .map(x => (x("id").toString, ((x("start").asInstanceOf[Int], x("end").asInstanceOf[Int]), 0L)))
+      .groupByKey
+      .mapValues(s => {
+	val res = PassFun.mergeSpans(0, s).map(_._1).toArray
+	res.sorted
+      })
+      .map(x => {
+	val mapper  = new ObjectMapper()
+	mapper.registerModule(DefaultScalaModule)
+	mapper.writeValueAsString(Map("id" -> x._1,
+				      "spans" -> x._2))
+      })
+      .saveAsTextFile(args(1))
   }
 }
 
