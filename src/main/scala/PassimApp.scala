@@ -270,9 +270,10 @@ object PassFun {
   }
   
   def linkSpans(rover: Double,
-		init: List[((Int, Int), Long)]): Array[((Int, Int), Array[Long])] = {
+		init: List[((Int, Int), Array[Long])]): Array[((Int, Int), Array[Long])] = {
     var passages = new ArrayBuffer[((Int, Int), Array[Long])]
-    for ( cur <- init.sortWith((a, b) => (a._1._1 - a._1._2) < (b._1._1 - b._1._2)) ) {
+    // We had sorted in descreasing order of span length, but that leaves gaps in the output.
+    for ( cur <- init ) { //.sortWith((a, b) => (a._1._1 - a._1._2) < (b._1._1 - b._1._2)) ) {
       val curLen = cur._1._2 - cur._1._1
       val N = passages.size
       var pmod = false
@@ -281,12 +282,12 @@ object PassFun {
 	if ( Math.max(0.0, Math.min(cur._1._2, pass._1._2) - Math.max(cur._1._1, pass._1._1)) / Math.max(curLen, pass._1._2 - pass._1._1) > rover ) {
 	  passages(i) = ((Math.min(cur._1._1, pass._1._1),
 			  Math.max(cur._1._2, pass._1._2)),
-			 pass._2 ++ Array(cur._2))
+			 pass._2 ++ cur._2)
 	  pmod = true
 	}
       }
       if (!pmod) {
-	passages += ((cur._1, Array(cur._2)))
+	passages += cur
       }
     }
     passages.toArray
@@ -296,7 +297,7 @@ object PassFun {
     val in = init.toArray.sorted
     var top = -1
     var passages = new ListBuffer[((Int, Int), Array[Long])]
-    var spans = new ListBuffer[((Int, Int), Long)]
+    var spans = new ListBuffer[((Int, Int), Array[Long])]
     for ( cur <- in ) {
       val span = cur._1
       if ( span._1 > top ) {
@@ -307,7 +308,7 @@ object PassFun {
       else {
 	top = Math.max(top, span._2)
       }
-      spans += cur
+      spans += ((span, Array(cur._2)))
     }
     passages ++= linkSpans(rover, spans.toList)
     passages.toList
@@ -344,7 +345,7 @@ object BoilerApp {
       .zipWithUniqueId
       .map(x => (IdSeries(x._2, 0), x._1))
 
-    val n = 5
+    val n = 3
     val minAlg = 20
     val relOver = 0.8
     val gap = 50
