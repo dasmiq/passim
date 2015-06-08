@@ -365,75 +365,46 @@ object BoilerApp {
 	    val inc = PassFun.increasingMatches(pidx
 	      .flatMap(z => if (m.contains(z._1)) Some((z._2, m(z._1), 1)) else None))
 	    PassFun.gappedMatches(n, gap2, inc)
-	      .map(z => (PassFun.edgeText(gap, n, pid, pdoc, z._1),
-	    		 PassFun.edgeText(gap, n, cid, cdoc, z._2)))
+	      .filter(z => {		// More conservative filter
+		val ((s1, e1), (s2, e2)) = z
+		Math.abs((e1 - s1) - (e2 - s2)) <= gap
+	      })
+	    .map(z => PassFun.alignEdges(matchMatrix, n, minAlg, 0,
+					 PassFun.edgeText(gap, n, pid, pdoc, z._1),
+	      				 PassFun.edgeText(gap, n, cid, cdoc, z._2))
+	       )
+	    .filter(_.size > 0)
+	    .map(z => {
+	      val (pbegin, pend) = z.head._2._1
+	      val (begin, end) = z.last._2._1
+	      Map("id" -> cdoc.name,
+		  "uid" -> cid.id,
+		  "title" -> cdoc.metadata.getOrElse("title", ""),
+    		  "date" -> cdoc.metadata.getOrElse("date", ""),
+    		  "url" -> CorpusFun.passageURL(cdoc, begin, end),
+    		  "start" -> begin,
+    		  "end" -> end,
+    		  "text" -> cdoc.text.substring(cdoc.termCharBegin(begin),
+    						cdoc.termCharEnd(end)),
+		  "pid" -> pdoc.name,
+		  "puid" -> pid.id,
+		  "pdate" -> pdoc.metadata.getOrElse("date", ""),
+		  "purl" -> CorpusFun.passageURL(pdoc, pbegin, pend),
+		  "pstart" -> pbegin,
+		  "pend" -> pend,
+		  "ptext" -> pdoc.text.substring(pdoc.termCharBegin(pbegin),
+    						 pdoc.termCharEnd(pend)))
+	    })
 	  })
       })
-    .zipWithUniqueId.map(_.swap)
-    .flatMap(x => PassFun.alignEdges(matchMatrix, n, minAlg, x._1, x._2._1, x._2._2))
-    .groupByKey
-    .flatMapValues(PassFun.mergeSpans(relOver, _))
-    .zipWithUniqueId
-    
-    val passNodes = pass.map(v => {
-      val ((doc, (span, edges)), id) = v
-      (id, (doc, span))
-    })
-    val passEdges = pass.flatMap(v => {
-      val ((doc, (span, edges)), id) = v
-      edges.map(e => (e, id))
-    }).groupByKey
-    .map(e => {
-      val nodes = e._2.toArray.sorted
-      Edge(nodes(0), nodes(1), 1)
-    })
 
-    val passGraph = Graph(passNodes, passEdges)
-    passGraph.cache()
-
-    val cc = passGraph.connectedComponents()
-
-    val clusters = passGraph.vertices.innerJoin(cc.vertices){
-      (id, pass, cid) => (pass._1, (pass._2, cid))
-    }
-    .values
-    .groupBy(_._2._2)
-    .flatMap(_._2)
-
-    val clusterInfo = clusters.groupByKey
-      .join(corpus)
-      .flatMap(x => {
-	val (id, (passages, doc)) = x
-	passages.groupBy(_._2).values.flatMap(p => {
-	  PassFun.mergeSpans(0, p).map(z => (z._1, z._2(0)))
-	}).map(p => {
-	  val ((begin, end), cid) = p
-	  (cid,
-	   Map("id" -> doc.name,
-	       "uid" -> id.id,
-	       "name" -> doc.series,
-	       "title" -> doc.metadata.getOrElse("title", ""),
-	       "date" -> doc.metadata.getOrElse("date", ""),
-	       "url" -> CorpusFun.passageURL(doc, begin, end),
-	       "start" -> begin,
-	       "end" -> end,
-	       "text" -> doc.text.substring(doc.termCharBegin(begin),
-					    doc.termCharEnd(end))))
-	})
+    pass
+      .map(x => {
+	val mapper  = new ObjectMapper()
+	mapper.registerModule(DefaultScalaModule)
+	mapper.writeValueAsString(x)
       })
-    .groupByKey
-    .sortBy(_._2.size, ascending=false)
-    .map(x => {
-      val (cid, members) = x
-      val mapper  = new ObjectMapper()
-      mapper.registerModule(DefaultScalaModule)
-      mapper.writeValueAsString(
-	Map("id" -> cid,
-	    "size" -> members.size,
-	    "members" -> members.toArray.sortWith((a, b) => a("date").toString < b("date").toString)))
-    })
-    clusterInfo
-      .saveAsTextFile(args(1))
+    .saveAsTextFile(args(1))
   }
 }
 
