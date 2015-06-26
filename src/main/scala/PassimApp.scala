@@ -429,10 +429,11 @@ object PassimApp {
     val sc = new SparkContext(conf)
     val sqlContext = new org.apache.spark.sql.SQLContext(sc)
 
-    val raw = sqlContext.jsonFile(args(0))
+    val raw = sqlContext.read.json(args(0))
     // Do simple series transformation; in future, could join with metadata.
     val sname = udf {(x: String) => x.split("[_/]")(0) }
-    val data = raw.withColumn("series", sname(raw("id")))
+    val data = raw.filter(!raw("id").isNull && !raw("text").isNull)
+      .withColumn("series", sname(raw("id")))
 
     val rawCorpus = data.map(CorpusFun.parseDocument)
       .zipWithUniqueId.map(_.swap)
