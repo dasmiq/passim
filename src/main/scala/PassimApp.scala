@@ -24,6 +24,9 @@ import collection.JavaConversions._
 import scala.collection.mutable.ListBuffer
 import scala.collection.mutable.ArrayBuffer
 
+import java.security.MessageDigest
+import java.nio.ByteBuffer
+
 case class imgCoord(val x: Int, val y: Int, val w: Int, val h: Int) {
   def x2 = x + w
   def y2 = y + h
@@ -468,9 +471,16 @@ object ImportApp {
       d.termCharEnd.map(_.toInt).toArray,
       pages.toArray, locs.toArray)
   }
+  def hashString(s: String): Long = {
+    ByteBuffer.wrap(
+      MessageDigest.getInstance("MD5").digest(s.getBytes("UTF-8"))
+    ).getLong
+  }
   def preprocessText(raw: DataFrame): DataFrame = {
+    val hashId = udf {(id: String) => hashString(id)}
     val tok = udf {(text: String) => tokenize(text)}
     val tokenized = raw.filter(!raw("id").isNull && !raw("text").isNull)
+      .withColumn("uid", hashId(raw("id")))
       .withColumn("tok", tok(raw("text")))
     val col = tokenized("tok")
     tokenized
@@ -482,7 +492,7 @@ object ImportApp {
       .drop("tok")
   }
   def main(args: Array[String]) {
-    val conf = new SparkConf().setAppName("Passim Application")
+    val conf = new SparkConf().setAppName("Import Application")
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
       .registerKryoClasses(Array(classOf[imgCoord], classOf[IdSeries], classOf[TokText]))
     val sc = new SparkContext(conf)
