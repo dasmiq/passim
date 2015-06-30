@@ -5,6 +5,7 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.graphx._
 import org.apache.spark.mllib.rdd.RDDFunctions._
 import org.apache.spark.sql.SQLContext
+import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.functions._
 import org.apache.spark.storage.StorageLevel
@@ -417,6 +418,83 @@ object BoilerApp {
 				      "spans" -> x._2))
       })
       .saveAsTextFile(args(1))
+  }
+}
+
+case class TokText(terms: Array[String], termCharBegin: Array[Int], termCharEnd: Array[Int],
+  pages: Array[String], imgLocs: Array[imgCoord])
+
+object ImportApp {
+  def tokenize(text: String): TokText = {
+    var tokp = new Parameters
+    tokp.set("fields", List("pb", "w"))
+    val tok = new TagTokenizer(new FakeParameters(tokp))
+
+    var d = new Document("raw", text)
+    tok.tokenize(d)
+
+    var pages = new ArrayBuffer[String]
+    var locs = new ArrayBuffer[imgCoord]
+    var curPage = ""
+    var curCoord = imgCoord(0, 0, 0, 0)
+    var idx = 0
+    val p = """^(\d+),(\d+),(\d+),(\d+)$""".r
+    for ( t <- d.tags ) {
+      val off = t.begin
+      while ( idx < off ) {
+        pages += curPage
+	locs += curCoord
+	idx += 1
+      }
+      if ( t.name == "pb" )
+	curPage = t.attributes.getOrElse("n", "")
+      else if ( t.name == "w" ) {
+    	  t.attributes.getOrElse("coords", "") match {
+            case p(x, y, w, h) => curCoord = imgCoord(x.toInt, y.toInt, w.toInt, h.toInt)
+    	    case _ => curCoord
+    	  }
+    	}
+    }
+    if ( idx > 0 ) {
+      while ( idx < d.terms.size ) {
+        pages += curPage
+	locs += curCoord
+	idx += 1
+      }
+    }
+
+    TokText(d.terms.toSeq.toArray,
+      d.termCharBegin.map(_.toInt).toArray,
+      d.termCharEnd.map(_.toInt).toArray,
+      pages.toArray, locs.toArray)
+  }
+  def preprocessText(raw: DataFrame): DataFrame = {
+    val tok = udf {(text: String) => tokenize(text)}
+    val tokenized = raw.filter(!raw("id").isNull && !raw("text").isNull)
+      .withColumn("tok", tok(raw("text")))
+    val col = tokenized("tok")
+    tokenized
+      .withColumn("terms", col("terms"))
+      .withColumn("termCharBegin", col("termCharBegin"))
+      .withColumn("termCharEnd", col("termCharEnd"))
+      .withColumn("pages", col("pages"))
+      .withColumn("imgLocs", col("imgLocs"))
+      .drop("tok")
+  }
+  def main(args: Array[String]) {
+    val conf = new SparkConf().setAppName("Passim Application")
+      .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+      .registerKryoClasses(Array(classOf[imgCoord], classOf[IdSeries], classOf[TokText]))
+    val sc = new SparkContext(conf)
+    val sqlContext = new org.apache.spark.sql.SQLContext(sc)
+
+    val raw = sqlContext.read.json(args(0))
+
+    val proc = preprocessText(raw)
+
+    // Do some checks here?
+
+    proc.write.parquet(args(1))
   }
 }
 
