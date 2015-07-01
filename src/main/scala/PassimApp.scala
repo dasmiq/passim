@@ -40,10 +40,14 @@ case class TokDoc(name: String, text: String, metadata: Map[String,String], seri
 
 case class IdSeries(id: Long, series: Long)
 
+case class SpanMatch(uid: Long, begin: Int, end: Int, mid: Long)
+
+case class Span(begin: Int, end: Int, mid: Long)
+
 object CorpusFun {
   def rowToMap(r: Row): Map[String, String] = {
-    val names = r.schema.fieldNames
-    (for ( i <- 0 until names.size ) yield (names(i), r.getString(i))).toMap
+    val vals = r.toSeq.map(_.toString).toArray
+    r.schema.fieldNames.zip(vals).toMap
   }
   def parseDocument(m: Map[String,String]): TokDoc = {
     var tokp = new Parameters
@@ -134,23 +138,6 @@ object CorpusFun {
 	.map(x => (x.map(_._1).mkString("~"), (id, x(0)._2)))
     })
     .groupByKey
-    // // Save this implementation in case we see lots of high-frequency n-grams
-    // .aggregateByKey(ebuf)(
-    //   (buf, v) => if ( buf.size <= upper ) buf += v else buf,
-    //   (c1, c2) => {
-    // 	if ( c1.size > upper )
-    // 	  c1
-    // 	else {
-    // 	  if (c2.size > upper )
-    // 	    c2
-    // 	  else
-    // 	    c1 ++= c2
-    // 	}
-    //   })
-    .filter(x => x._2.size >= 2 && x._2.size <= upper
-	    && ( crossCounts(x._2.map(p => p._1.series)
-			     .groupBy(identity).map(_._2.size).toArray) ) <= upper)
-    .mapValues(x => x.groupBy(_._1).toArray.map(p => (p._1, p._2.map(_._2).toArray)).toArray)
   }
 }
 
@@ -206,11 +193,11 @@ object PassFun {
     res.toList
   }
 
-  def edgeText(extent: Int, n: Int, id: IdSeries, doc: TokDoc, span: (Int,Int)) = {
+  def edgeText(extent: Int, n: Int, id: IdSeries, terms: Array[String], span: (Int,Int)) = {
     val (start, end) = span
     (id, span,
-     if (start <= 0) "" else doc.terms.slice(Math.max(0, start - extent), start + n).mkString(" "),
-     if (end >= doc.terms.size) "" else doc.terms.slice(end + 1 - n, Math.min(doc.terms.size, end + 1 + extent)).mkString(" "))
+     if (start <= 0) "" else terms.slice(Math.max(0, start - extent), start + n).mkString(" "),
+     if (end >= terms.size) "" else terms.slice(end + 1 - n, Math.min(terms.size, end + 1 + extent)).mkString(" "))
   }
 
   type Passage = (IdSeries, (Int, Int), String, String)
@@ -371,8 +358,8 @@ object BoilerApp {
 	      .flatMap(z => if (m.contains(z._1)) Some((z._2, m(z._1), 1)) else None))
 	    PassFun.gappedMatches(n, gap2, inc)
 	    .map(z => PassFun.alignEdges(matchMatrix, n, minAlg, 0,
-					 PassFun.edgeText(gap, n, pid, pdoc, z._1),
-	      				 PassFun.edgeText(gap, n, cid, cdoc, z._2))
+					 PassFun.edgeText(gap, n, pid, pdoc.terms, z._1),
+	      				 PassFun.edgeText(gap, n, cid, cdoc.terms, z._2))
 	       )
 	    .filter(_.size > 0)
 	    .map(z => {
@@ -512,32 +499,28 @@ object PassimApp {
   def main(args: Array[String]) {
     val conf = new SparkConf().setAppName("Passim Application")
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-      .registerKryoClasses(Array(classOf[imgCoord], classOf[pageLoc],
-				 classOf[TokDoc], classOf[IdSeries]))
+      .registerKryoClasses(Array(classOf[imgCoord],
+				 classOf[SpanMatch], classOf[IdSeries]))
     val sc = new SparkContext(conf)
     val sqlContext = new org.apache.spark.sql.SQLContext(sc)
+    import sqlContext.implicits._
 
-    val raw = sqlContext.read.json(args(0))
+    val inFile = args(0)
+
+    val raw = if ( inFile.endsWith(".parquet") ) {
+      sqlContext.read.parquet(inFile)
+    } else {
+      ImportApp.preprocessText(sqlContext.read.json(inFile))
+    }
+
     // Do simple series transformation; in future, could join with metadata.
     val sname = udf {(x: String) => x.split("[_/]")(0) }
-    val data = raw.filter(!raw("id").isNull && !raw("text").isNull)
-      .withColumn("series", sname(raw("id")))
-
-    val rawCorpus = data.map(CorpusFun.parseDocument)
-      .zipWithUniqueId.map(_.swap)
-    rawCorpus.persist(StorageLevel.MEMORY_AND_DISK_SER)
-
-    val series = rawCorpus.map(x => (x._2.series, x._1))
-      .reduceByKey((a, b) => Math.min(a, b))
-      .collectAsMap
-
-    val corpus = rawCorpus.map(x => series(x._2.series)).zip(rawCorpus)
-      .map(x => (IdSeries(x._2._1, x._1), x._2._2))
-      .repartition(rawCorpus.partitions.size)
-    corpus.persist(StorageLevel.MEMORY_AND_DISK_SER)
-    rawCorpus.unpersist()
-
-    corpus.mapValues(x => (x.name, x.terms.size)).saveAsTextFile(args(1) + ".names")
+    val corpus = {
+      if ( raw.columns.contains("series") )
+        raw
+      else
+        raw.withColumn("series", sname(raw("id")))
+    }
 
     val maxSeries: Int = 100
     val n: Int = 5
@@ -548,9 +531,36 @@ object PassimApp {
     val maxRep: Int = 4
 
     val gap2 = gap * gap
+    val upper = maxSeries * (maxSeries - 1) / 2
 
-    val pairs = CorpusFun.indexNgrams(n, maxSeries, corpus)
-      .flatMap(x => for ( a <- x._2; b <- x._2; if a._1.id < b._1.id && a._1.series != b._1.series && a._2.size == 1 && b._2.size == 1 ) yield ((a._1, b._1), (a._2(0), b._2(0), x._2.size)))
+    val pairs = corpus
+      .select("uid", "series", "terms") // cache this projection?
+      .flatMap({
+        case Row(uid: Long, series: String, terms: Seq[String]) => {
+          terms.zipWithIndex.sliding(n)
+            .map(x => (x.map(_._1).mkString("~"),
+              (IdSeries(uid, ImportApp.hashString(series)), x(0)._2)))
+        }
+      })
+      .groupByKey
+    // // Save this implementation in case we see lots of high-frequency n-grams
+    // .aggregateByKey(ebuf)(
+    //   (buf, v) => if ( buf.size <= upper ) buf += v else buf,
+    //   (c1, c2) => {
+    // 	if ( c1.size > upper )
+    // 	  c1
+    // 	else {
+    // 	  if (c2.size > upper )
+    // 	    c2
+    // 	  else
+    // 	    c1 ++= c2
+    // 	}
+    //   })
+      .filter(x => x._2.size >= 2 && x._2.size <= upper
+	&& ( CorpusFun.crossCounts(x._2.map(p => p._1.series)
+	  .groupBy(identity).map(_._2.size).toArray) ) <= upper)
+      .mapValues(x => x.groupBy(_._1).toArray.map(p => (p._1, p._2.map(_._2).toArray)).toArray)
+      .flatMap(x => for ( a <- x._2; b <- x._2; if a._1.id < b._1.id && a._1.series != b._1.series && a._2.size == 1 && b._2.size == 1 ) yield ((a._1.id, b._1.id), (a._2(0), b._2(0), x._2.size)))
       .groupByKey.filter(_._2.size >= minRep)
       .mapValues(PassFun.increasingMatches)
       .filter(_._2.size >= minRep)
@@ -560,23 +570,27 @@ object PassimApp {
 
     // Unique IDs will serve as edge IDs in connected component graph
     val pass1 = pairs.zipWithUniqueId
-      .flatMap(x => Array((x._1._1._1, (x._1._2._1, x._2)),
-			  (x._1._1._2, (x._1._2._2, x._2)))
-	     )
+      .flatMap(x => {
+        val (((uid1, uid2), ((s1, e1), (s2, e2))), mid) = x
+        Array(SpanMatch(uid1, s1, e1, mid),
+          SpanMatch(uid2, s2, e2, mid))
+      })
 
     val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
-    val pass2 = pass1
-      .groupByKey
-      .join(corpus)
-      .flatMap(x => {
-	val (id, (spans, doc)) = x
-	spans.map(s => (s._2, PassFun.edgeText(gap * 2/3, n, id, doc, s._1)))
+    val pass2 = pass1.toDF
+      .join(corpus.select("uid", "series", "terms"), "uid")
+      .map({
+        case Row(uid: Long, begin: Int, end: Int, mid: Long,
+          series: String, terms: Seq[String]) => {
+          (mid, PassFun.edgeText(gap * 2/3, n, IdSeries(uid, ImportApp.hashString(series)),
+            terms.toArray, (begin, end)))
+        }
       })
-    .groupByKey
-    .flatMap(x => {
-      val pass = x._2.toArray
-      PassFun.alignEdges(matchMatrix, n, minAlg, x._1, pass(0), pass(1))
-    })
+      .groupByKey
+      .flatMap(x => {
+        val pass = x._2.toArray
+        PassFun.alignEdges(matchMatrix, n, minAlg, x._1, pass(0), pass(1))
+      })
 
     val pass = pass2
       .groupByKey
@@ -603,49 +617,58 @@ object PassimApp {
     val cc = passGraph.connectedComponents()
 
     val clusters = passGraph.vertices.innerJoin(cc.vertices){
-      (id, pass, cid) => (pass._1, (pass._2, cid))
+      (id, pass, cid) => (pass._1, (pass._2, cid.toLong))
     }
-    .values
-    .groupBy(_._2._2)
-    .filter(x => {
-      x._2.groupBy(_._1.id).values.groupBy(_.head._1.series).map(_._2.size).max <= maxRep
-    })
-    .flatMap(_._2)
+      .values
+      .groupBy(_._2._2)
+      .filter(x => {
+        x._2.groupBy(_._1.id).values.groupBy(_.head._1.series).map(_._2.size).max <= maxRep
+      })
+      .flatMap(_._2)
+      .map(x => (x._1.id, x._2))
 
     // clusters.saveAsTextFile(args(1) + ".clusters")
 
     val clusterInfo = clusters.groupByKey
-      .join(corpus)
+      .mapValues(v => v.map(x => Span(x._1._1, x._1._2, x._2)).toArray)
+      .toDF("uid", "passages")
+      .join(corpus, "uid")
       .flatMap(x => {
-	val (id, (passages, doc)) = x
-	passages.groupBy(_._2).values.flatMap(p => {
-	  PassFun.mergeSpans(0, p).map(z => (z._1, z._2(0)))
-	}).map(p => {
-	  val ((begin, end), cid) = p
-	  (cid,
-	   Map("id" -> doc.name,
-	       "uid" -> id.id,
-	       "name" -> doc.series,
-	       "title" -> doc.metadata.getOrElse("title", ""),
-	       "date" -> doc.metadata.getOrElse("date", ""),
-	       "url" -> CorpusFun.passageURL(doc, begin, end),
-	       "start" -> begin,
-	       "end" -> end,
-	       "text" -> doc.text.substring(doc.termCharBegin(begin),
-					    doc.termCharEnd(end))))
-	})
+        val uid = x.getLong(0)
+        val passages = x.getSeq[Row](1)
+        val m = CorpusFun.rowToMap(x)
+
+        passages.map({
+          case Row(begin: Int, end: Int, cid: Long) => ((begin, end), cid)
+        })
+          .groupBy(_._2).values.flatMap(p => {
+            PassFun.mergeSpans(0, p).map(z => (z._1, z._2(0)))
+          }).map(p => {
+            val ((begin, end), cid) = p
+            (cid,
+              Map("id" -> m("id"),
+                "uid" -> uid,
+                "name" -> m.getOrElse("series", ""),
+                "title" -> m.getOrElse("title", ""),
+                "date" -> m.getOrElse("date", ""),
+                // "url" -> CorpusFun.passageURL(doc, begin, end),
+                "start" -> begin,
+                "end" -> end,
+                "text" -> m("text").substring(x.getSeq[Int](x.fieldIndex("termCharBegin"))(begin),
+                  x.getSeq[Int](x.fieldIndex("termCharEnd"))(end))))
+          })
       })
-    .groupByKey
-    .sortBy(_._2.size, ascending=false)
-    .map(x => {
-      val (cid, members) = x
-      val mapper  = new ObjectMapper()
-      mapper.registerModule(DefaultScalaModule)
-      mapper.writeValueAsString(
-	Map("id" -> cid,
-	    "size" -> members.size,
-	    "members" -> members.toArray.sortWith((a, b) => a("date").toString < b("date").toString)))
-    })
+      .groupByKey
+      .sortBy(_._2.size, ascending=false)
+      .map(x => {
+        val (cid, members) = x
+        val mapper  = new ObjectMapper()
+        mapper.registerModule(DefaultScalaModule)
+        mapper.writeValueAsString(
+          Map("id" -> cid,
+            "size" -> members.size,
+            "members" -> members.toArray.sortWith((a, b) => a("date").toString < b("date").toString)))
+      })
     clusterInfo.saveAsTextFile(args(1))
   }
 }
