@@ -124,21 +124,6 @@ object CorpusFun {
     }
     res
   }
-  def indexNgrams(n: Int, maxSeries: Int, corpus: RDD[(IdSeries, TokDoc)]) = {
-    val upper = maxSeries * (maxSeries - 1) / 2
-    // // We could save space by hasing the n-grams, then checking for
-    // // equality when we actually do the alignment, but we need to keep
-    // // all the n-gram matches around, not just the ranges.
-    // java.nio.ByteBuffer.wrap(java.security.MessageDigest.getInstance("MD5")
-    //   .digest("a~b~c~d~e".getBytes).take(8)).getLong
-    // val ebuf = new ArrayBuffer[(IdSeries,Int)]()
-    corpus.flatMap(d => {
-      val (id, doc) = d
-      doc.terms.zipWithIndex.sliding(n)
-	.map(x => (x.map(_._1).mkString("~"), (id, x(0)._2)))
-    })
-    .groupByKey
-  }
 }
 
 object PassFun {
@@ -499,7 +484,7 @@ object PassimApp {
   def main(args: Array[String]) {
     val conf = new SparkConf().setAppName("Passim Application")
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-      .registerKryoClasses(Array(classOf[imgCoord],
+      .registerKryoClasses(Array(classOf[imgCoord], classOf[Span],
 				 classOf[SpanMatch], classOf[IdSeries]))
     val sc = new SparkContext(conf)
     val sqlContext = new org.apache.spark.sql.SQLContext(sc)
@@ -507,11 +492,14 @@ object PassimApp {
 
     val inFile = args(0)
 
-    val raw = if ( inFile.endsWith(".parquet") ) {
-      sqlContext.read.parquet(inFile)
+    val dfFile = if ( inFile.endsWith(".parquet") ) {
+      inFile
     } else {
-      ImportApp.preprocessText(sqlContext.read.json(inFile))
+      val res = args(1) + ".parquet"
+      ImportApp.preprocessText(sqlContext.read.json(inFile)).write.parquet(res)
+      res
     }
+    val raw = sqlContext.read.parquet(dfFile)
 
     // Do simple series transformation; in future, could join with metadata.
     val sname = udf {(x: String) => x.split("[_/]")(0) }
@@ -529,33 +517,32 @@ object PassimApp {
     val gap: Int = 100
     val relOver = 0.5
     val maxRep: Int = 4
+    val group = "series"
 
     val gap2 = gap * gap
     val upper = maxSeries * (maxSeries - 1) / 2
 
-    val pairs = corpus
-      .select("uid", "series", "terms") // cache this projection?
+
+    val hashId = udf {(id: String) => ImportApp.hashString(id)}
+    val termCorpus = corpus
+      .select("uid", group, "terms")
+      .withColumn("gid", hashId(corpus(group)))
+      .drop(group)
+
+    // // We could save space by hasing the n-grams, then checking for
+    // // equality when we actually do the alignment, but we need to keep
+    // // all the n-gram matches around, not just the ranges.
+    // java.nio.ByteBuffer.wrap(java.security.MessageDigest.getInstance("MD5")
+    //   .digest("a~b~c~d~e".getBytes).take(8)).getLong
+    val pairs = termCorpus
       .flatMap({
-        case Row(uid: Long, series: String, terms: Seq[String]) => {
+        case Row(uid: Long, terms: Seq[String], gid: Long) => {
           terms.zipWithIndex.sliding(n)
             .map(x => (x.map(_._1).mkString("~"),
-              (IdSeries(uid, ImportApp.hashString(series)), x(0)._2)))
+              (IdSeries(uid, gid), x(0)._2)))
         }
       })
       .groupByKey
-    // // Save this implementation in case we see lots of high-frequency n-grams
-    // .aggregateByKey(ebuf)(
-    //   (buf, v) => if ( buf.size <= upper ) buf += v else buf,
-    //   (c1, c2) => {
-    // 	if ( c1.size > upper )
-    // 	  c1
-    // 	else {
-    // 	  if (c2.size > upper )
-    // 	    c2
-    // 	  else
-    // 	    c1 ++= c2
-    // 	}
-    //   })
       .filter(x => x._2.size >= 2 && x._2.size <= upper
 	&& ( CorpusFun.crossCounts(x._2.map(p => p._1.series)
 	  .groupBy(identity).map(_._2.size).toArray) ) <= upper)
@@ -578,12 +565,11 @@ object PassimApp {
 
     val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
     val pass2 = pass1.toDF
-      .join(corpus.select("uid", "series", "terms"), "uid")
+      .join(termCorpus, "uid")
       .map({
-        case Row(uid: Long, begin: Int, end: Int, mid: Long,
-          series: String, terms: Seq[String]) => {
-          (mid, PassFun.edgeText(gap * 2/3, n, IdSeries(uid, ImportApp.hashString(series)),
-            terms.toArray, (begin, end)))
+        case Row(uid: Long, begin: Int, end: Int, mid: Long, terms: Seq[String], gid: Long) => {
+          (mid,
+            PassFun.edgeText(gap * 2/3, n, IdSeries(uid, gid), terms.toArray, (begin, end)))
         }
       })
       .groupByKey
@@ -633,42 +619,57 @@ object PassimApp {
       .mapValues(v => v.map(x => Span(x._1._1, x._1._2, x._2)).toArray)
       .toDF("uid", "passages")
       .join(corpus, "uid")
-      .flatMap(x => {
-        val uid = x.getLong(0)
-        val passages = x.getSeq[Row](1)
-        val m = CorpusFun.rowToMap(x)
-
-        passages.map({
-          case Row(begin: Int, end: Int, cid: Long) => ((begin, end), cid)
-        })
-          .groupBy(_._2).values.flatMap(p => {
-            PassFun.mergeSpans(0, p).map(z => (z._1, z._2(0)))
-          }).map(p => {
-            val ((begin, end), cid) = p
-            (cid,
-              Map("id" -> m("id"),
-                "uid" -> uid,
-                "name" -> m.getOrElse("series", ""),
-                "title" -> m.getOrElse("title", ""),
-                "date" -> m.getOrElse("date", ""),
-                // "url" -> CorpusFun.passageURL(doc, begin, end),
-                "start" -> begin,
-                "end" -> end,
-                "text" -> m("text").substring(x.getSeq[Int](x.fieldIndex("termCharBegin"))(begin),
-                  x.getSeq[Int](x.fieldIndex("termCharEnd"))(end))))
+      .explode("passages", "text")({
+        case Row(passages: Seq[Row], text: String) => {
+          passages.map({
+            case Row(begin: Int, end: Int, cid: Long) => ((begin, end), cid)
           })
+            .groupBy(_._2).values.flatMap(p => {
+              PassFun.mergeSpans(0, p).map(z => (z._1, z._2(0)))
+            }).map(p => {
+              val ((begin, end), cid) = p
+
+            })
+        }
       })
-      .groupByKey
-      .sortBy(_._2.size, ascending=false)
-      .map(x => {
-        val (cid, members) = x
-        val mapper  = new ObjectMapper()
-        mapper.registerModule(DefaultScalaModule)
-        mapper.writeValueAsString(
-          Map("id" -> cid,
-            "size" -> members.size,
-            "members" -> members.toArray.sortWith((a, b) => a("date").toString < b("date").toString)))
-      })
-    clusterInfo.saveAsTextFile(args(1))
+      .write.json(args(1))
+
+    //   .flatMap(x => {
+    //     val uid = x.getLong(0)
+    //     val passages = x.getSeq[Row](1)
+    //     val m = CorpusFun.rowToMap(x)
+
+    //     passages.map({
+    //       case Row(begin: Int, end: Int, cid: Long) => ((begin, end), cid)
+    //     })
+    //       .groupBy(_._2).values.flatMap(p => {
+    //         PassFun.mergeSpans(0, p).map(z => (z._1, z._2(0)))
+    //       }).map(p => {
+    //         val ((begin, end), cid) = p
+    //         (cid,
+    //           Map("id" -> m("id"),
+    //             "uid" -> uid,
+    //             "name" -> m.getOrElse("series", ""),
+    //             "title" -> m.getOrElse("title", ""),
+    //             "date" -> m.getOrElse("date", ""),
+    //             "url" -> "", // CorpusFun.passageURL(doc, begin, end),
+    //             "start" -> begin,
+    //             "end" -> end,
+    //             "text" -> m("text").substring(x.getSeq[Int](x.fieldIndex("termCharBegin"))(begin),
+    //               x.getSeq[Int](x.fieldIndex("termCharEnd"))(end))))
+    //       })
+    //   })
+    //   .groupByKey
+    //   .sortBy(_._2.size, ascending=false)
+    //   .map(x => {
+    //     val (cid, members) = x
+    //     val mapper  = new ObjectMapper()
+    //     mapper.registerModule(DefaultScalaModule)
+    //     mapper.writeValueAsString(
+    //       Map("id" -> cid,
+    //         "size" -> members.size,
+    //         "members" -> members.toArray.sortWith((a, b) => a("date").toString < b("date").toString)))
+    //   })
+    // clusterInfo.saveAsTextFile(args(1))
   }
 }
