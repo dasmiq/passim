@@ -42,8 +42,6 @@ case class IdSeries(id: Long, series: Long)
 
 case class SpanMatch(uid: Long, begin: Int, end: Int, mid: Long)
 
-case class Passage(passage: String)
-
 object CorpusFun {
   def rowToMap(r: Row): Map[String, String] = {
     val vals = r.toSeq.map(_.toString).toArray
@@ -484,7 +482,7 @@ object PassimApp {
   def main(args: Array[String]) {
     val conf = new SparkConf().setAppName("Passim Application")
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-      .registerKryoClasses(Array(classOf[imgCoord], classOf[Passage],
+      .registerKryoClasses(Array(classOf[imgCoord],
 				 classOf[SpanMatch], classOf[IdSeries]))
     val sc = new SparkContext(conf)
     val sqlContext = new org.apache.spark.sql.SQLContext(sc)
@@ -615,34 +613,23 @@ object PassimApp {
 
     // clusters.saveAsTextFile(args(1) + ".clusters")
 
+    val getPassage = udf {(begin: Int, end: Int, text: String,
+      termCharBegin: Seq[Int], termCharEnd: Seq[Int]) =>
+      text.substring(termCharBegin(begin), termCharEnd(end))}
+
     val clusterInfo = clusters.groupByKey
       .flatMap(x => x._2.groupBy(_._2).values.flatMap(p => {
         PassFun.mergeSpans(0, p).map(z => (x._1, z._2(0), z._1._1, z._1._2))
       }))
+    // Now, after merging, count cluster members before join
       .toDF("uid", "cluster", "begin", "end")
       .join(corpus, "uid")
-      .explode('begin, 'end, 'text, 'termCharBegin, 'termCharEnd)({
-        case Row(begin: Int, end: Int, text: String,
-          termCharBegin: Seq[Int], termCharEnd: Seq[Int]) =>
-          Array[Passage](Passage(text.substring(termCharBegin(begin), termCharEnd(end))))
-      })
+      .withColumn("passage", getPassage('begin, 'end, 'text, 'termCharBegin, 'termCharEnd))
     // Use selectExpr for nulls
       .select("cluster", "id", "uid", "series", "date", "begin", "end", "passage")
       .sort("cluster", "date", "id", "begin")
       .write.json(args(1))
 
-    //   .flatMap(x => {
-    //     val uid = x.getLong(0)
-    //     val passages = x.getSeq[Row](1)
-    //     val m = CorpusFun.rowToMap(x)
-
-    //     passages.map({
-    //       case Row(begin: Int, end: Int, cid: Long) => ((begin, end), cid)
-    //     })
-    //       .groupBy(_._2).values.flatMap(p => {
-    //         PassFun.mergeSpans(0, p).map(z => (z._1, z._2(0)))
-    //       }).map(p => {
-    //         val ((begin, end), cid) = p
     //         (cid,
     //           Map("id" -> m("id"),
     //             "uid" -> uid,
@@ -654,19 +641,5 @@ object PassimApp {
     //             "end" -> end,
     //             "text" -> m("text").substring(x.getSeq[Int](x.fieldIndex("termCharBegin"))(begin),
     //               x.getSeq[Int](x.fieldIndex("termCharEnd"))(end))))
-    //       })
-    //   })
-    //   .groupByKey
-    //   .sortBy(_._2.size, ascending=false)
-    //   .map(x => {
-    //     val (cid, members) = x
-    //     val mapper  = new ObjectMapper()
-    //     mapper.registerModule(DefaultScalaModule)
-    //     mapper.writeValueAsString(
-    //       Map("id" -> cid,
-    //         "size" -> members.size,
-    //         "members" -> members.toArray.sortWith((a, b) => a("date").toString < b("date").toString)))
-    //   })
-    // clusterInfo.saveAsTextFile(args(1))
   }
 }
