@@ -617,6 +617,10 @@ object PassimApp {
       termCharBegin: Seq[Int], termCharEnd: Seq[Int]) =>
       text.substring(termCharBegin(begin), termCharEnd(end))}
 
+    val cols = corpus.columns.toSet
+    val titleExpr = if ( cols.contains("title") ) "title" else "\"\""
+    val dateExpr = if ( cols.contains("date") ) "date" else "\"\""
+
     val clusterInfo = clusters.groupByKey
       .flatMap(x => x._2.groupBy(_._2).values.flatMap(p => {
         PassFun.mergeSpans(0, p).map(z => (x._1, z._2(0), z._1._1, z._1._2))
@@ -631,7 +635,10 @@ object PassimApp {
       .join(corpus, "uid")
       .withColumn("passage", getPassage('begin, 'end, 'text, 'termCharBegin, 'termCharEnd))
     // Use selectExpr for nulls
-      .select("cluster", "size", "id", "uid", "series", "date", "begin", "end", "passage")
+      .selectExpr("cluster", "size", "id", "uid", group,
+        dateExpr + " AS date", titleExpr + " AS title",
+        "begin", "`end`", "passage AS text")
+      // .select("cluster", "size", "id", "uid", group, "date", "begin", "end", "passage")
       .sort('size.desc, 'cluster, 'date, 'id, 'begin)
       .write.json(args(1))
 
