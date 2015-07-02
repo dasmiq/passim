@@ -621,13 +621,18 @@ object PassimApp {
       .flatMap(x => x._2.groupBy(_._2).values.flatMap(p => {
         PassFun.mergeSpans(0, p).map(z => (x._1, z._2(0), z._1._1, z._1._2))
       }))
+      .groupBy(_._2)
+      .flatMap(x => {
+        val size = x._2.size
+        x._2.map(p => (p._1, p._2, size, p._3, p._4))
+      })
     // Now, after merging, count cluster members before join
-      .toDF("uid", "cluster", "begin", "end")
+      .toDF("uid", "cluster", "size", "begin", "end")
       .join(corpus, "uid")
       .withColumn("passage", getPassage('begin, 'end, 'text, 'termCharBegin, 'termCharEnd))
     // Use selectExpr for nulls
-      .select("cluster", "id", "uid", "series", "date", "begin", "end", "passage")
-      .sort("cluster", "date", "id", "begin")
+      .select("cluster", "size", "id", "uid", "series", "date", "begin", "end", "passage")
+      .sort('size.desc, 'cluster, 'date, 'id, 'begin)
       .write.json(args(1))
 
     //         (cid,
