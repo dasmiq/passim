@@ -44,6 +44,8 @@ case class SpanMatch(uid: Long, begin: Int, end: Int, mid: Long)
 
 case class Span(begin: Int, end: Int, mid: Long)
 
+case class SpanPassage(cluster: Long, begin: Int, end: Int, passage: String)
+
 object CorpusFun {
   def rowToMap(r: Row): Map[String, String] = {
     val vals = r.toSeq.map(_.toString).toArray
@@ -484,7 +486,7 @@ object PassimApp {
   def main(args: Array[String]) {
     val conf = new SparkConf().setAppName("Passim Application")
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-      .registerKryoClasses(Array(classOf[imgCoord], classOf[Span],
+      .registerKryoClasses(Array(classOf[imgCoord], classOf[Span], classOf[SpanPassage],
 				 classOf[SpanMatch], classOf[IdSeries]))
     val sc = new SparkContext(conf)
     val sqlContext = new org.apache.spark.sql.SQLContext(sc)
@@ -619,8 +621,9 @@ object PassimApp {
       .mapValues(v => v.map(x => Span(x._1._1, x._1._2, x._2)).toArray)
       .toDF("uid", "passages")
       .join(corpus, "uid")
-      .explode("passages", "text")({
-        case Row(passages: Seq[Row], text: String) => {
+      .explode('passages, 'text, 'termCharBegin, 'termCharEnd)({
+        case Row(passages: Seq[Row], text: String,
+          termCharBegin: Seq[Int], termCharEnd: Seq[Int]) => {
           passages.map({
             case Row(begin: Int, end: Int, cid: Long) => ((begin, end), cid)
           })
@@ -628,10 +631,14 @@ object PassimApp {
               PassFun.mergeSpans(0, p).map(z => (z._1, z._2(0)))
             }).map(p => {
               val ((begin, end), cid) = p
-
+              SpanPassage(cid, begin, end,
+                text.substring(termCharBegin(begin), termCharEnd(end)))
             })
         }
       })
+    // Use selectExpr for nulls
+      .select("cluster", "id", "uid", "series", "date", "begin", "end", "passage")
+      .sort("cluster", "date", "id", "begin")
       .write.json(args(1))
 
     //   .flatMap(x => {
