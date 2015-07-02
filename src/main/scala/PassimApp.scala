@@ -42,6 +42,9 @@ case class IdSeries(id: Long, series: Long)
 
 case class SpanMatch(uid: Long, begin: Int, end: Int, mid: Long)
 
+case class Reprint(cluster: Long, size: Int, id: String, uid: Long, series: String,
+  title: String, date: String, url: String, begin: Int, end: Int, text: String)
+
 object CorpusFun {
   def rowToMap(r: Row): Map[String, String] = {
     val vals = r.toSeq.map(_.toString).toArray
@@ -482,7 +485,7 @@ object PassimApp {
   def main(args: Array[String]) {
     val conf = new SparkConf().setAppName("Passim Application")
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-      .registerKryoClasses(Array(classOf[imgCoord],
+      .registerKryoClasses(Array(classOf[imgCoord], classOf[Reprint],
 				 classOf[SpanMatch], classOf[IdSeries]))
     val sc = new SparkContext(conf)
     val sqlContext = new org.apache.spark.sql.SQLContext(sc)
@@ -613,14 +616,7 @@ object PassimApp {
 
     // clusters.saveAsTextFile(args(1) + ".clusters")
 
-    val getPassage = udf {(begin: Int, end: Int, text: String,
-      termCharBegin: Seq[Int], termCharEnd: Seq[Int]) =>
-      text.substring(termCharBegin(begin), termCharEnd(end))}
-
     val cols = corpus.columns.toSet
-    val titleExpr = if ( cols.contains("title") ) "title" else "\"\""
-    val dateExpr = if ( cols.contains("date") ) "date" else "\"\""
-
     val clusterInfo = clusters.groupByKey
       .flatMap(x => x._2.groupBy(_._2).values.flatMap(p => {
         PassFun.mergeSpans(0, p).map(z => (x._1, z._2(0), z._1._1, z._1._2))
@@ -630,28 +626,22 @@ object PassimApp {
         val size = x._2.size
         x._2.map(p => (p._1, p._2, size, p._3, p._4))
       })
-    // Now, after merging, count cluster members before join
       .toDF("uid", "cluster", "size", "begin", "end")
       .join(corpus, "uid")
-      .withColumn("passage", getPassage('begin, 'end, 'text, 'termCharBegin, 'termCharEnd))
-    // Use selectExpr for nulls
-      .selectExpr("cluster", "size", "id", "uid", group,
-        dateExpr + " AS date", titleExpr + " AS title",
-        "begin", "`end`", "passage AS text")
-      // .select("cluster", "size", "id", "uid", group, "date", "begin", "end", "passage")
+      .map(r => {
+        val begin: Int = r.getInt(3)
+        val end: Int = r.getInt(4)
+        Reprint(r.getLong(1), r.getInt(2), r.getString(r.fieldIndex("id")), r.getLong(0), r.getString(r.fieldIndex(group)),
+          (if ( cols.contains("title") ) r.getString(r.fieldIndex("title")) else ""),
+          (if ( cols.contains("date") ) r.getString(r.fieldIndex("date")) else ""),
+          "", // CorpusFun.passageURL(doc, begin, end),
+          begin, end,
+          r.getString(r.fieldIndex("text")).substring(r.getSeq[Int](r.fieldIndex("termCharBegin"))(begin),
+            r.getSeq[Int](r.fieldIndex("termCharEnd"))(end))
+        )
+      })
+      .toDF
       .sort('size.desc, 'cluster, 'date, 'id, 'begin)
       .write.json(args(1))
-
-    //         (cid,
-    //           Map("id" -> m("id"),
-    //             "uid" -> uid,
-    //             "name" -> m.getOrElse("series", ""),
-    //             "title" -> m.getOrElse("title", ""),
-    //             "date" -> m.getOrElse("date", ""),
-    //             "url" -> "", // CorpusFun.passageURL(doc, begin, end),
-    //             "start" -> begin,
-    //             "end" -> end,
-    //             "text" -> m("text").substring(x.getSeq[Int](x.fieldIndex("termCharBegin"))(begin),
-    //               x.getSeq[Int](x.fieldIndex("termCharEnd"))(end))))
   }
 }
