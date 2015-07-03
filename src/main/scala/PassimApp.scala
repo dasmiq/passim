@@ -15,11 +15,6 @@ import com.fasterxml.jackson.module.scala.experimental.ScalaObjectMapper
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.DeserializationFeature
 
-import org.lemurproject.galago.tupleflow.Parameters
-import org.lemurproject.galago.tupleflow.FakeParameters
-import org.lemurproject.galago.core.parse.Document
-import org.lemurproject.galago.core.parse.TagTokenizer
-
 import collection.JavaConversions._
 import scala.collection.mutable.ListBuffer
 import scala.collection.mutable.ArrayBuffer
@@ -51,11 +46,9 @@ object CorpusFun {
     r.schema.fieldNames.zip(vals).toMap
   }
   def parseDocument(m: Map[String,String]): TokDoc = {
-    var tokp = new Parameters
-    tokp.set("fields", List("pb", "w"))
-    val tok = new TagTokenizer(new FakeParameters(tokp))
+    val tok = new passim.TagTokenizer()
 
-    var d = new Document(m("id"), m("text"))
+    var d = new passim.Document(m("id"), m("text"))
     tok.tokenize(d)
 
     var loc = new ArrayBuffer[pageLoc]
@@ -402,11 +395,9 @@ case class TokText(terms: Array[String], termCharBegin: Array[Int], termCharEnd:
 
 object ImportApp {
   def tokenize(text: String): TokText = {
-    var tokp = new Parameters
-    tokp.set("fields", List("pb", "w"))
-    val tok = new TagTokenizer(new FakeParameters(tokp))
+    val tok = new passim.TagTokenizer()
 
-    var d = new Document("raw", text)
+    var d = new passim.Document("raw", text)
     tok.tokenize(d)
 
     var pages = new ArrayBuffer[String]
@@ -454,6 +445,7 @@ object ImportApp {
     val tok = udf {(text: String) => tokenize(text)}
     val tokenized = raw.filter(!raw("id").isNull && !raw("text").isNull)
       .withColumn("uid", hashId(raw("id")))
+    // could use explode instead; at least it would be simpler to read
       .withColumn("tok", tok(raw("text")))
     val col = tokenized("tok")
     tokenized
