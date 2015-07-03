@@ -442,19 +442,9 @@ object ImportApp {
   }
   def preprocessText(raw: DataFrame): DataFrame = {
     val hashId = udf {(id: String) => hashString(id)}
-    val tok = udf {(text: String) => tokenize(text)}
-    val tokenized = raw.filter(!raw("id").isNull && !raw("text").isNull)
+    raw.filter(!raw("id").isNull && !raw("text").isNull)
       .withColumn("uid", hashId(raw("id")))
-    // could use explode instead; at least it would be simpler to read
-      .withColumn("tok", tok(raw("text")))
-    val col = tokenized("tok")
-    tokenized
-      .withColumn("terms", col("terms"))
-      .withColumn("termCharBegin", col("termCharBegin"))
-      .withColumn("termCharEnd", col("termCharEnd"))
-      .withColumn("pages", col("pages"))
-      .withColumn("imgLocs", col("imgLocs"))
-      .drop("tok")
+      .explode(raw("text"))({ case Row(text: String) => Array[TokText](tokenize(text)) })
   }
   def main(args: Array[String]) {
     val conf = new SparkConf().setAppName("Import Application")
