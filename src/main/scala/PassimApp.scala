@@ -462,6 +462,21 @@ object PassimApp {
       MessageDigest.getInstance("MD5").digest(s.getBytes("UTF-8"))
     ).getLong
   }
+  def testGroup(group: String, df: DataFrame): DataFrame = {
+    if ( df.columns.contains(group) ) {
+      df
+    } else {
+      val sname = udf {(id: String) => id.split("[_/]")(0) }
+      df.withColumn(group, sname(df("id")))
+    }
+  }
+  def testTok(df: DataFrame): DataFrame = {
+    if ( df.columns.contains("terms") ) {
+      df
+    } else {
+      TokApp.tokenizeText(df)
+    }
+  }
   def main(args: Array[String]) {
     val conf = new SparkConf().setAppName("Passim Application")
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
@@ -471,27 +486,6 @@ object PassimApp {
     val sqlContext = new org.apache.spark.sql.SQLContext(sc)
     import sqlContext.implicits._
 
-    val inFile = args(0)
-
-    val dfFile = if ( inFile.endsWith(".parquet") ) {
-      inFile
-    } else {
-      val res = args(1) + ".parquet"
-      TokApp.tokenizeText(sqlContext.read.json(inFile)).write.parquet(res)
-      res
-    }
-    val raw = sqlContext.read.parquet(dfFile)
-      .withColumn("uid", monotonicallyIncreasingId())
-
-    // Do simple series transformation; in future, could join with metadata.
-    val sname = udf {(x: String) => x.split("[_/]")(0) }
-    val corpus = {
-      if ( raw.columns.contains("series") )
-        raw
-      else
-        raw.withColumn("series", sname(raw("id")))
-    }
-
     val maxSeries: Int = 100
     val n: Int = 5
     val minRep: Int = 5
@@ -500,6 +494,28 @@ object PassimApp {
     val relOver = 0.5
     val maxRep: Int = 4
     val group = "series"
+
+    var inFormat = "json"
+    var outFormat = "json"
+
+    // Input file policy:
+    // We should assume JSON for most users, allow .parquet by convention
+    val inFile: String = args(0)
+
+    if ( inFile.endsWith(".parquet") ) { inFormat = "parquet" }
+
+    val raw = if ( inFormat == "json" ) {
+      // At least on spark 1.4.0, if we don't save an intermedite
+      // parquet file, json input thrashes.
+      val tmpFile = args(1) + ".parquet"
+      sqlContext.read.format(inFormat).load(inFile).write.parquet(tmpFile)
+      sqlContext.read.parquet(tmpFile)
+    } else {
+      sqlContext.read.format(inFormat).load(inFile)
+    }
+
+    val corpus = testTok(testGroup(group, raw))
+      .withColumn("uid", monotonicallyIncreasingId())
 
     val gap2 = gap * gap
     val upper = maxSeries * (maxSeries - 1) / 2
@@ -622,6 +638,6 @@ object PassimApp {
       })
       .toDF
       .sort('size.desc, 'cluster, 'date, 'id, 'begin)
-      .write.json(args(1))
+      .write.format(outFormat).save(args(1))
   }
 }
