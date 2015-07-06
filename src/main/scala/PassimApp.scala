@@ -393,7 +393,7 @@ object BoilerApp {
 case class TokText(terms: Array[String], termCharBegin: Array[Int], termCharEnd: Array[Int],
   pages: Array[String], imgLocs: Array[imgCoord])
 
-object ImportApp {
+object TokApp {
   def tokenize(text: String): TokText = {
     val tok = new passim.TagTokenizer()
 
@@ -435,27 +435,20 @@ object ImportApp {
       d.termCharEnd.map(_.toInt).toArray,
       pages.toArray, locs.toArray)
   }
-  def hashString(s: String): Long = {
-    ByteBuffer.wrap(
-      MessageDigest.getInstance("MD5").digest(s.getBytes("UTF-8"))
-    ).getLong
-  }
-  def preprocessText(raw: DataFrame): DataFrame = {
-    val hashId = udf {(id: String) => hashString(id)}
+  def tokenizeText(raw: DataFrame): DataFrame = {
     raw.filter(!raw("id").isNull && !raw("text").isNull)
-      .withColumn("uid", hashId(raw("id")))
       .explode(raw("text"))({ case Row(text: String) => Array[TokText](tokenize(text)) })
   }
   def main(args: Array[String]) {
-    val conf = new SparkConf().setAppName("Import Application")
+    val conf = new SparkConf().setAppName("Tokenize Application")
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-      .registerKryoClasses(Array(classOf[imgCoord], classOf[IdSeries], classOf[TokText]))
+      .registerKryoClasses(Array(classOf[imgCoord], classOf[TokText]))
     val sc = new SparkContext(conf)
     val sqlContext = new org.apache.spark.sql.SQLContext(sc)
 
-    val raw = sqlContext.read.json(args(0))
+    val raw = sqlContext.read.load(args(0))
 
-    val proc = preprocessText(raw)
+    val proc = tokenizeText(raw)
 
     // Do some checks here?
 
@@ -464,6 +457,11 @@ object ImportApp {
 }
 
 object PassimApp {
+  def hashString(s: String): Long = {
+    ByteBuffer.wrap(
+      MessageDigest.getInstance("MD5").digest(s.getBytes("UTF-8"))
+    ).getLong
+  }
   def main(args: Array[String]) {
     val conf = new SparkConf().setAppName("Passim Application")
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
@@ -479,10 +477,11 @@ object PassimApp {
       inFile
     } else {
       val res = args(1) + ".parquet"
-      ImportApp.preprocessText(sqlContext.read.json(inFile)).write.parquet(res)
+      TokApp.tokenizeText(sqlContext.read.json(inFile)).write.parquet(res)
       res
     }
     val raw = sqlContext.read.parquet(dfFile)
+      .withColumn("uid", monotonicallyIncreasingId())
 
     // Do simple series transformation; in future, could join with metadata.
     val sname = udf {(x: String) => x.split("[_/]")(0) }
@@ -505,8 +504,7 @@ object PassimApp {
     val gap2 = gap * gap
     val upper = maxSeries * (maxSeries - 1) / 2
 
-
-    val hashId = udf {(id: String) => ImportApp.hashString(id)}
+    val hashId = udf {(id: String) => hashString(id)}
     val termCorpus = corpus
       .select("uid", group, "terms")
       .withColumn("gid", hashId(corpus(group)))
