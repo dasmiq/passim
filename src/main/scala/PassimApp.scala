@@ -27,12 +27,6 @@ case class imgCoord(val x: Int, val y: Int, val w: Int, val h: Int) {
   def y2 = y + h
 }
 
-case class pageLoc(page: String, loc: imgCoord)
-
-case class TokDoc(name: String, text: String, metadata: Map[String,String], series: String,
-		  terms: Array[String],
-		  termCharBegin: Array[Int], termCharEnd: Array[Int], termPage: Array[pageLoc])
-
 case class IdSeries(id: Long, series: Long)
 
 case class SpanMatch(uid: Long, begin: Int, end: Int, mid: Long)
@@ -41,74 +35,26 @@ case class Reprint(cluster: Long, size: Int, id: String, uid: Long, series: Stri
   title: String, date: String, url: String, begin: Int, end: Int, text: String)
 
 object CorpusFun {
-  def rowToMap(r: Row): Map[String, String] = {
-    val vals = r.toSeq.map(_.toString).toArray
-    r.schema.fieldNames.zip(vals).toMap
-  }
-  def parseDocument(m: Map[String,String]): TokDoc = {
-    val tok = new passim.TagTokenizer()
-
-    var d = new passim.Document(m("id"), m("text"))
-    tok.tokenize(d)
-
-    var loc = new ArrayBuffer[pageLoc]
-    var curPage = ""
-    var curCoord = imgCoord(0, 0, 0, 0)
-    var idx = 0
-    val p = """^(\d+),(\d+),(\d+),(\d+)$""".r
-    for ( t <- d.tags ) {
-      val off = t.begin
-      while ( idx < off ) {
-	loc += pageLoc(curPage, curCoord)
-	idx += 1
-      }
-      if ( t.name == "pb" )
-	curPage = t.attributes.getOrElse("n", "")
-      else if ( t.name == "w" ) {
-    	  t.attributes.getOrElse("coords", "") match {
-            case p(x, y, w, h) => curCoord = imgCoord(x.toInt, y.toInt, w.toInt, h.toInt)
-    	    case _ => curCoord
-    	  }
-    	}
-    }
-    if ( idx > 0 ) {
-      while ( idx < d.terms.size ) {
-	loc += pageLoc(curPage, curCoord)
-	idx += 1
-      }
-    }
-
-    TokDoc(m("id"), m("text"),
-	   m - "id" - "text" - "series",
-	   m("series"),
-	   d.terms.toSeq.toArray,
-	   d.termCharBegin.map(_.toInt).toArray,
-	   d.termCharEnd.map(_.toInt).toArray,
-	   loc.toArray)
-  }
-  def parseDocument(r: Row): TokDoc = {
-    parseDocument(rowToMap(r))
-  }
-  def passageURL(doc: TokDoc, begin: Int, end: Int): String = {
-    val m = doc.metadata
-    var res = new StringBuilder
-    if ( m.contains("url") ) {
-      res ++= m("url")
-      if ( m.contains("pageurl") && doc.termPage.size > end ) {
-	val (page, locs) = doc.termPage.slice(begin, end).groupBy(_.page).head
-	res ++= m("pageurl").format(page)
-	if ( m.contains("imgurl") ) {
-	  val x1 = locs.map(_.loc.x).min / 4
-	  val y1 = locs.map(_.loc.y).min / 4
-	  val x2 = locs.map(_.loc.x2).max / 4
-	  val y2 = locs.map(_.loc.y2).max / 4
-	  if ( x2 > 0 && y2 > 0 )
-	    res ++= m("imgurl").format(600, 600, x1, y1, x2, y2)
-	}
-      }
-    }
-    res.toString
-  }
+  // def passageURL(doc: TokDoc, begin: Int, end: Int): String = {
+  //   val m = doc.metadata
+  //   var res = new StringBuilder
+  //   if ( m.contains("url") ) {
+  //     res ++= m("url")
+  //     if ( m.contains("pageurl") && doc.termPage.size > end ) {
+  //       val (page, locs) = doc.termPage.slice(begin, end).groupBy(_.page).head
+  //       res ++= m("pageurl").format(page)
+  //       if ( m.contains("imgurl") ) {
+  //         val x1 = locs.map(_.loc.x).min / 4
+  //         val y1 = locs.map(_.loc.y).min / 4
+  //         val x2 = locs.map(_.loc.x2).max / 4
+  //         val y2 = locs.map(_.loc.y2).max / 4
+  //         if ( x2 > 0 && y2 > 0 )
+  //           res ++= m("imgurl").format(600, 600, x1, y1, x2, y2)
+  //       }
+  //     }
+  //   }
+  //   res.toString
+  // }
   def crossCounts(sizes: Array[Int]): Int = {
     var res: Int = 0
     for ( i <- 0 until sizes.size ) {
@@ -300,20 +246,16 @@ object BoilerApp {
   def main(args: Array[String]) = {
     val conf = new SparkConf().setAppName("Passim Application")
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-      .registerKryoClasses(Array(classOf[imgCoord], classOf[pageLoc],
-				 classOf[TokDoc], classOf[IdSeries]))
+      .registerKryoClasses(Array(classOf[imgCoord], classOf[IdSeries]))
     val sc = new SparkContext(conf)
     val sqlContext = new org.apache.spark.sql.SQLContext(sc)
 
-    val raw = sqlContext.jsonFile(args(0))
-    // Do simple series transformation; in future, could join with metadata.
-    val sname = udf {(x: String) => x.split("[_/]")(0) }
-    val data = raw.withColumn("series", sname(raw("id")))
+    val group = "series"
 
-    val corpus = data.sort("series", "date")
-      .map(CorpusFun.parseDocument)
-      .zipWithUniqueId
-      .map(x => (IdSeries(x._2, 0), x._1))
+    val raw = PassimApp.testTok(PassimApp.testGroup(group, sqlContext.read.load(args(0))))
+      .withColumn("uid", monotonicallyIncreasingId())
+
+    val corpus = raw.sort("series", "date")
 
     val n = 3
     val minAlg = 20
@@ -324,69 +266,69 @@ object BoilerApp {
 
     val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
 
-    val pass = corpus
-      .mapValues(d => (d, hapaxIndex(n, d.terms)))
-      .sliding(3)
-      .flatMap(x => {
-	val (cid, (cdoc, cidx)) = x.last
-	val m = cidx.toMap
-	x.filter(_._1 != cid)
-	  .flatMap(y => {
-	    val (pid, (pdoc, pidx)) = y
-	    val inc = PassFun.increasingMatches(pidx
-	      .flatMap(z => if (m.contains(z._1)) Some((z._2, m(z._1), 1)) else None))
-	    PassFun.gappedMatches(n, gap2, inc)
-	    .map(z => PassFun.alignEdges(matchMatrix, n, minAlg, 0,
-					 PassFun.edgeText(gap, n, pid, pdoc.terms, z._1),
-	      				 PassFun.edgeText(gap, n, cid, cdoc.terms, z._2))
-	       )
-	    .filter(_.size > 0)
-	    .map(z => {
-	      val (pbegin, pend) = z.head._2._1
-	      val (begin, end) = z.last._2._1
-	      Map("id" -> cdoc.name,
-		  "uid" -> cid.id,
-		  "title" -> cdoc.metadata.getOrElse("title", ""),
-    		  "date" -> cdoc.metadata.getOrElse("date", ""),
-    		  "url" -> CorpusFun.passageURL(cdoc, begin, end),
-    		  "start" -> begin,
-    		  "end" -> end,
-    		  "text" -> cdoc.text.substring(cdoc.termCharBegin(begin),
-    						cdoc.termCharEnd(end)),
-		  "pid" -> pdoc.name,
-		  "puid" -> pid.id,
-		  "pdate" -> pdoc.metadata.getOrElse("date", ""),
-		  "purl" -> CorpusFun.passageURL(pdoc, pbegin, pend),
-		  "pstart" -> pbegin,
-		  "pend" -> pend,
-		  "ptext" -> pdoc.text.substring(pdoc.termCharBegin(pbegin),
-    						 pdoc.termCharEnd(pend)))
-	    })
-	  })
-      })
+    // val pass = corpus
+    //   .mapValues(d => (d, hapaxIndex(n, d.terms)))
+    //   .sliding(3)
+    //   .flatMap(x => {
+    //     val (cid, (cdoc, cidx)) = x.last
+    //     val m = cidx.toMap
+    //     x.filter(_._1 != cid)
+    //       .flatMap(y => {
+    //         val (pid, (pdoc, pidx)) = y
+    //         val inc = PassFun.increasingMatches(pidx
+    //           .flatMap(z => if (m.contains(z._1)) Some((z._2, m(z._1), 1)) else None))
+    //         PassFun.gappedMatches(n, gap2, inc)
+    //         .map(z => PassFun.alignEdges(matchMatrix, n, minAlg, 0,
+    //     				 PassFun.edgeText(gap, n, pid, pdoc.terms, z._1),
+    //           				 PassFun.edgeText(gap, n, cid, cdoc.terms, z._2))
+    //            )
+    //         .filter(_.size > 0)
+    //         .map(z => {
+    //           val (pbegin, pend) = z.head._2._1
+    //           val (begin, end) = z.last._2._1
+    //           Map("id" -> cdoc.name,
+    //     	  "uid" -> cid.id,
+    //     	  "title" -> cdoc.metadata.getOrElse("title", ""),
+    // 		  "date" -> cdoc.metadata.getOrElse("date", ""),
+    // 		  // "url" -> CorpusFun.passageURL(cdoc, begin, end),
+    // 		  "start" -> begin,
+    // 		  "end" -> end,
+    // 		  "text" -> cdoc.text.substring(cdoc.termCharBegin(begin),
+    // 						cdoc.termCharEnd(end)),
+    //     	  "pid" -> pdoc.name,
+    //     	  "puid" -> pid.id,
+    //     	  "pdate" -> pdoc.metadata.getOrElse("date", ""),
+    //     	  // "purl" -> CorpusFun.passageURL(pdoc, pbegin, pend),
+    //     	  "pstart" -> pbegin,
+    //     	  "pend" -> pend,
+    //     	  "ptext" -> pdoc.text.substring(pdoc.termCharBegin(pbegin),
+    // 						 pdoc.termCharEnd(pend)))
+    //         })
+    //       })
+    //   })
 
-    pass
-      .map(x => {
-	val mapper  = new ObjectMapper()
-	mapper.registerModule(DefaultScalaModule)
-	mapper.writeValueAsString(x)
-      })
-    .saveAsTextFile(args(1) + ".align")
+    // pass
+    //   .map(x => {
+    //     val mapper  = new ObjectMapper()
+    //     mapper.registerModule(DefaultScalaModule)
+    //     mapper.writeValueAsString(x)
+    //   })
+    // .saveAsTextFile(args(1) + ".align")
 
-    pass
-      .map(x => (x("id").toString, ((x("start").asInstanceOf[Int], x("end").asInstanceOf[Int]), 0L)))
-      .groupByKey
-      .mapValues(s => {
-	val res = PassFun.mergeSpans(0, s).map(_._1).toArray
-	res.sorted
-      })
-      .map(x => {
-	val mapper  = new ObjectMapper()
-	mapper.registerModule(DefaultScalaModule)
-	mapper.writeValueAsString(Map("id" -> x._1,
-				      "spans" -> x._2))
-      })
-      .saveAsTextFile(args(1))
+    // pass
+    //   .map(x => (x("id").toString, ((x("start").asInstanceOf[Int], x("end").asInstanceOf[Int]), 0L)))
+    //   .groupByKey
+    //   .mapValues(s => {
+    //     val res = PassFun.mergeSpans(0, s).map(_._1).toArray
+    //     res.sorted
+    //   })
+    //   .map(x => {
+    //     val mapper  = new ObjectMapper()
+    //     mapper.registerModule(DefaultScalaModule)
+    //     mapper.writeValueAsString(Map("id" -> x._1,
+    //     			      "spans" -> x._2))
+    //   })
+    //   .saveAsTextFile(args(1))
   }
 }
 
@@ -481,7 +423,7 @@ object PassimApp {
     val conf = new SparkConf().setAppName("Passim Application")
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
       .registerKryoClasses(Array(classOf[imgCoord], classOf[Reprint],
-				 classOf[SpanMatch], classOf[IdSeries]))
+	classOf[TokText], classOf[SpanMatch], classOf[IdSeries]))
     val sc = new SparkContext(conf)
     val sqlContext = new org.apache.spark.sql.SQLContext(sc)
     import sqlContext.implicits._
