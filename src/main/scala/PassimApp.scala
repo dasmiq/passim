@@ -34,6 +34,9 @@ case class SpanMatch(uid: Long, begin: Int, end: Int, mid: Long)
 case class Reprint(cluster: Long, size: Int, id: String, uid: Long, series: String,
   title: String, date: String, url: String, begin: Int, end: Int, text: String)
 
+case class PassAlign(uid: Long, id: String, date: String, begin: Int, end: Int, text: String,
+  pid: String, pdate: String, pbegin: Int, pend: Int, ptext: String)
+
 object CorpusFun {
   // def passageURL(doc: TokDoc, begin: Int, end: Int): String = {
   //   val m = doc.metadata
@@ -249,13 +252,14 @@ object BoilerApp {
       .registerKryoClasses(Array(classOf[imgCoord], classOf[IdSeries]))
     val sc = new SparkContext(conf)
     val sqlContext = new org.apache.spark.sql.SQLContext(sc)
+    import sqlContext.implicits._
 
     val group = "series"
 
-    val raw = PassimApp.testTok(PassimApp.testGroup(group, sqlContext.read.load(args(0))))
+    val corpus = PassimApp.testTok(PassimApp.testGroup(group, sqlContext.read.load(args(0))))
       .withColumn("uid", monotonicallyIncreasingId())
-
-    val corpus = raw.sort("series", "date")
+      .sort("series", "date", "id")
+    //.partitionBy("series").orderBy("date").rowsBetween(-2, 0)
 
     val n = 3
     val minAlg = 20
@@ -266,55 +270,40 @@ object BoilerApp {
 
     val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
 
-    // val pass = corpus
-    //   .mapValues(d => (d, hapaxIndex(n, d.terms)))
-    //   .sliding(3)
-    //   .flatMap(x => {
-    //     val (cid, (cdoc, cidx)) = x.last
-    //     val m = cidx.toMap
-    //     x.filter(_._1 != cid)
-    //       .flatMap(y => {
-    //         val (pid, (pdoc, pidx)) = y
-    //         val inc = PassFun.increasingMatches(pidx
-    //           .flatMap(z => if (m.contains(z._1)) Some((z._2, m(z._1), 1)) else None))
-    //         PassFun.gappedMatches(n, gap2, inc)
-    //         .map(z => PassFun.alignEdges(matchMatrix, n, minAlg, 0,
-    //     				 PassFun.edgeText(gap, n, pid, pdoc.terms, z._1),
-    //           				 PassFun.edgeText(gap, n, cid, cdoc.terms, z._2))
-    //            )
-    //         .filter(_.size > 0)
-    //         .map(z => {
-    //           val (pbegin, pend) = z.head._2._1
-    //           val (begin, end) = z.last._2._1
-    //           Map("id" -> cdoc.name,
-    //     	  "uid" -> cid.id,
-    //     	  "title" -> cdoc.metadata.getOrElse("title", ""),
-    // 		  "date" -> cdoc.metadata.getOrElse("date", ""),
-    // 		  // "url" -> CorpusFun.passageURL(cdoc, begin, end),
-    // 		  "start" -> begin,
-    // 		  "end" -> end,
-    // 		  "text" -> cdoc.text.substring(cdoc.termCharBegin(begin),
-    // 						cdoc.termCharEnd(end)),
-    //     	  "pid" -> pdoc.name,
-    //     	  "puid" -> pid.id,
-    //     	  "pdate" -> pdoc.metadata.getOrElse("date", ""),
-    //     	  // "purl" -> CorpusFun.passageURL(pdoc, pbegin, pend),
-    //     	  "pstart" -> pbegin,
-    //     	  "pend" -> pend,
-    //     	  "ptext" -> pdoc.text.substring(pdoc.termCharBegin(pbegin),
-    // 						 pdoc.termCharEnd(pend)))
-    //         })
-    //       })
-    //   })
+    val pass = corpus
+      .map(r => (r, hapaxIndex(n, r.getSeq[String](r.fieldIndex("terms")))))
+      .sliding(3)
+      .flatMap(x => {
+        val (cdoc, cidx) = x.last
+        val m = cidx.toMap
+        val uidOff = cdoc.fieldIndex("uid")
+        val termsOff = cdoc.fieldIndex("terms")
+        val cid = cdoc.getLong(uidOff)
+        x.filter(_._1.getLong(uidOff) != cid)
+          .flatMap(y => {
+            val (pdoc, pidx) = y
+            val pid = pdoc.getLong(uidOff)
+            val inc = PassFun.increasingMatches(pidx
+              .flatMap(z => if (m.contains(z._1)) Some((z._2, m(z._1), 1)) else None))
+            PassFun.gappedMatches(n, gap2, inc)
+              .map(z => PassFun.alignEdges(matchMatrix, n, minAlg, 0,
+        	PassFun.edgeText(gap, n, IdSeries(pid, 0), pdoc.getSeq[String](termsOff).toArray, z._1),
+              	PassFun.edgeText(gap, n, IdSeries(cid, 0), cdoc.getSeq[String](termsOff).toArray, z._2)))
+              .filter(_.size > 0)
+              .map(z => {
+                val (pbegin, pend) = z.head._2._1
+                val (begin, end) = z.last._2._1
 
-    // pass
-    //   .map(x => {
-    //     val mapper  = new ObjectMapper()
-    //     mapper.registerModule(DefaultScalaModule)
-    //     mapper.writeValueAsString(x)
-    //   })
-    // .saveAsTextFile(args(1) + ".align")
+                PassAlign(cid, "", "", begin, end,
+                  cdoc.getString(cdoc.fieldIndex("text")).substring(cdoc.getSeq[Int](cdoc.fieldIndex("termCharBegin"))(begin), cdoc.getSeq[Int](cdoc.fieldIndex("termCharEnd"))(end)),
+                  "", "", pbegin, pend,
+                  pdoc.getString(pdoc.fieldIndex("text")).substring(pdoc.getSeq[Int](pdoc.fieldIndex("termCharBegin"))(pbegin), pdoc.getSeq[Int](pdoc.fieldIndex("termCharEnd"))(pend)))
+              })
+          })
+      }).toDF
 
+    pass.write.json(args(1) + ".align")
+  
     // pass
     //   .map(x => (x("id").toString, ((x("start").asInstanceOf[Int], x("end").asInstanceOf[Int]), 0L)))
     //   .groupByKey
