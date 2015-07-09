@@ -34,8 +34,10 @@ case class SpanMatch(uid: Long, begin: Int, end: Int, mid: Long)
 case class Reprint(cluster: Long, size: Int, id: String, uid: Long, series: String,
   title: String, date: String, url: String, begin: Int, end: Int, text: String)
 
-case class PassAlign(uid: Long, id: String, date: String, begin: Int, end: Int, text: String,
-  pid: String, pdate: String, pbegin: Int, pend: Int, ptext: String)
+case class PassAlign(id: String, begin: Int, end: Int, cbegin: Int, cend: Int)
+
+case class BoilerPass(id: String, series: String,
+  passageBegin: Array[Int], passageEnd: Array[Int], alignments: Array[PassAlign])
 
 object CorpusFun {
   // def passageURL(doc: TokDoc, begin: Int, end: Int): String = {
@@ -249,7 +251,7 @@ object BoilerApp {
   def main(args: Array[String]) = {
     val conf = new SparkConf().setAppName("Passim Application")
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-      .registerKryoClasses(Array(classOf[imgCoord], classOf[IdSeries]))
+      .registerKryoClasses(Array(classOf[imgCoord], classOf[PassAlign], classOf[BoilerPass]))
     val sc = new SparkContext(conf)
     val sqlContext = new org.apache.spark.sql.SQLContext(sc)
     import sqlContext.implicits._
@@ -277,47 +279,37 @@ object BoilerApp {
         val (cdoc, cidx) = x.last
         val m = cidx.toMap
         val uidOff = cdoc.fieldIndex("uid")
+        val idOff = cdoc.fieldIndex("id")
         val termsOff = cdoc.fieldIndex("terms")
         val cid = cdoc.getLong(uidOff)
-        x.dropRight(1)
-          .flatMap(y => {
-            val (pdoc, pidx) = y
-            val pid = pdoc.getLong(uidOff)
-            val inc = PassFun.increasingMatches(pidx
-              .flatMap(z => if (m.contains(z._1)) Some((z._2, m(z._1), 1)) else None))
-            PassFun.gappedMatches(n, gap2, inc)
-              .map(z => PassFun.alignEdges(matchMatrix, n, minAlg, 0,
-        	PassFun.edgeText(gap, n, IdSeries(pid, 0), pdoc.getSeq[String](termsOff).toArray, z._1),
-              	PassFun.edgeText(gap, n, IdSeries(cid, 0), cdoc.getSeq[String](termsOff).toArray, z._2)))
-              .filter(_.size > 0)
-              .map(z => {
-                val (pbegin, pend) = z.head._2._1
-                val (begin, end) = z.last._2._1
+        val alg =
+          x.dropRight(1)
+            .flatMap(y => {
+              val (pdoc, pidx) = y
+              val pid = pdoc.getLong(uidOff)
+              val inc = PassFun.increasingMatches(pidx
+                .flatMap(z => if (m.contains(z._1)) Some((z._2, m(z._1), 1)) else None))
+              PassFun.gappedMatches(n, gap2, inc)
+                .map(z => PassFun.alignEdges(matchMatrix, n, minAlg, 0,
+        	  PassFun.edgeText(gap, n, IdSeries(pid, 0), pdoc.getSeq[String](termsOff).toArray, z._1),
+              	  PassFun.edgeText(gap, n, IdSeries(cid, 0), cdoc.getSeq[String](termsOff).toArray, z._2)))
+                .filter(_.size > 0)
+                .map(z => PassAlign(pdoc.getString(idOff),
+                  z.head._2._1._1, z.head._2._1._2,
+                  z.last._2._1._1, z.last._2._1._2))
+            })
 
-                PassAlign(cid, "", "", begin, end,
-                  cdoc.getString(cdoc.fieldIndex("text")).substring(cdoc.getSeq[Int](cdoc.fieldIndex("termCharBegin"))(begin), cdoc.getSeq[Int](cdoc.fieldIndex("termCharEnd"))(end)),
-                  "", "", pbegin, pend,
-                  pdoc.getString(pdoc.fieldIndex("text")).substring(pdoc.getSeq[Int](pdoc.fieldIndex("termCharBegin"))(pbegin), pdoc.getSeq[Int](pdoc.fieldIndex("termCharEnd"))(pend)))
-              })
-          })
-      }).toDF
-
-    pass.write.json(args(1) + ".align")
-  
-    // pass
-    //   .map(x => (x("id").toString, ((x("start").asInstanceOf[Int], x("end").asInstanceOf[Int]), 0L)))
-    //   .groupByKey
-    //   .mapValues(s => {
-    //     val res = PassFun.mergeSpans(0, s).map(_._1).toArray
-    //     res.sorted
-    //   })
-    //   .map(x => {
-    //     val mapper  = new ObjectMapper()
-    //     mapper.registerModule(DefaultScalaModule)
-    //     mapper.writeValueAsString(Map("id" -> x._1,
-    //     			      "spans" -> x._2))
-    //   })
-    //   .saveAsTextFile(args(1))
+        if ( alg.size > 0 ) {
+          val merged = PassFun.mergeSpans(0, alg.map(z => ((z.cbegin, z.cend), 0L))).map(_._1)
+          Some(BoilerPass(cdoc.getString(idOff), cdoc.getString(cdoc.fieldIndex(group)),
+            merged.map(_._1).toArray, merged.map(_._2).toArray,
+            alg))
+        } else {
+          None
+        }
+      })
+      .toDF()
+    pass.write.json(args(1))
   }
 }
 
