@@ -279,7 +279,7 @@ object BoilerApp {
         val uidOff = cdoc.fieldIndex("uid")
         val termsOff = cdoc.fieldIndex("terms")
         val cid = cdoc.getLong(uidOff)
-        x.filter(_._1.getLong(uidOff) != cid)
+        x.dropRight(1)
           .flatMap(y => {
             val (pdoc, pidx) = y
             val pid = pdoc.getLong(uidOff)
