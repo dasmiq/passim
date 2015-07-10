@@ -437,13 +437,13 @@ object PassimApp {
       sqlContext.read.format(inFormat).load(inFile)
     }
 
+    val hashId = udf {(id: String) => hashString(id)}
     val corpus = testTok(testGroup(group, raw))
-      .withColumn("uid", monotonicallyIncreasingId())
+      .withColumn("uid", hashId('id))
 
     val gap2 = gap * gap
     val upper = maxSeries * (maxSeries - 1) / 2
 
-    val hashId = udf {(id: String) => hashString(id)}
     val termCorpus = corpus
       .select("uid", group, "terms")
       .withColumn("gid", hashId(corpus(group)))
