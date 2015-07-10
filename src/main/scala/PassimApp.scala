@@ -37,7 +37,8 @@ case class Reprint(cluster: Long, size: Int, id: String, uid: Long, series: Stri
 case class PassAlign(id: String, begin: Int, end: Int, cbegin: Int, cend: Int)
 
 case class BoilerPass(id: String, series: String,
-  passageBegin: Array[Int], passageEnd: Array[Int], alignments: Array[PassAlign])
+  passage: Array[String], passageBegin: Array[Int], passageEnd: Array[Int],
+  alignments: Array[PassAlign])
 
 object CorpusFun {
   // def passageURL(doc: TokDoc, begin: Int, end: Int): String = {
@@ -259,8 +260,8 @@ object BoilerApp {
     val group = "series"
 
     val corpus = PassimApp.testTok(PassimApp.testGroup(group, sqlContext.read.load(args(0))))
-      .withColumn("uid", monotonicallyIncreasingId())
-      .sort("series", "date", "id")
+      .select("id", group, "date", "terms")
+      .sort(group, "date", "id")
     //.partitionBy("series").orderBy("date").rowsBetween(-2, 0)
 
     val n = 3
@@ -273,26 +274,24 @@ object BoilerApp {
     val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
 
     val pass = corpus
-      .map(r => (r, hapaxIndex(n, r.getSeq[String](r.fieldIndex("terms")))))
+      .map(r => (r, hapaxIndex(n, r.getSeq[String](3))))
       .sliding(3)
       .flatMap(x => {
         val (cdoc, cidx) = x.last
         val m = cidx.toMap
-        val uidOff = cdoc.fieldIndex("uid")
         val idOff = cdoc.fieldIndex("id")
         val termsOff = cdoc.fieldIndex("terms")
-        val cid = cdoc.getLong(uidOff)
+        val cterms = cdoc.getSeq[String](termsOff).toArray
         val alg =
           x.dropRight(1)
             .flatMap(y => {
               val (pdoc, pidx) = y
-              val pid = pdoc.getLong(uidOff)
               val inc = PassFun.increasingMatches(pidx
                 .flatMap(z => if (m.contains(z._1)) Some((z._2, m(z._1), 1)) else None))
               PassFun.gappedMatches(n, gap2, inc)
                 .map(z => PassFun.alignEdges(matchMatrix, n, minAlg, 0,
-        	  PassFun.edgeText(gap, n, IdSeries(pid, 0), pdoc.getSeq[String](termsOff).toArray, z._1),
-              	  PassFun.edgeText(gap, n, IdSeries(cid, 0), cdoc.getSeq[String](termsOff).toArray, z._2)))
+        	  PassFun.edgeText(gap, n, IdSeries(0, 0), pdoc.getSeq[String](termsOff).toArray, z._1),
+              	  PassFun.edgeText(gap, n, IdSeries(1, 0), cterms, z._2)))
                 .filter(_.size > 0)
                 .map(z => PassAlign(pdoc.getString(idOff),
                   z.head._2._1._1, z.head._2._1._2,
@@ -302,6 +301,7 @@ object BoilerApp {
         if ( alg.size > 0 ) {
           val merged = PassFun.mergeSpans(0, alg.map(z => ((z.cbegin, z.cend), 0L))).map(_._1)
           Some(BoilerPass(cdoc.getString(idOff), cdoc.getString(cdoc.fieldIndex(group)),
+            merged.map { case (begin, end) => cterms.slice(begin, end).mkString(" ") }.toArray,
             merged.map(_._1).toArray, merged.map(_._2).toArray,
             alg))
         } else {
