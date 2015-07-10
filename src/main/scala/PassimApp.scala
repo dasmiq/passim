@@ -502,6 +502,8 @@ object PassimApp {
       .groupByKey
       .flatMapValues(PassFun.mergeSpans(relOver, _))
       .zipWithUniqueId
+    // This was getting recomputed on different partitions, thus reassigning IDs.
+      .persist(StorageLevel.MEMORY_AND_DISK_SER)
     // pass.saveAsTextFile(args(1) + ".pass")
 
     val passNodes = pass.map(v => {
