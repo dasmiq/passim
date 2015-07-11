@@ -250,24 +250,22 @@ object BoilerApp {
   }
   
   def main(args: Array[String]) = {
-    val conf = new SparkConf().setAppName("Passim Application")
+    val conf = new SparkConf().setAppName("Boilerplate Application")
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
       .registerKryoClasses(Array(classOf[imgCoord], classOf[PassAlign], classOf[BoilerPass]))
     val sc = new SparkContext(conf)
     val sqlContext = new org.apache.spark.sql.SQLContext(sc)
     import sqlContext.implicits._
 
+    val n = 3
+    val history = 3
+    val minAlg = 20
+    val gap = 50
     val group = "series"
 
     val corpus = PassimApp.testTok(PassimApp.testGroup(group, sqlContext.read.load(args(0))))
       .select("id", group, "date", "terms")
       .sort(group, "date", "id")
-    //.partitionBy("series").orderBy("date").rowsBetween(-2, 0)
-
-    val n = 3
-    val minAlg = 20
-    val relOver = 0.8
-    val gap = 50
 
     val gap2 = gap * gap
 
@@ -275,7 +273,7 @@ object BoilerApp {
 
     val pass = corpus
       .map(r => (r, hapaxIndex(n, r.getSeq[String](3))))
-      .sliding(3)
+      .sliding(history)
       .flatMap(x => {
         val (cdoc, cidx) = x.last
         val m = cidx.toMap
