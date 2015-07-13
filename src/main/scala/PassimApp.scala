@@ -10,17 +10,18 @@ import org.apache.spark.sql.Row
 import org.apache.spark.sql.functions._
 import org.apache.spark.storage.StorageLevel
 
-import com.fasterxml.jackson.module.scala.DefaultScalaModule
-import com.fasterxml.jackson.module.scala.experimental.ScalaObjectMapper
-import com.fasterxml.jackson.databind.ObjectMapper
-import com.fasterxml.jackson.databind.DeserializationFeature
-
 import collection.JavaConversions._
 import scala.collection.mutable.ListBuffer
 import scala.collection.mutable.ArrayBuffer
 
 import java.security.MessageDigest
 import java.nio.ByteBuffer
+
+case class Config(n: Int = 5, maxSeries: Int = 100, minRep: Int = 5, minAlg: Int = 20,
+  gap: Int = 100, relOver: Double = 0.5, maxRep: Int = 10,
+  group: String = "series",
+  inputFormat: String = "json", outputFormat: String = "json",
+  inputPaths: String = "", outputPath: String = "")
 
 case class imgCoord(val x: Int, val y: Int, val w: Int, val h: Int) {
   def x2 = x + w
@@ -407,45 +408,70 @@ object PassimApp {
     val sqlContext = new org.apache.spark.sql.SQLContext(sc)
     import sqlContext.implicits._
 
-    val maxSeries: Int = 100
-    val n: Int = 5
-    val minRep: Int = 5
-    val minAlg: Int = 20
-    val gap: Int = 100
-    val relOver = 0.5
-    val maxRep: Int = 4
-    val group = "series"
+    val parser = new scopt.OptionParser[Config]("passim") {
+      opt[Int]('n', "n") action { (x, c) => c.copy(n = x) } validate { x =>
+        if ( x > 0 ) success else failure("n-gram order must be > 0")
+      } text("index n-gram features; default=5")
+      opt[Int]('u', "max-series") action { (x, c) =>
+        c.copy(maxSeries = x) } text("Upper limit on effective series size; default=100")
+      opt[Int]('m', "min-match") action { (x, c) =>
+        c.copy(minRep = x) } text("Minimum number of n-gram matches between documents; default=5")
+      opt[Int]('a', "min-align") action { (x, c) =>
+        c.copy(minAlg = x) } text("Minimum length of alignment; default=20")
+      opt[Int]('g', "gap") action { (x, c) =>
+        c.copy(gap = x) } text("Minimum size of the gap that separates passages; default=100")
+      opt[Double]('o', "relative-overlap") action { (x, c) =>
+        c.copy(relOver = x) } text("Minimum relative overlap to merge passages; default=0.5")
+      opt[Int]('r', "max-repeat") action { (x, c) =>
+        c.copy(maxRep = x) } text("Maximum repeat of one series in a cluster; default=10")
+      opt[String]('s', "series-group") action { (x, c) =>
+        c.copy(group = x) } text("Field name to group documents into series; default=series")
+      opt[String]("input-format") action { (x, c) =>
+        c.copy(inputFormat = x) } text("Input format; default=json")
+      opt[String]("output-format") action { (x, c) =>
+        c.copy(outputFormat = x) } text("Output format; default=json")
+      help("help") text("prints usage text")
+      arg[String]("<path>,<path>,...") action { (x, c) =>
+        c.copy(inputPaths = x, inputFormat = if ( x.endsWith(".parquet") ) "parquet" else "json")
+      } text("Comma-separated input paths")
+      arg[String]("<path>") action { (x, c) =>
+        c.copy(outputPath = x) } text("Output path")
+    }
 
-    var inFormat = "json"
-    var outFormat = "json"
+    val config = parser.parse(args, Config()) match {
+      case Some(c) =>
+        c
+      case None =>
+        exit(-1)
+        Config()
+    }
+
+    println(config)
 
     // Input file policy:
     // We should assume JSON for most users, allow .parquet by convention
-    val inFile: String = args(0)
 
-    if ( inFile.endsWith(".parquet") ) { inFormat = "parquet" }
-
-    val raw = if ( inFormat == "json" ) {
+    val raw = if ( config.inputFormat == "json" ) {
       // At least on spark 1.4.0, if we don't save an intermedite
       // parquet file, json input thrashes.
-      val tmpFile = args(1) + ".parquet"
-      sqlContext.read.format(inFormat).load(inFile).write.parquet(tmpFile)
+      val tmpFile = config.outputPath + ".parquet"
+      sqlContext.read.format(config.inputFormat).load(config.inputPaths).write.parquet(tmpFile)
       sqlContext.read.parquet(tmpFile)
     } else {
-      sqlContext.read.format(inFormat).load(inFile)
+      sqlContext.read.format(config.inputFormat).load(config.inputPaths)
     }
 
     val hashId = udf {(id: String) => hashString(id)}
-    val corpus = testTok(testGroup(group, raw))
+    val corpus = testTok(testGroup(config.group, raw))
       .withColumn("uid", hashId('id))
 
-    val gap2 = gap * gap
-    val upper = maxSeries * (maxSeries - 1) / 2
+    val gap2 = config.gap * config.gap
+    val upper = config.maxSeries * (config.maxSeries - 1) / 2
 
     val termCorpus = corpus
-      .select("uid", group, "terms")
-      .withColumn("gid", hashId(corpus(group)))
-      .drop(group)
+      .select("uid", config.group, "terms")
+      .withColumn("gid", hashId(corpus(config.group)))
+      .drop(config.group)
 
     // // We could save space by hasing the n-grams, then checking for
     // // equality when we actually do the alignment, but we need to keep
@@ -455,7 +481,7 @@ object PassimApp {
     val pairs = termCorpus
       .flatMap({
         case Row(uid: Long, terms: Seq[String], gid: Long) => {
-          terms.zipWithIndex.sliding(n)
+          terms.zipWithIndex.sliding(config.n)
             .map(x => (x.map(_._1).mkString("~"),
               (IdSeries(uid, gid), x(0)._2)))
         }
@@ -466,10 +492,10 @@ object PassimApp {
 	  .groupBy(identity).map(_._2.size).toArray) ) <= upper)
       .mapValues(x => x.groupBy(_._1).toArray.map(p => (p._1, p._2.map(_._2).toArray)).toArray)
       .flatMap(x => for ( a <- x._2; b <- x._2; if a._1.id < b._1.id && a._1.series != b._1.series && a._2.size == 1 && b._2.size == 1 ) yield ((a._1.id, b._1.id), (a._2(0), b._2(0), x._2.size)))
-      .groupByKey.filter(_._2.size >= minRep)
+      .groupByKey.filter(_._2.size >= config.minRep)
       .mapValues(PassFun.increasingMatches)
-      .filter(_._2.size >= minRep)
-      .flatMapValues(PassFun.gappedMatches(n, gap2, _))
+      .filter(_._2.size >= config.minRep)
+      .flatMapValues(PassFun.gappedMatches(config.n, gap2, _))
 
     // pairs.saveAsTextFile(args(1) + ".pairs")
 
@@ -487,18 +513,19 @@ object PassimApp {
       .map({
         case Row(uid: Long, begin: Int, end: Int, mid: Long, terms: Seq[String], gid: Long) => {
           (mid,
-            PassFun.edgeText(gap * 2/3, n, IdSeries(uid, gid), terms.toArray, (begin, end)))
+            PassFun.edgeText(config.gap * 2/3, config.n,
+              IdSeries(uid, gid), terms.toArray, (begin, end)))
         }
       })
       .groupByKey
       .flatMap(x => {
         val pass = x._2.toArray
-        PassFun.alignEdges(matchMatrix, n, minAlg, x._1, pass(0), pass(1))
+        PassFun.alignEdges(matchMatrix, config.n, config.minAlg, x._1, pass(0), pass(1))
       })
 
     val pass = pass2
       .groupByKey
-      .flatMapValues(PassFun.mergeSpans(relOver, _))
+      .flatMapValues(PassFun.mergeSpans(config.relOver, _))
       .zipWithUniqueId
     // This was getting recomputed on different partitions, thus reassigning IDs.
       .persist(StorageLevel.MEMORY_AND_DISK_SER)
@@ -528,7 +555,7 @@ object PassimApp {
       .values
       .groupBy(_._2._2)
       .filter(x => {
-        x._2.groupBy(_._1.id).values.groupBy(_.head._1.series).map(_._2.size).max <= maxRep
+        x._2.groupBy(_._1.id).values.groupBy(_.head._1.series).map(_._2.size).max <= config.maxRep
       })
       .flatMap(_._2)
       .map(x => (x._1.id, x._2))
@@ -550,7 +577,7 @@ object PassimApp {
       .map(r => {
         val begin: Int = r.getInt(3)
         val end: Int = r.getInt(4)
-        Reprint(r.getLong(1), r.getInt(2), r.getString(r.fieldIndex("id")), r.getLong(0), r.getString(r.fieldIndex(group)),
+        Reprint(r.getLong(1), r.getInt(2), r.getString(r.fieldIndex("id")), r.getLong(0), r.getString(r.fieldIndex(config.group)),
           (if ( cols.contains("title") ) r.getString(r.fieldIndex("title")) else ""),
           (if ( cols.contains("date") ) r.getString(r.fieldIndex("date")) else ""),
           "", // CorpusFun.passageURL(doc, begin, end),
@@ -561,6 +588,6 @@ object PassimApp {
       })
       .toDF
       .sort('size.desc, 'cluster, 'date, 'id, 'begin)
-      .write.format(outFormat).save(args(1))
+      .write.format(config.outputFormat).save(config.outputPath)
   }
 }
