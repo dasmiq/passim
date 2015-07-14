@@ -478,18 +478,16 @@ object PassimApp {
     //   .digest("a~b~c~d~e".getBytes).take(8)).getLong
     val pairs = termCorpus
       .flatMap({
-        case Row(uid: Long, terms: Seq[String], gid: Long) => {
+        case Row(uid: Long, terms: Seq[String], gid: Long) =>
           terms.zipWithIndex.sliding(config.n)
-            .map(x => (x.map(_._1).mkString("~"),
-              (IdSeries(uid, gid), x(0)._2)))
-        }
+            .map(x => (x.map(_._1).mkString("~"), (uid, gid, x(0)._2)))
       })
       .groupByKey
       .filter(x => x._2.size >= 2 && x._2.size <= upper
-	&& ( CorpusFun.crossCounts(x._2.map(p => p._1.series)
+	&& ( CorpusFun.crossCounts(x._2.map(_._2)
 	  .groupBy(identity).map(_._2.size).toArray) ) <= upper)
-      .mapValues(x => x.groupBy(_._1).toArray.map(p => (p._1, p._2.map(_._2).toArray)).toArray)
-      .flatMap(x => for ( a <- x._2; b <- x._2; if a._1.id < b._1.id && a._1.series != b._1.series && a._2.size == 1 && b._2.size == 1 ) yield ((a._1.id, b._1.id), (a._2(0), b._2(0), x._2.size)))
+      .mapValues(x => x.groupBy(_._1).toArray.map(p => (p._1, p._2.head._2, p._2.map(_._3).toArray)).toArray)
+      .flatMap(x => for ( a <- x._2; b <- x._2; if a._1 < b._1 && a._2 != b._2 && a._3.size == 1 && b._3.size == 1 ) yield ((a._1, b._1), (a._3(0), b._3(0), x._2.size)))
       .groupByKey.filter(_._2.size >= config.minRep)
       .mapValues(PassFun.increasingMatches)
       .filter(_._2.size >= config.minRep)
