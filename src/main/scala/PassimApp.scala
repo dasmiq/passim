@@ -469,9 +469,7 @@ object PassimApp {
     val upper = config.maxSeries * (config.maxSeries - 1) / 2
 
     val termCorpus = corpus
-      .select("uid", config.group, "terms")
-      .withColumn("gid", hashId(corpus(config.group)))
-      .drop(config.group)
+      .select('uid, 'terms, hashId(corpus(config.group)).as("gid"))
 
     // // We could save space by hasing the n-grams, then checking for
     // // equality when we actually do the alignment, but we need to keep
