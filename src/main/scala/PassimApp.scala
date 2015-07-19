@@ -451,15 +451,7 @@ object PassimApp {
     // Input file policy:
     // We should assume JSON for most users, allow .parquet by convention
 
-    val raw = if ( config.inputFormat == "json" ) {
-      // At least on spark 1.4.0, if we don't save an intermedite
-      // parquet file, json input thrashes.
-      val tmpFile = config.outputPath + ".parquet"
-      sqlContext.read.format(config.inputFormat).load(config.inputPaths).write.parquet(tmpFile)
-      sqlContext.read.parquet(tmpFile)
-    } else {
-      sqlContext.read.format(config.inputFormat).load(config.inputPaths)
-    }
+    val raw = sqlContext.read.format(config.inputFormat).load(config.inputPaths)
 
     val hashId = udf {(id: String) => hashString(id)}
     val corpus = testTok(testGroup(config.group, raw))
@@ -470,7 +462,9 @@ object PassimApp {
 
     val termCorpus = corpus
       .select('uid, 'terms, hashId(corpus(config.group)).as("gid"))
-
+    // Performance will be awful unless spark.sql.shuffle.partitions is appropriate
+      .persist(StorageLevel.MEMORY_AND_DISK_SER)
+    
     // // We could save space by hasing the n-grams, then checking for
     // // equality when we actually do the alignment, but we need to keep
     // // all the n-gram matches around, not just the ranges.
