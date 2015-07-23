@@ -432,6 +432,8 @@ object PassimApp {
         c.copy(outputFormat = x) } text("Output format; default=json")
       help("help") text("prints usage text")
       arg[String]("<path>,<path>,...") action { (x, c) =>
+        // Input file policy:
+        // We should assume JSON for most users, allow .parquet by convention
         c.copy(inputPaths = x, inputFormat = if ( x.endsWith(".parquet") ) "parquet" else "json")
       } text("Comma-separated input paths")
       arg[String]("<path>") action { (x, c) =>
@@ -448,8 +450,8 @@ object PassimApp {
 
     println(config)
 
-    // Input file policy:
-    // We should assume JSON for most users, allow .parquet by convention
+    // Should warn about existing output directory before doing lots
+    // of work.
 
     val raw = sqlContext.read.format(config.inputFormat).load(config.inputPaths)
 
