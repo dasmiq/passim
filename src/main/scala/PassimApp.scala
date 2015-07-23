@@ -112,7 +112,7 @@ object PassFun {
     var res = new ListBuffer[((Int,Int), (Int,Int))]
     for ( j <- 0 until N ) {
       val j1 = j + 1
-      if ( j == (N-1) || ((matches(j1)._1 - matches(j)._1) * (matches(j1)._2 - matches(j)._2)) > gapSize) {
+      if ( j == (N-1) || (matches(j1)._1 - matches(j)._1) > gapSize || (matches(j1)._2 - matches(j)._2) > gapSize) {
 	// This is where we'd score the spans
 	if ( j > i && (matches(j)._1 - matches(i)._1 + n - 1) >= 10
 	     && (matches(j)._2 - matches(i)._2 + n - 1) >= 10) {
@@ -287,7 +287,7 @@ object BoilerApp {
               val (pdoc, pidx) = y
               val inc = PassFun.increasingMatches(pidx
                 .flatMap(z => if (m.contains(z._1)) Some((z._2, m(z._1), 1)) else None))
-              PassFun.gappedMatches(n, gap2, inc)
+              PassFun.gappedMatches(n, gap, inc)
                 .map(z => PassFun.alignEdges(matchMatrix, n, minAlg, 0,
         	  PassFun.edgeText(gap, n, IdSeries(0, 0), pdoc.getSeq[String](termsOff).toArray, z._1),
               	  PassFun.edgeText(gap, n, IdSeries(1, 0), cterms, z._2)))
@@ -487,7 +487,7 @@ object PassimApp {
       .groupByKey.filter(_._2.size >= config.minRep)
       .mapValues(PassFun.increasingMatches)
       .filter(_._2.size >= config.minRep)
-      .flatMapValues(PassFun.gappedMatches(config.n, gap2, _))
+      .flatMapValues(PassFun.gappedMatches(config.n, config.gap, _))
 
     // pairs.saveAsTextFile(args(1) + ".pairs")
 
