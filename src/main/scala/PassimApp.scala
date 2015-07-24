@@ -450,8 +450,13 @@ object PassimApp {
 
     println(config)
 
-    // Should warn about existing output directory before doing lots
-    // of work.
+    // Warn about existing output directory before doing lots of work.
+    // TODO: Check whether spark is set to clobber.
+    val ofile = new java.io.File(config.outputPath)
+    if ( ofile.exists() ) {
+      println(config.outputPath + " already exists")
+      exit(-1)
+    }
 
     val raw = sqlContext.read.format(config.inputFormat).load(config.inputPaths)
 
