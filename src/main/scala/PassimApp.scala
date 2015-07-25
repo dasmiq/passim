@@ -32,9 +32,6 @@ case class IdSeries(id: Long, series: Long)
 
 case class SpanMatch(uid: Long, begin: Int, end: Int, mid: Long)
 
-case class Reprint(cluster: Long, size: Int, id: String, uid: Long, series: String,
-  title: String, date: String, url: String, begin: Int, end: Int, text: String)
-
 case class PassAlign(id: String, begin: Int, end: Int, cbegin: Int, cend: Int)
 
 case class BoilerPass(id: String, series: String,
@@ -402,7 +399,7 @@ object PassimApp {
   def main(args: Array[String]) {
     val conf = new SparkConf().setAppName("Passim Application")
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-      .registerKryoClasses(Array(classOf[imgCoord], classOf[Reprint],
+      .registerKryoClasses(Array(classOf[imgCoord],
 	classOf[TokText], classOf[SpanMatch], classOf[IdSeries]))
     val sc = new SparkContext(conf)
     val sqlContext = new org.apache.spark.sql.SQLContext(sc)
@@ -560,6 +557,10 @@ object PassimApp {
     // clusters.saveAsTextFile(args(1) + ".clusters")
 
     val cols = corpus.columns.toSet
+    val dateSort = if ( cols.contains("date") ) 'date else 'id
+    val getPassage = udf {(begin: Int, end: Int,
+      text: String, termCharBegin: Seq[Int], termCharEnd: Seq[Int]) =>
+      text.substring(termCharBegin(begin), termCharEnd(end))}
     val clusterInfo = clusters.groupByKey
       .flatMap(x => x._2.groupBy(_._2).values.flatMap(p => {
         PassFun.mergeSpans(0, p).map(z => (x._1, z._2(0), z._1._1, z._1._2))
@@ -571,20 +572,11 @@ object PassimApp {
       })
       .toDF("uid", "cluster", "size", "begin", "end")
       .join(corpus, "uid")
-      .map(r => {
-        val begin: Int = r.getInt(3)
-        val end: Int = r.getInt(4)
-        Reprint(r.getLong(1), r.getInt(2), r.getString(r.fieldIndex("id")), r.getLong(0), r.getString(r.fieldIndex(config.group)),
-          (if ( cols.contains("title") ) r.getString(r.fieldIndex("title")) else ""),
-          (if ( cols.contains("date") ) r.getString(r.fieldIndex("date")) else ""),
-          "", // CorpusFun.passageURL(doc, begin, end),
-          begin, end,
-          r.getString(r.fieldIndex("text")).substring(r.getSeq[Int](r.fieldIndex("termCharBegin"))(begin),
-            r.getSeq[Int](r.fieldIndex("termCharEnd"))(end))
-        )
-      })
-      .toDF
-      .sort('size.desc, 'cluster, 'date, 'id, 'begin)
+      .withColumn("_text", getPassage('begin, 'end, 'text, 'termCharBegin, 'termCharEnd))
+      .drop("text").drop("terms").drop("termCharBegin").drop("termCharEnd")
+      .drop("pages").drop("imgLocs")
+      .withColumnRenamed("_text", "text")
+      .sort('size.desc, 'cluster, dateSort, 'id, 'begin)
       .write.format(config.outputFormat).save(config.outputPath)
   }
 }
