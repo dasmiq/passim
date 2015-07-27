@@ -121,9 +121,9 @@ Pass parameters to the underlying Spark processes using the `SPARK_SUBMIT_ARGS` 
 
 	$ SPARK_SUBMIT_ARGS='--master local[10] --driver-memory 200G --executor-memory 200G' passim input.json output
 
-See the (Spark
-documentation)[https://spark.apache.org/docs/latest/index.html] for
-further configuration options.
+See the
+[Spark documentation](https://spark.apache.org/docs/latest/index.html)
+for further configuration options.
 
 If `jq` is installed, you can convert JSON output to a tab-separated
 table with `tabcluster.sh` and to CSV with `csvcluster.sh`.
