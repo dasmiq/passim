@@ -310,7 +310,7 @@ object BoilerApp {
 }
 
 case class TokText(terms: Array[String], termCharBegin: Array[Int], termCharEnd: Array[Int],
-  pages: Array[String], imgLocs: Array[imgCoord])
+  pages: Array[String], imgRegions: Array[imgCoord])
 
 object TokApp {
   def tokenize(text: String): TokText = {
@@ -320,7 +320,7 @@ object TokApp {
     tok.tokenize(d)
 
     var pages = new ArrayBuffer[String]
-    var locs = new ArrayBuffer[imgCoord]
+    var regions = new ArrayBuffer[imgCoord]
     var curPage = ""
     var curCoord = imgCoord(0, 0, 0, 0)
     var idx = 0
@@ -329,7 +329,7 @@ object TokApp {
       val off = t.begin
       while ( idx < off ) {
         pages += curPage
-	locs += curCoord
+	regions += curCoord
 	idx += 1
       }
       if ( t.name == "pb" )
@@ -344,7 +344,7 @@ object TokApp {
     if ( idx > 0 ) {
       while ( idx < d.terms.size ) {
         pages += curPage
-	locs += curCoord
+	regions += curCoord
 	idx += 1
       }
     }
@@ -352,7 +352,7 @@ object TokApp {
     TokText(d.terms.toSeq.toArray,
       d.termCharBegin.map(_.toInt).toArray,
       d.termCharEnd.map(_.toInt).toArray,
-      pages.toArray, locs.toArray)
+      pages.toArray, regions.toArray)
   }
   def tokenizeText(raw: DataFrame): DataFrame = {
     raw.filter(!raw("id").isNull && !raw("text").isNull)
@@ -574,7 +574,7 @@ object PassimApp {
       .join(corpus, "uid")
       .withColumn("_text", getPassage('begin, 'end, 'text, 'termCharBegin, 'termCharEnd))
       .drop("text").drop("terms").drop("termCharBegin").drop("termCharEnd")
-      .drop("pages").drop("imgLocs")
+      .drop("pages").drop("imgRegions")
       .withColumnRenamed("_text", "text")
       .sort('size.desc, 'cluster, dateSort, 'id, 'begin)
       .write.format(config.outputFormat).save(config.outputPath)
