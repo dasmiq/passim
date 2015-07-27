@@ -117,6 +117,14 @@ Parameter | Default value | Description
 `--min-match` | 5 | Minimum number of matching n-grams between two documents.
 `--relative-overlap` | 0.5 | Proportion that two different aligned passages from the same document must overlap to be clustered together, as measured on the longer passage.
 
+Pass parameters to the underlying Spark processes using the `SPARK_SUBMIT_ARGS` environment variable.  For example, to run passim on a local machine with 10 cores and 200GB of memory, do:
+
+	$ SPARK_SUBMIT_ARGS='--master local[10] --driver-memory 200G --executor-memory 200G' passim input.json output
+
+See the (Spark
+documentation)[https://spark.apache.org/docs/latest/index.html] for
+further configuration options.
+
 If `jq` is installed, you can convert JSON output to a tab-separated
 table with `tabcluster.sh` and to CSV with `csvcluster.sh`.
 
