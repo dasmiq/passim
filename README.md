@@ -100,12 +100,13 @@ The output contains one JSON record for each reused passage.  Each
 record echoes the fields in the JSON input and adds the following
 extra fields to describe the clustered passages:
 
+Field | Description
+----- | ------------
 `cluster` | unique identifier for each cluster
 `size` | number of passages in each cluster
 `begin` | offset in the document of the token where the reused passage begins
 `end` | offset in the document of the token where the reused passage ends
-`uid` | unique internal ID for each document. This makes computation
-faster and is present for debugging.
+`uid` | unique internal ID for each document, used for debugging
 
 Some useful parameters are:
 
