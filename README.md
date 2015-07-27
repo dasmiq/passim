@@ -80,18 +80,32 @@ split it into blocks before decompressing.
 
 ### Running passim
 
-Run
+The simplest invocation contains list of inputs and a directory name
+for the output.
 
 	$ passim input.json output
 
-Output is a directory of JSON record files.
-
-Multiple input files
+Following Spark conventions, input may be a single file, a single
+directory full of files, or a `*` wildcard (glob) expression.
+Multiple input paths should be separated by commas.  Files may also be
+compressed.
 
 	$ passim input.json,directory-of-json-files,some*.json.bz2 output
 
-The JSON output is spread across several files named `part-*` in the
-output subdirectory.
+Output is to a directory containing JSON `part-*` files rather than a
+single file.  This allows multiple workers to efficiently write it
+(and read it back in) in parallel.
+
+The output contains one JSON record for each reused passage.  Each
+record echoes the fields in the JSON input and adds the following
+extra fields to describe the clustered passages:
+
+`cluster` | unique identifier for each cluster
+`size` | number of passages in each cluster
+`begin` | offset in the document of the token where the reused passage begins
+`end` | offset in the document of the token where the reused passage ends
+`uid` | unique internal ID for each document. This makes computation
+faster and is present for debugging.
 
 Some useful parameters are:
 
