@@ -39,26 +39,16 @@ case class BoilerPass(id: String, series: String,
   alignments: Array[PassAlign])
 
 object CorpusFun {
-  // def passageURL(doc: TokDoc, begin: Int, end: Int): String = {
-  //   val m = doc.metadata
-  //   var res = new StringBuilder
-  //   if ( m.contains("url") ) {
-  //     res ++= m("url")
-  //     if ( m.contains("pageurl") && doc.termPage.size > end ) {
-  //       val (page, locs) = doc.termPage.slice(begin, end).groupBy(_.page).head
-  //       res ++= m("pageurl").format(page)
-  //       if ( m.contains("imgurl") ) {
-  //         val x1 = locs.map(_.loc.x).min / 4
-  //         val y1 = locs.map(_.loc.y).min / 4
-  //         val x2 = locs.map(_.loc.x2).max / 4
-  //         val y2 = locs.map(_.loc.y2).max / 4
-  //         if ( x2 > 0 && y2 > 0 )
-  //           res ++= m("imgurl").format(600, 600, x1, y1, x2, y2)
-  //       }
-  //     }
-  //   }
-  //   res.toString
-  // }
+  def boundingBox(regions: Array[imgCoord]): imgCoord = {
+    // The right thing to do here is to give imgCoord a merge
+    // operation usable with reduce so that we can make only one pass
+    // through regions.
+    val x1 = regions.map(_.x).min
+    val y1 = regions.map(_.y).min
+    val x2 = regions.map(_.x2).max
+    val y2 = regions.map(_.y2).max
+    imgCoord(x1, y1, x2 - x1, y2 - y1)
+  }
   def crossCounts(sizes: Array[Int]): Int = {
     var res: Int = 0
     for ( i <- 0 until sizes.size ) {
@@ -310,7 +300,7 @@ object BoilerApp {
 }
 
 case class TokText(terms: Array[String], termCharBegin: Array[Int], termCharEnd: Array[Int],
-  pages: Array[String], imgRegions: Array[imgCoord])
+  termPages: Array[String], termRegions: Array[imgCoord], termLocs: Array[String])
 
 object TokApp {
   def tokenize(text: String): TokText = {
@@ -321,8 +311,10 @@ object TokApp {
 
     var pages = new ArrayBuffer[String]
     var regions = new ArrayBuffer[imgCoord]
+    var locs = new ArrayBuffer[String]
     var curPage = ""
     var curCoord = imgCoord(0, 0, 0, 0)
+    var curLoc = ""
     var idx = 0
     val p = """^(\d+),(\d+),(\d+),(\d+)$""".r
     for ( t <- d.tags ) {
@@ -330,10 +322,13 @@ object TokApp {
       while ( idx < off ) {
         pages += curPage
 	regions += curCoord
+        locs += curLoc
 	idx += 1
       }
       if ( t.name == "pb" )
 	curPage = t.attributes.getOrElse("n", "")
+      else if ( t.name == "loc" )
+        curLoc = t.attributes.getOrElse("n", "")
       else if ( t.name == "w" ) {
     	  t.attributes.getOrElse("coords", "") match {
             case p(x, y, w, h) => curCoord = imgCoord(x.toInt, y.toInt, w.toInt, h.toInt)
@@ -345,6 +340,7 @@ object TokApp {
       while ( idx < d.terms.size ) {
         pages += curPage
 	regions += curCoord
+        locs += curLoc
 	idx += 1
       }
     }
@@ -352,7 +348,9 @@ object TokApp {
     TokText(d.terms.toSeq.toArray,
       d.termCharBegin.map(_.toInt).toArray,
       d.termCharEnd.map(_.toInt).toArray,
-      pages.toArray, regions.toArray)
+      (if ( curPage == "" ) Array[String]() else pages.toArray),
+      (if ( curCoord == imgCoord(0, 0, 0, 0) ) Array[imgCoord]() else regions.toArray),
+      (if ( curLoc == "" ) Array[String]() else locs.toArray))
   }
   def tokenizeText(raw: DataFrame): DataFrame = {
     raw.filter(!raw("id").isNull && !raw("text").isNull)
@@ -561,6 +559,27 @@ object PassimApp {
     val getPassage = udf {(begin: Int, end: Int,
       text: String, termCharBegin: Seq[Int], termCharEnd: Seq[Int]) =>
       text.substring(termCharBegin(begin), termCharEnd(end))}
+    val getLocs = udf {(begin: Int, end: Int, termLocs: Seq[String]) =>
+      if ( termLocs.size >= end )
+        termLocs.toArray.slice(begin, end).distinct.sorted // stable
+      else
+        Array[String]()
+    }
+    val getRegions = udf {(begin: Int, end: Int,
+      termPages: Seq[String], termRegions: Seq[Row]) =>
+      if ( termRegions.size < end )
+        Array[imgCoord]()
+      else {
+        val regions = termRegions.toArray.slice(begin, end)
+          .map({ case Row(x: Int, y: Int, w: Int, h: Int) => imgCoord(x, y, w, h) })
+          .toArray
+        if ( termPages.size < end )
+          Array(CorpusFun.boundingBox(regions))
+        else
+          termPages.slice(begin, end).zip(regions).groupBy(_._1).toIndexedSeq.sortBy(_._1)
+            .map(x => CorpusFun.boundingBox(x._2.map(_._2).toArray)).toArray
+      }
+    }
     val clusterInfo = clusters.groupByKey
       .flatMap(x => x._2.groupBy(_._2).values.flatMap(p => {
         PassFun.mergeSpans(0, p).map(z => (x._1, z._2(0), z._1._1, z._1._2))
@@ -573,8 +592,11 @@ object PassimApp {
       .toDF("uid", "cluster", "size", "begin", "end")
       .join(corpus, "uid")
       .withColumn("_text", getPassage('begin, 'end, 'text, 'termCharBegin, 'termCharEnd))
+      .withColumn("pages", getLocs('begin, 'end, 'termPages))
+      .withColumn("regions", getRegions('begin, 'end, 'termPages, 'termRegions))
+      .withColumn("locs", getLocs('begin, 'end, 'termLocs))
       .drop("text").drop("terms").drop("termCharBegin").drop("termCharEnd")
-      .drop("pages").drop("imgRegions")
+      .drop("termPages").drop("termRegions").drop("termLocs")
       .withColumnRenamed("_text", "text")
       .sort('size.desc, 'cluster, dateSort, 'id, 'begin)
       .write.format(config.outputFormat).save(config.outputPath)

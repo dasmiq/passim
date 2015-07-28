@@ -77,6 +77,7 @@ public class TagTokenizer {
     tokenPositions = new ArrayList<Pair>();
     whitelist = new ArrayList<Pattern>();
 
+    whitelist.add(Pattern.compile("loc"));
     whitelist.add(Pattern.compile("pb"));
     whitelist.add(Pattern.compile("w"));
   }
