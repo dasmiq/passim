@@ -488,19 +488,22 @@ object PassimApp {
       .mapValues(PassFun.increasingMatches)
       .filter(_._2.size >= config.minRep)
       .flatMapValues(PassFun.gappedMatches(config.n, config.gap, _))
+    // Unique IDs will serve as edge IDs in connected component graph
+      .zipWithUniqueId
+
+    // But we need to cache so IDs don't get reassigned.
+    pairs.persist(StorageLevel.MEMORY_AND_DISK_SER)
 
     // pairs.saveAsTextFile(args(1) + ".pairs")
 
-    // Unique IDs will serve as edge IDs in connected component graph
-    val pass1 = pairs.zipWithUniqueId
+    val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
+    val pass1 = pairs
       .flatMap(x => {
         val (((uid1, uid2), ((s1, e1), (s2, e2))), mid) = x
         Array(SpanMatch(uid1, s1, e1, mid),
           SpanMatch(uid2, s2, e2, mid))
       })
-
-    val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
-    val pass2 = pass1.toDF
+      .toDF
       .join(termCorpus, "uid")
       .map({
         case Row(uid: Long, begin: Int, end: Int, mid: Long, terms: Seq[String], gid: Long) => {
@@ -515,7 +518,7 @@ object PassimApp {
         PassFun.alignEdges(matchMatrix, config.n, config.minAlg, x._1, pass(0), pass(1))
       })
 
-    val pass = pass2
+    val pass = pass1
       .groupByKey
       .flatMapValues(PassFun.mergeSpans(config.relOver, _))
       .zipWithUniqueId
