@@ -128,6 +128,18 @@ for further configuration options.
 If `jq` is installed, you can convert JSON output to a tab-separated
 table with `tabcluster.sh` and to CSV with `csvcluster.sh`.
 
+## Marking Locations inside Documents
+
+As mentioned above, the `text` field is interpreted as XML.  The
+parser expands character entities and, for the most part, ignores
+tags.
+
+Three XML elements, however, are recorded when documents are
+tokenized:
+* `<pb n="...">`
+* `<w coords="...">`
+* `<loc n="...">`
+
 ## Quotations of Reference Texts
 
 There are two different methods of quotation detection, depending on
