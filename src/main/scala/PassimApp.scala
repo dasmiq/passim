@@ -515,6 +515,9 @@ object PassimApp {
       .groupByKey
       .flatMap(x => {
         val pass = x._2.toArray
+        // The only reason for this array not to have exactly two
+        // elements would be erroneous recomputation of the passage
+        // pairs.  We've left it unchecked to warn us of errors.
         PassFun.alignEdges(matchMatrix, config.n, config.minAlg, x._1, pass(0), pass(1))
       })
 
