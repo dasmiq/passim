@@ -109,8 +109,8 @@ Field | Description
 `uid` | unique internal ID for each document, used for debugging
 
 In addition, `pages`, `regions`, and `locs` include information about
-locations in the underlying text of the reused passage.  See ``Marking
-Locations inside Documents'' below.
+locations in the underlying text of the reused passage.  See [Marking
+Locations inside Documents](#locations) below.
 
 Some useful parameters are:
 
@@ -132,7 +132,7 @@ for further configuration options.
 If `jq` is installed, you can convert JSON output to a tab-separated
 table with `tabcluster.sh` and to CSV with `csvcluster.sh`.
 
-## Marking Locations inside Documents
+## <a name="locations"></a> Marking Locations inside Documents
 
 As mentioned above, the `text` field is interpreted as XML.  The
 parser expands character entities and, for the most part, ignores
@@ -151,9 +151,9 @@ document:
 * `<loc n="..." />` marks the beginning of a citable passage
   (``locus'') according to some canonical scheme such as books,
   chapters, and verses in the Bible; acts, scenes, and Globe lines in
-  Shakespeare; or Stephanus pages in Plato.
+  Shakespeare; or Stephanus pages in Plato.  We recommend [Canonical Text Servive (CTS) URNs](http://www.homermultitext.org/hmt-doc/cite/index.html) for referring to these locations independently of any particular edition.
 
-These elements are empty so as not to interfere with other tags.
+These elements are empty so as not to interfere with other tags.  When reused passages contain these location markers, the output records will store the information in the `pages`, `regions`, and `locs` fields.
 
 ## Quotations of Reference Texts
 
