@@ -108,6 +108,10 @@ Field | Description
 `end` | offset in the document of the token where the reused passage ends
 `uid` | unique internal ID for each document, used for debugging
 
+In addition, `pages`, `regions`, and `locs` include information about
+locations in the underlying text of the reused passage.  See ``Marking
+Locations inside Documents'' below.
+
 Some useful parameters are:
 
 Parameter | Default value | Description
@@ -135,19 +139,30 @@ parser expands character entities and, for the most part, ignores
 tags.
 
 Three XML elements, however, are recorded when documents are
-tokenized:
-* `<pb n="..." />`
-* `<w coords="..." />`
-* `<loc n="..." />`
+tokenized.  Each marks the location of structural features within the
+document:
+* `<pb n="..." />` marks the beginning of a page, with the `n`
+  attribute parsed as a string;
+
+* `<w coords="..." />` marks the beginning of a region on a page
+  image, with the `coords=` attributed parsed as a 4-tuple of
+  integers for upper left, upper right, width, and height; and
+
+* `<loc n="..." />` marks the beginning of a citable passage
+  (``locus'') according to some canonical scheme such as books,
+  chapters, and verses in the Bible; acts, scenes, and Globe lines in
+  Shakespeare; or Stephanus pages in Plato.
 
 These elements are empty so as not to interfere with other tags.
 
 ## Quotations of Reference Texts
 
-There are two different methods of quotation detection, depending on
-the size of the query text. TODO.
+TODO.  For now, including the query texts in the corpus will
+automatically include them in any clustering.  We are working on
+including implementations of more efficient query procedures.
 
-<!-- The reference text format is a unique citation, followed by a tab and -->
+<!-- The reference text format is a unique citation, followed by a tab
+and -->
 <!-- some text: -->
 
 <!-- 	urn:cts:englishLit:shakespeare.ham:1.1.6	You come most carefully upon your hour. -->
