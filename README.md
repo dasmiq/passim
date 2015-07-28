@@ -136,9 +136,11 @@ tags.
 
 Three XML elements, however, are recorded when documents are
 tokenized:
-* `<pb n="...">`
-* `<w coords="...">`
-* `<loc n="...">`
+* `<pb n="..." />`
+* `<w coords="..." />`
+* `<loc n="..." />`
+
+These elements are empty so as not to interfere
 
 ## Quotations of Reference Texts
 
