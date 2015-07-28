@@ -140,7 +140,7 @@ tokenized:
 * `<w coords="..." />`
 * `<loc n="..." />`
 
-These elements are empty so as not to interfere
+These elements are empty so as not to interfere with other tags.
 
 ## Quotations of Reference Texts
 
