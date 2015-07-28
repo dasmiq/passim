@@ -121,7 +121,9 @@ Parameter | Default value | Description
 `--min-match` | 5 | Minimum number of matching n-grams between two documents.
 `--relative-overlap` | 0.5 | Proportion that two different aligned passages from the same document must overlap to be clustered together, as measured on the longer passage.
 
-Pass parameters to the underlying Spark processes using the `SPARK_SUBMIT_ARGS` environment variable.  For example, to run passim on a local machine with 10 cores and 200GB of memory, do:
+Pass parameters to the underlying Spark processes using the
+`SPARK_SUBMIT_ARGS` environment variable.  For example, to run passim
+on a local machine with 10 cores and 200GB of memory, do:
 
 	$ SPARK_SUBMIT_ARGS='--master local[10] --driver-memory 200G --executor-memory 200G' passim input.json output
 
@@ -151,26 +153,23 @@ document:
 * `<loc n="..." />` marks the beginning of a citable passage
   (``locus'') according to some canonical scheme such as books,
   chapters, and verses in the Bible; acts, scenes, and Globe lines in
-  Shakespeare; or Stephanus pages in Plato.  We recommend [Canonical Text Servive (CTS) URNs](http://www.homermultitext.org/hmt-doc/cite/index.html) for referring to these locations independently of any particular edition.
+  Shakespeare; or Stephanus pages in Plato.  We recommend
+  [Canonical Text Servive (CTS) URNs](http://www.homermultitext.org/hmt-doc/cite/index.html)
+  for referring to these locations independently of any particular
+  edition.  Although many canonical citations schemes have a
+  hierarchical structure of books, chapters, etc., passim interprets
+  the `n=` attribute as an atomic string.
 
-These elements are empty so as not to interfere with other tags.  When reused passages contain these location markers, the output records will store the information in the `pages`, `regions`, and `locs` fields.
+These elements are empty so as not to interfere with other tags.  When
+reused passages contain these location markers, the output records
+will store the information in the `pages`, `regions`, and `locs`
+fields.
 
 ## Quotations of Reference Texts
 
 TODO.  For now, including the query texts in the corpus will
 automatically include them in any clustering.  We are working on
 including implementations of more efficient query procedures.
-
-<!-- The reference text format is a unique citation, followed by a tab
-and -->
-<!-- some text: -->
-
-<!-- 	urn:cts:englishLit:shakespeare.ham:1.1.6	You come most carefully upon your hour. -->
-<!-- 	urn:cts:englishLit:shakespeare.ham:1.1.7	'Tis now struck twelve; get thee to bed, Francisco. -->
-
-<!-- This program treats citations as unparsed, atomic strings, though URNs -->
-<!-- in a standard scheme, such as the CTS citations used here, are -->
-<!-- encouraged. -->
 
 <!-- You can use any galago n-gram index: 4-gram, 5-gram, etc. For several -->
 <!-- tasks, 5-grams seem like a good tradeoff. -->
