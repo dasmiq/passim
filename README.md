@@ -14,8 +14,9 @@ unpacking it, and adding the `bin` subdirectory to your `PATH`.
 
 To compile passim itself, install [sbt](http://www.scala-sbt.org/), a
 build tool for Scala, Java, and other JVM languages.  Then run:
-
-    $ sbt package
+```
+$ sbt package
+```
 
 This should produce a runnable .jar in
 `target/scala_*/passim*.jar`. (The exact filename will depend on the
@@ -54,8 +55,9 @@ The default input format for documents is in a file or set
 of files containing JSON records.  The record for a single document
 with the required `id` and `text` fields, as well as a `series` field,
 would look like:
-
-	{"id": "d1", "series": "abc", "text": "This is text that&apos;s interpreted as <code>XML</code>; the tags are ignored by default."}
+```
+{"id": "d1", "series": "abc", "text": "This is text that&apos;s interpreted as <code>XML</code>; the tags are ignored by default."}
+```
 
 Note that this is must be a single line in the file.  This JSON record
 format has two important differences from general-purpose JSON
@@ -83,14 +85,18 @@ split it into blocks before decompressing.
 The simplest invocation contains list of inputs and a directory name
 for the output.
 
-	$ passim input.json output
+```
+$ passim input.json output
+```
 
 Following Spark conventions, input may be a single file, a single
 directory full of files, or a `*` wildcard (glob) expression.
 Multiple input paths should be separated by commas.  Files may also be
 compressed.
 
-	$ passim input.json,directory-of-json-files,some*.json.bz2 output
+```
+$ passim input.json,directory-of-json-files,some*.json.bz2 output
+```
 
 Output is to a directory containing JSON `part-*` files rather than a
 single file.  This allows multiple workers to efficiently write it
@@ -125,7 +131,9 @@ Pass parameters to the underlying Spark processes using the
 `SPARK_SUBMIT_ARGS` environment variable.  For example, to run passim
 on a local machine with 10 cores and 200GB of memory, do:
 
-	$ SPARK_SUBMIT_ARGS='--master local[10] --driver-memory 200G --executor-memory 200G' passim input.json output
+```
+$ SPARK_SUBMIT_ARGS='--master local[10] --driver-memory 200G --executor-memory 200G' passim input.json output
+```
 
 See the
 [Spark documentation](https://spark.apache.org/docs/latest/index.html)
@@ -185,6 +193,11 @@ including implementations of more efficient query procedures.
 <!-- threshold (as long as you add a copy of the reference texts to each -->
 <!-- shard). -->
 
+## Acknowledgements
+
+We insert the appropriate text in gratitude to our sponsors at the
+Andrew W. Mellon Foundation and the National Endowment for the
+Humanities. TODO.
 
 ## License
 
