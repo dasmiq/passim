@@ -69,9 +69,9 @@ it more efficient to process in parallel large numbers of documents
 spread across multiple files.
 
 In addition to the fields `id`, `text`, and `series`, other metadata
-may be included in the record for each document. At present, the
-fields `date`, `title`, and `url` will be handled specially by passim
-in the output.
+included in the record for each document will be passed through into
+the output.  In particular, a `date` field, if present, will be used
+to sort passages within each cluster.
 
 Natural language text is redundant, and adding XML markup and JSON
 field names increases the redundancy.  Spark and passim support
