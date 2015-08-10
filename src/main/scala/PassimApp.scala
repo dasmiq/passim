@@ -353,8 +353,8 @@ object TokApp {
       (if ( curLoc == "" ) Array[String]() else locs.toArray))
   }
   def tokenizeText(raw: DataFrame): DataFrame = {
-    raw.filter(!raw("id").isNull && !raw("text").isNull)
-      .explode(raw("text"))({ case Row(text: String) => Array[TokText](tokenize(text)) })
+    raw.na.drop(Seq("id", "text"))
+      .explode(col("text"))({ case Row(text: String) => Array[TokText](tokenize(text)) })
   }
   def main(args: Array[String]) {
     val conf = new SparkConf().setAppName("Tokenize Application")
@@ -559,8 +559,22 @@ object PassimApp {
       })
       .flatMap(_._2)
       .map(x => (x._1.id, x._2))
+      .groupByKey
+      .flatMap(x => x._2.groupBy(_._2).values.flatMap(p => {
+        PassFun.mergeSpans(0, p).map(z => (x._1, z._2(0), z._1._1, z._1._2))
+      }))
+      .groupBy(_._2)
+      .flatMap(x => {
+        val size = x._2.size
+        x._2.map(p => (p._1, p._2, size, p._3, p._4))
+      })
+      .toDF("uid", "cluster", "size", "begin", "end")
 
-    // clusters.saveAsTextFile(args(1) + ".clusters")
+    val clusterFile = config.outputPath + ".clusters.parquet"
+    clusters.write.parquet(clusterFile)
+
+    pairs.unpersist()
+    termCorpus.unpersist()
 
     val cols = corpus.columns.toSet
     val dateSort = if ( cols.contains("date") ) 'date else 'id
@@ -588,24 +602,17 @@ object PassimApp {
             .map(x => CorpusFun.boundingBox(x._2.map(_._2).toArray)).toArray
       }
     }
-    val clusterInfo = clusters.groupByKey
-      .flatMap(x => x._2.groupBy(_._2).values.flatMap(p => {
-        PassFun.mergeSpans(0, p).map(z => (x._1, z._2(0), z._1._1, z._1._2))
-      }))
-      .groupBy(_._2)
-      .flatMap(x => {
-        val size = x._2.size
-        x._2.map(p => (p._1, p._2, size, p._3, p._4))
-      })
-      .toDF("uid", "cluster", "size", "begin", "end")
-      .join(corpus, "uid")
+
+    // clusters
+    sqlContext.read.parquet(clusterFile)
+      .join(corpus.drop("terms"), "uid")
       .withColumn("_text", getPassage('begin, 'end, 'text, 'termCharBegin, 'termCharEnd))
+      .drop("text").withColumnRenamed("_text", "text")
       .withColumn("pages", getLocs('begin, 'end, 'termPages))
       .withColumn("regions", getRegions('begin, 'end, 'termPages, 'termRegions))
       .withColumn("locs", getLocs('begin, 'end, 'termLocs))
-      .drop("text").drop("terms").drop("termCharBegin").drop("termCharEnd")
+      .drop("termCharBegin").drop("termCharEnd")
       .drop("termPages").drop("termRegions").drop("termLocs")
-      .withColumnRenamed("_text", "text")
       .sort('size.desc, 'cluster, dateSort, 'id, 'begin)
       .write.format(config.outputFormat).save(config.outputPath + "/out." + config.outputFormat)
   }

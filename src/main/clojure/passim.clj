@@ -523,6 +523,7 @@
 (defn passage-clean
   [s]
   (-> s
+      s/lower-case
       (s/replace "<br/>" " ")
       (s/replace #"[ ]+" " ")))
 
