@@ -570,7 +570,7 @@ object PassimApp {
       })
       .toDF("uid", "cluster", "size", "begin", "end")
 
-    val clusterFile = config.outputPath + ".clusters.parquet"
+    val clusterFile = config.outputPath + "/clusters.parquet"
     clusters.write.parquet(clusterFile)
 
     pairs.unpersist()
@@ -603,7 +603,6 @@ object PassimApp {
       }
     }
 
-    // clusters
     sqlContext.read.parquet(clusterFile)
       .join(corpus.drop("terms"), "uid")
       .withColumn("_text", getPassage('begin, 'end, 'text, 'termCharBegin, 'termCharEnd))
