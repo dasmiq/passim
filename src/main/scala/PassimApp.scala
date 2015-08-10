@@ -443,15 +443,15 @@ object PassimApp {
         Config()
     }
 
-    println(config)
-
     // Warn about existing output directory before doing lots of work.
-    // TODO: Check whether spark is set to clobber.
+    // TODO: Use hadoop API
     val ofile = new java.io.File(config.outputPath)
     if ( ofile.exists() ) {
       println(config.outputPath + " already exists")
       exit(-1)
     }
+
+    sc.parallelize(config :: Nil).toDF.coalesce(1).write.json(config.outputPath + "/conf")
 
     val raw = sqlContext.read.format(config.inputFormat).load(config.inputPaths)
 
@@ -521,8 +521,10 @@ object PassimApp {
         PassFun.alignEdges(matchMatrix, config.n, config.minAlg, x._1, pass(0), pass(1))
       })
 
+    val graphParallelism = 1
+
     val pass = pass1
-      .groupByKey
+      .groupByKey(graphParallelism * sc.getExecutorMemoryStatus.size)
       .flatMapValues(PassFun.mergeSpans(config.relOver, _))
       .zipWithUniqueId
     // This was getting recomputed on different partitions, thus reassigning IDs.
@@ -605,6 +607,6 @@ object PassimApp {
       .drop("termPages").drop("termRegions").drop("termLocs")
       .withColumnRenamed("_text", "text")
       .sort('size.desc, 'cluster, dateSort, 'id, 'begin)
-      .write.format(config.outputFormat).save(config.outputPath)
+      .write.format(config.outputFormat).save(config.outputPath + "/out." + config.outputFormat)
   }
 }
