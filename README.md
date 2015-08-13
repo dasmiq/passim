@@ -26,7 +26,7 @@ The `bin` subdirectory of the passim distribution contains executable
 shell scripts such `passim`.  We recommend adding this subdirectory to
 your `PATH`.
 
-Since passim uses the JSON format for input and output, it is
+Since passim defaults to the JSON format for input and output, it is
 convenient to have the
 [command-line JSON processor jq](http://stedolan.github.io/jq/)
 installed.
@@ -38,8 +38,8 @@ installed.
 The input to passim is a set of _documents_. Depending on the kind of
 data you have, you might choose documents to be whole books, pages of
 books, whole issues of newspapers, individual newspaper articles, etc.
-Minimally, a document consists of an identifier string and text
-content.
+Minimally, a document consists of an identifier string and a single
+string of text content.
 
 For most text reuse detection problems, it is useful to group
 documents into _series_.  Text reuse within series will be ignored.
@@ -48,7 +48,7 @@ appear week after week in the same newspaper and more interested in
 articles that propagate from one city's newspapers to another's.  In
 that case, we would declare all issues of the same newspaper--or all
 articles within those issues--to have the same series.  Similarly, we
-might define documents to be the pages or chapters or a book and
+might define documents to be the pages or chapters of a book and
 series to be whole books.
 
 The default input format for documents is in a file or set
@@ -60,10 +60,10 @@ would look like:
 ```
 
 Note that this is must be a single line in the file.  This JSON record
-format has two important differences from general-purpose JSON
-files. First, the JSON records for each document are concatenated
-together, rather than being nested inside a top-level array.  Second,
-each record must be contained on one line, rather than extending over
+format has two important differences from general-purpose JSON files.
+First, the JSON records for each document are concatenated together,
+rather than being nested inside a top-level array.  Second, each
+record must be contained on one line, rather than extending over
 multiple lines until the closing curly brace.  These restrictions make
 it more efficient to process in parallel large numbers of documents
 spread across multiple files.
@@ -98,9 +98,12 @@ compressed.
 $ passim input.json,directory-of-json-files,some*.json.bz2 output
 ```
 
-Output is to a directory containing JSON `part-*` files rather than a
-single file.  This allows multiple workers to efficiently write it
-(and read it back in) in parallel.
+Output is to a directory that, on completion, will contain an
+`out.json` directory with `part-*` files rather than a single file.
+This allows multiple workers to efficiently write it (and read it back
+in) in parallel.  In addition, the output directory should contain the
+parameters used to invoke passim in `conf` and the intermediate
+cluster membership data in `clusters.parquet`.
 
 The output contains one JSON record for each reused passage.  Each
 record echoes the fields in the JSON input and adds the following
@@ -159,8 +162,8 @@ document:
   integers for upper left, upper right, width, and height; and
 
 * `<loc n="..." />` marks the beginning of a citable passage
-  (``locus'') according to some canonical scheme such as books,
-  chapters, and verses in the Bible; acts, scenes, and Globe lines in
+  (``locus'') according to some canonical scheme such as the books,
+  chapters, and verses of the Bible; acts, scenes, and Globe lines in
   Shakespeare; or Stephanus pages in Plato.  We recommend
   [Canonical Text Servive (CTS) URNs](http://www.homermultitext.org/hmt-doc/cite/index.html)
   for referring to these locations independently of any particular
