@@ -427,9 +427,7 @@ object PassimApp {
         c.copy(outputFormat = x) } text("Output format; default=json")
       help("help") text("prints usage text")
       arg[String]("<path>,<path>,...") action { (x, c) =>
-        // Input file policy:
-        // We should assume JSON for most users, allow .parquet by convention
-        c.copy(inputPaths = x, inputFormat = if ( x.endsWith(".parquet") ) "parquet" else "json")
+        c.copy(inputPaths = x)
       } text("Comma-separated input paths")
       arg[String]("<path>") action { (x, c) =>
         c.copy(outputPath = x) } text("Output path")
