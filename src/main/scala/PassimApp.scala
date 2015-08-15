@@ -446,7 +446,7 @@ object PassimApp {
       case Some(c) =>
         c
       case None =>
-        exit(-1)
+        sys.exit(-1)
         Config()
     }
 
@@ -455,7 +455,7 @@ object PassimApp {
     val ofile = new java.io.File(config.outputPath)
     if ( ofile.exists() ) {
       println(config.outputPath + " already exists")
-      exit(-1)
+      sys.exit(-1)
     }
 
     sc.parallelize(config :: Nil).toDF.coalesce(1).write.json(config.outputPath + "/conf")
@@ -476,8 +476,8 @@ object PassimApp {
     
     val pairs = termCorpus
       .flatMap({
-        case Row(uid: Long, terms: Seq[String], gid: Long) =>
-          terms.sliding(config.n)
+        case Row(uid: Long, terms: Seq[_], gid: Long) =>
+          terms.asInstanceOf[Seq[String]].sliding(config.n)
             .map(x => ByteBuffer.wrap(MessageDigest.getInstance("MD5")
               .digest(x.mkString("~").getBytes("UTF-8")).take(8)).getLong)
             .zipWithIndex
@@ -514,10 +514,10 @@ object PassimApp {
       .toDF
       .join(termCorpus, "uid")
       .map({
-        case Row(uid: Long, begin: Int, end: Int, mid: Long, terms: Seq[String], gid: Long) => {
+        case Row(uid: Long, begin: Int, end: Int, mid: Long, terms: Seq[_], gid: Long) => {
           (mid,
             PassFun.edgeText(config.gap * 2/3, config.n,
-              IdSeries(uid, gid), terms.toArray, (begin, end)))
+              IdSeries(uid, gid), terms.asInstanceOf[Seq[String]].toArray, (begin, end)))
         }
       })
       .groupByKey
