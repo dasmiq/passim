@@ -309,9 +309,9 @@ object TokApp {
     var d = new passim.Document("raw", text)
     tok.tokenize(d)
 
-    var pages = new ArrayBuffer[String]
-    var regions = new ArrayBuffer[imgCoord]
-    var locs = new ArrayBuffer[String]
+    val pages = new ArrayBuffer[String]
+    val regions = new ArrayBuffer[imgCoord]
+    val locs = new ArrayBuffer[String]
     var curPage = ""
     var curCoord = imgCoord(0, 0, 0, 0)
     var curLoc = ""
@@ -321,12 +321,12 @@ object TokApp {
       val off = t.begin
       while ( idx < off ) {
         pages += curPage
-	regions += curCoord
+        regions += curCoord
         locs += curLoc
-	idx += 1
+        idx += 1
       }
       if ( t.name == "pb" )
-	curPage = t.attributes.getOrElse("n", "")
+        curPage = t.attributes.getOrElse("n", "")
       else if ( t.name == "loc" )
         curLoc = t.attributes.getOrElse("n", "")
       else if ( t.name == "w" ) {
@@ -339,9 +339,9 @@ object TokApp {
     if ( idx > 0 ) {
       while ( idx < d.terms.size ) {
         pages += curPage
-	regions += curCoord
+        regions += curCoord
         locs += curLoc
-	idx += 1
+        idx += 1
       }
     }
 
@@ -353,8 +353,17 @@ object TokApp {
       (if ( curLoc == "" ) Array[String]() else locs.toArray))
   }
   def tokenizeText(raw: DataFrame): DataFrame = {
+    val tokenizeCol = udf {(s: String) => tokenize(s)}
     raw.na.drop(Seq("id", "text"))
-      .explode(col("text"))({ case Row(text: String) => Array[TokText](tokenize(text)) })
+      .withColumn("_tokens", tokenizeCol(col("text")))
+      .withColumn("terms", col("_tokens")("terms"))
+      .withColumn("termCharBegin", col("_tokens")("termCharBegin"))
+      .withColumn("termCharEnd", col("_tokens")("termCharEnd"))
+      .withColumn("termPages", col("_tokens")("termPages"))
+      .withColumn("termRegions", col("_tokens")("termRegions"))
+      .withColumn("termLocs", col("_tokens")("termLocs"))
+      .drop("_tokens")
+    // Used "explode" here, but it behaved badly in spark 1.5.0
   }
   def main(args: Array[String]) {
     val conf = new SparkConf().setAppName("Tokenize Application")
@@ -398,7 +407,7 @@ object PassimApp {
     val conf = new SparkConf().setAppName("Passim Application")
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
       .registerKryoClasses(Array(classOf[imgCoord],
-	classOf[TokText], classOf[SpanMatch], classOf[IdSeries]))
+        classOf[TokText], classOf[SpanMatch], classOf[IdSeries]))
     val sc = new SparkContext(conf)
     val sqlContext = new org.apache.spark.sql.SQLContext(sc)
     import sqlContext.implicits._
@@ -465,24 +474,25 @@ object PassimApp {
     // Performance will be awful unless spark.sql.shuffle.partitions is appropriate
       .persist(StorageLevel.MEMORY_AND_DISK_SER)
     
-    // // We could save space by hasing the n-grams, then checking for
-    // // equality when we actually do the alignment, but we need to keep
-    // // all the n-gram matches around, not just the ranges.
-    // java.nio.ByteBuffer.wrap(java.security.MessageDigest.getInstance("MD5")
-    //   .digest("a~b~c~d~e".getBytes).take(8)).getLong
     val pairs = termCorpus
       .flatMap({
         case Row(uid: Long, terms: Seq[String], gid: Long) =>
-          terms.zipWithIndex.sliding(config.n)
-            .map(x => (x.map(_._1).mkString("~"), (uid, gid, x(0)._2)))
+          terms.sliding(config.n)
+            .map(x => ByteBuffer.wrap(MessageDigest.getInstance("MD5")
+              .digest(x.mkString("~").getBytes("UTF-8")).take(8)).getLong)
+            .zipWithIndex
+            .toArray
+            .groupBy(_._1)
+            .map { case (feat, post) => (feat, (uid, gid, post.map(_._2))) }
       })
       .groupByKey
-      .filter(x => x._2.size >= 2 && x._2.size <= upper
-	&& ( CorpusFun.crossCounts(x._2.map(_._2)
-	  .groupBy(identity).map(_._2.size).toArray) ) <= upper)
-      .mapValues(x => x.groupBy(_._1).toArray.map(p => (p._1, p._2.head._2, p._2.map(_._3).toArray)).toArray)
-      .flatMap(x => for ( a <- x._2; b <- x._2; if a._1 < b._1 && a._2 != b._2 && a._3.size == 1 && b._3.size == 1 ) yield ((a._1, b._1), (a._3(0), b._3(0), x._2.size)))
-      .groupByKey.filter(_._2.size >= config.minRep)
+    // Just use plain old document frequency
+      .filter(x => x._2.size >= 2 && x._2.size <= config.maxSeries)
+    // && ( CorpusFun.crossCounts(x._2.map(_._2) // count postings here
+    //     .groupBy(identity).map(_._2.size).toArray) ) <= upper)
+      .flatMap { case (f, docs) => for ( a <- docs; b <- docs; if a._1 < b._1 && a._2 != b._2 && a._3.size == 1 && b._3.size == 1 ) yield ((a._1, b._1), (a._3(0), b._3(0), docs.size)) }
+      .groupByKey
+      .filter(_._2.size >= config.minRep)
       .mapValues(PassFun.increasingMatches)
       .filter(_._2.size >= config.minRep)
       .flatMapValues(PassFun.gappedMatches(config.n, config.gap, _))
