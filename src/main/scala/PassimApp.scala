@@ -487,9 +487,8 @@ object PassimApp {
       })
       .groupByKey
     // Just use plain old document frequency
-      .filter(x => x._2.size >= 2 && x._2.size <= config.maxSeries)
-    // && ( CorpusFun.crossCounts(x._2.map(_._2) // count postings here
-    //     .groupBy(identity).map(_._2.size).toArray) ) <= upper)
+      .filter(x => x._2.size >= 2 && x._2.size <= config.maxSeries
+        && CorpusFun.crossCounts(x._2.groupBy(_._2).map(_._2.map(_._3.size).sum).toArray) <= upper )
       .flatMap { case (f, docs) => for ( a <- docs; b <- docs; if a._1 < b._1 && a._2 != b._2 && a._3.size == 1 && b._3.size == 1 ) yield ((a._1, b._1), (a._3(0), b._3(0), docs.size)) }
       .groupByKey
       .filter(_._2.size >= config.minRep)
