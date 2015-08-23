@@ -35,8 +35,8 @@ case class SpanMatch(uid: Long, begin: Int, end: Int, mid: Long)
 
 case class PassAlign(id: String, begin: Int, end: Int, cbegin: Int, cend: Int)
 
-case class BoilerPass(id: String,
-  passageBegin: Array[Int], passageEnd: Array[Int],
+case class BoilerPass(id: String, termCount: Int,
+  passageBegin: Array[Int], passageEnd: Array[Int], passageLastId: Array[String],
   alignments: Array[PassAlign])
 
 case class NewDoc(newid: String, newtext: String, aligned: Boolean)
@@ -271,7 +271,7 @@ object BoilerApp {
               PassFun.edgeText(config.gap, config.n, IdSeries(0, 0), pt, z._1),
               PassFun.edgeText(config.gap, config.n, IdSeries(1, 0), t, z._2)))
             .filter(_.size > 0)
-            .map(z => (id,
+            .map(z => ((id, t.size),
               PassAlign(pid,
                 z.head._2._1._1, z.head._2._1._2,
                 z.last._2._1._1, z.last._2._1._2)))
@@ -279,9 +279,13 @@ object BoilerApp {
       })
       .groupByKey
       .map(x => {
-        val (id, alg) = x
-        val merged = PassFun.mergeSpans(0, alg.map(z => ((z.cbegin, z.cend), 0L))).map(_._1)
-        BoilerPass(id, merged.map(_._1).toArray, merged.map(_._2).toArray, alg.toArray)
+        val ((id, termCount), alg) = x
+        val ids = alg.map(a => (PassimApp.hashString(a.id), a.id)).toMap
+        val merged = PassFun.mergeSpans(0, alg.map(z => ((z.cbegin, z.cend),
+          PassimApp.hashString(z.id))))
+        BoilerPass(id, termCount, merged.map(_._1._1).toArray, merged.map(_._1._2).toArray,
+          merged.map(p => p._2.map(ids(_)).sorted.last).toArray,
+          alg.toArray)
       })
       .toDF
   }
