@@ -39,7 +39,7 @@ case class BoilerPass(id: String,
   passageBegin: Array[Int], passageEnd: Array[Int],
   alignments: Array[PassAlign])
 
-case class NewDoc(newid: String, newtext: String)
+case class NewDoc(newid: String, newtext: String, aligned: Boolean)
 
 object CorpusFun {
   def boundingBox(regions: Array[imgCoord]): imgCoord = {
@@ -244,15 +244,16 @@ object BoilerApp {
     import sqlContext.implicits._
 
     val indexer = udf {(terms: Seq[String]) => hapaxIndex(config.n, terms)}
-    val corpus = df.select("id", "issue", "series", "seq", "date", "terms")
+    val corpus = df.select("id", "issue", "series", "seq", "ed", "date", "terms")
       .withColumn("index", indexer(col("terms")))
 
     val pairs = corpus
-      .join(corpus.select($"id" as "p_id", $"issue" as "p_issue",
+      .join(corpus.select($"id" as "p_id", $"issue" as "p_issue", $"ed" as "p_ed",
         $"date" as "p_date", $"series" as "p_series", $"seq" as "p_seq",
         $"terms" as "p_terms", $"index" as "p_index"),
         ($"p_series" === $"series") && ($"p_issue" !== $"issue")
           // && ($"p_seq" === $"seq")
+          && (($"p_date" !== $"date") || ($"p_ed" < $"ed"))
           && datediff($"date", $"p_date").between(0, config.history))
 
     val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
@@ -352,21 +353,6 @@ object TokApp {
       .drop("_tokens")
     // Used "explode" here, but it behaved badly in spark 1.5.0
   }
-  def main(args: Array[String]) {
-    val conf = new SparkConf().setAppName("Tokenize Application")
-      .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-      .registerKryoClasses(Array(classOf[imgCoord], classOf[TokText]))
-    val sc = new SparkContext(conf)
-    val sqlContext = new SQLContext(sc)
-
-    val raw = sqlContext.read.load(args(0))
-
-    val proc = tokenizeText(raw)
-
-    // Do some checks here?
-
-    proc.write.parquet(args(1))
-  }
 }
 
 object PassimApp {
@@ -390,6 +376,33 @@ object PassimApp {
       TokApp.tokenizeText(df)
     }
   }
+  val hashId = udf {(id: String) => hashString(id)}
+  val getPassage = udf {
+    (begin: Int, end: Int, text: String, termCharBegin: Seq[Int], termCharEnd: Seq[Int]) =>
+    text.substring(termCharBegin(begin), termCharEnd(end))}
+  val getLocs = udf {
+    (begin: Int, end: Int, termLocs: Seq[String]) =>
+    if ( termLocs.size >= end )
+      termLocs.toArray.slice(begin, end).distinct.sorted // stable
+    else
+      Array[String]()
+  }
+  val getRegions = udf {
+    (begin: Int, end: Int, termPages: Seq[String], termRegions: Seq[Row]) =>
+    if ( termRegions.size < end )
+      Array[imgCoord]()
+    else {
+      val regions = termRegions.toArray.slice(begin, end)
+        .map({ case Row(x: Int, y: Int, w: Int, h: Int) => imgCoord(x, y, w, h) })
+        .toArray
+      if ( termPages.size < end )
+        Array(CorpusFun.boundingBox(regions))
+      else
+        termPages.slice(begin, end).zip(regions).groupBy(_._1).toIndexedSeq.sortBy(_._1)
+          .map(x => CorpusFun.boundingBox(x._2.map(_._2).toArray)).toArray
+    }
+  }
+
   def main(args: Array[String]) {
     val conf = new SparkConf().setAppName("Passim Application")
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
@@ -460,43 +473,55 @@ object PassimApp {
     if ( clusterMake || outMake || boilerMake ) {
       val raw = sqlContext.read.format(config.inputFormat).load(config.inputPaths)
 
-      val hashId = udf {(id: String) => hashString(id)}
       val corpus = testTok(testGroup(config.group, raw))
         .withColumn("uid", hashId('id))
 
       if ( boilerMake ) {
+        val algFname = config.outputPath + "/alg." + config.outputFormat
         val alg = BoilerApp.matchPages(corpus, config, sqlContext)
-        alg.write.format(config.outputFormat)
-          .save(config.outputPath + "/alg." + config.outputFormat)
+        alg.cache()
+        alg.write.format(config.outputFormat).save(algFname)
         def splitDocs(r: Row): Array[NewDoc] = {
           val id = r.getString(0)
           val text = r.getString(1)
           val docs = new ArrayBuffer[NewDoc]
           if ( r.isNullAt(2) ) {
-            docs += NewDoc(id, text)
+            docs += NewDoc(id, text, false)
           } else {
             val passageBegin = r.getSeq[Int](2).toArray
             val passageEnd = r.getSeq[Int](3).toArray
             val termCharEnd = r.getSeq[Int](4).toArray
-            // Ths sort of works to output the repeated passages, but
-            // incorrectly skips the passages in between.
+            def tcOff(termOff: Int): Int = if ( termOff == 0 ) 0 else termCharEnd(termOff - 1)
             for ( i <- 0 until passageBegin.size ) {
-              val cid = id + "_" + passageBegin(i)
-              val begin = if ( passageBegin(i) <= 0 ) 0 else termCharEnd(passageBegin(i) - 1)
-              val ctext = text.substring(begin, termCharEnd(passageEnd(i)))
-              docs += NewDoc(cid, ctext)
+              val begin = passageBegin(i)
+              val pBegin = if ( i == 0 ) {
+                if ( begin == 0 ) -1 else 0
+              } else
+                (passageEnd(i - 1) + 1)
+              if ( pBegin >= 0 && pBegin < (begin - 1)) {
+                docs += NewDoc(id + "_" + pBegin,
+                  text.substring(tcOff(pBegin), termCharEnd(begin - 1)),
+                  false)
+              }
+              docs += NewDoc(id + "_" + begin,
+                text.substring(tcOff(begin), termCharEnd(passageEnd(i))),
+                true)
+            }
+            if ( (passageEnd.last + 1) < termCharEnd.size ) {
+              val pBegin = passageEnd.last + 1
+              docs += NewDoc(id + "_" + pBegin, text.substring(tcOff(pBegin)), false)
             }
           }
           docs.toArray
         }
-        alg.withColumnRenamed("id", "aid")
+        alg.withColumnRenamed("id", "aid").drop("alignments")
           .join(corpus.drop("terms").drop("uid"), 'aid === 'id, "right_outer")
           .explode('id, 'text, 'passageBegin, 'passageEnd, 'termCharEnd)(splitDocs)
           .drop("aid").withColumnRenamed("id", "docid").withColumnRenamed("newid", "id")
           .drop("text").withColumnRenamed("newtext", "text")
           .drop("termCharBegin").drop("termCharEnd")
           .drop("termPages").drop("termRegions").drop("termLocs")
-          .drop("passageBegin").drop("passageEnd").drop("alignments")
+          .drop("passageBegin").drop("passageEnd")
           .write.format(config.outputFormat)
           .save(config.outputPath + "/corpus." + config.outputFormat)
 
@@ -624,30 +649,6 @@ object PassimApp {
       if ( outMake ) {
         val cols = corpus.columns.toSet
         val dateSort = if ( cols.contains("date") ) 'date else 'id
-        val getPassage = udf {(begin: Int, end: Int,
-          text: String, termCharBegin: Seq[Int], termCharEnd: Seq[Int]) =>
-          text.substring(termCharBegin(begin), termCharEnd(end))}
-        val getLocs = udf {(begin: Int, end: Int, termLocs: Seq[String]) =>
-          if ( termLocs.size >= end )
-            termLocs.toArray.slice(begin, end).distinct.sorted // stable
-          else
-            Array[String]()
-        }
-        val getRegions = udf {(begin: Int, end: Int,
-          termPages: Seq[String], termRegions: Seq[Row]) =>
-          if ( termRegions.size < end )
-            Array[imgCoord]()
-          else {
-            val regions = termRegions.toArray.slice(begin, end)
-              .map({ case Row(x: Int, y: Int, w: Int, h: Int) => imgCoord(x, y, w, h) })
-              .toArray
-            if ( termPages.size < end )
-              Array(CorpusFun.boundingBox(regions))
-            else
-              termPages.slice(begin, end).zip(regions).groupBy(_._1).toIndexedSeq.sortBy(_._1)
-                .map(x => CorpusFun.boundingBox(x._2.map(_._2).toArray)).toArray
-          }
-        }
 
         sqlContext.read.parquet(clusterFname)
           .join(corpus.drop("terms"), "uid")
