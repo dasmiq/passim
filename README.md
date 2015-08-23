@@ -162,7 +162,7 @@ document:
   integers for upper left, upper right, width, and height; and
 
 * `<loc n="..." />` marks the beginning of a citable passage
-  (``locus'') according to some canonical scheme such as the books,
+  ("locus") according to some canonical scheme such as the books,
   chapters, and verses of the Bible; acts, scenes, and Globe lines in
   Shakespeare; or Stephanus pages in Plato.  We recommend
   [Canonical Text Servive (CTS) URNs](http://www.homermultitext.org/hmt-doc/cite/index.html)
