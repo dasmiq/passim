@@ -305,56 +305,61 @@ object BoilerApp {
     val indexer = udf {(terms: Seq[String]) => hapaxIndex(config.n, terms)}
     val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
 
-    // TODO: see if OVER ... RANGE BETWEEN ... will eventually work for us here
     val corpus = df.select('id, 'terms, indexer(col("terms")).as("index"),
-      col(config.group), 'date, 'ed, 'seq, 'issue)
-      .orderBy(config.group, "date", "ed", "seq", "id")
+      col(config.group).as("series"), datediff($"date", lit("1970-01-01")).as("eday"), 'issue)
 
-    corpus.rdd
-      .sliding(config.history * 8)
-      .flatMap(x => {
-        x.last match {
-          case Row(id: String, terms: Seq[_], idx: Map[_, _],
-            series: String, date: String, ed: String, seq: String, issue: String) => {
-            val t = terms.asInstanceOf[Seq[String]].toArray
-            val m = idx.asInstanceOf[Map[String, Int]]
-            val d = DateTimeUtils.fromJavaDate(Date.valueOf(date))
-            val alg = x.dropRight(1)
-              .filter({
-                case Row(pid: String, pterms: Seq[_], pidx: Map[_, _],
-                  pseries: String, pdate: String, ped: String, pseq: String, pissue: String) =>
-                  ((series == pseries) && (issue != pissue) && (date > pdate || ed > ped)
-                    && ((d - DateTimeUtils.fromJavaDate(Date.valueOf(pdate))) <= config.history))
-              })
-              .flatMap(y => {
-                val pid = y.getString(0)
-                val pt = y.getSeq[String](1).toArray
-                val pm = y.getMap[String, Int](2)
-                val inc = PassFun.increasingMatches(pm
-                  .flatMap(z => if (m.contains(z._1)) Some((z._2, m(z._1), 1)) else None))
-                PassFun.gappedMatches(config.n, config.gap, inc)
-                  .map(z => PassFun.alignEdges(matchMatrix, config.n, config.minAlg, 0,
-                    PassFun.edgeText(config.gap, config.n, IdSeries(0, 0), pt, z._1),
-                    PassFun.edgeText(config.gap, config.n, IdSeries(1, 0), t, z._2)))
-                  .filter(_.size > 0)
-                  .map(z => PassAlign(pid,
-                    z.head._2._1._1, z.head._2._1._2,
-                    z.last._2._1._1, z.last._2._1._2))
-              })
+    val laggard = corpus.select($"id" as "p_id", $"terms" as "p_terms", $"index" as "p_index",
+      $"series" as "p_series", $"eday" as "p_eday", $"issue" as "p_issue")
 
-            if ( alg.size > 0 ) {
-              val ids = alg.map(a => (PassimApp.hashString(a.id), a.id)).toMap
-              val merged = PassFun.mergeSpans(0, alg.map(z => ((z.cbegin, z.cend),
-                PassimApp.hashString(z.id))))
-              Some(BoilerPass(id, t.size,
-                merged.map(_._1._1).toArray, merged.map(_._1._2).toArray,
-                merged.map(p => p._2.map(ids(_)).sorted.last).toArray,
-                alg.toArray))
-            } else {
-              None
-            }
-          }
+    // The important principle here is to ensure a hash join.
+    // This is possible, if ugly, with a finite number of integral day offsets.
+    // TODO: Figure out how to parameterize this by config.history.
+    // Might one create an array of DataFrames and reduce them with unionAll?
+    corpus.join(laggard, ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 1)))
+      .unionAll(corpus.join(laggard,
+        ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 2))))
+      .unionAll(corpus.join(laggard,
+        ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 3))))
+      .unionAll(corpus.join(laggard,
+        ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 4))))
+      .unionAll(corpus.join(laggard,
+        ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 5))))
+      .unionAll(corpus.join(laggard,
+        ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 6))))
+      .unionAll(corpus.join(laggard,
+        ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 7))))
+      .unionAll(corpus.join(laggard,
+        ($"series" === $"p_series") && ($"eday" === $"p_eday") && ($"issue" > $"p_issue")))
+      .select("id", "terms", "index", "p_id", "p_terms", "p_index")
+      .flatMap({
+        case Row(id: String, terms: Seq[_], index: Map[_,_],
+          pid: String, pterms: Seq[_], pindex: Map[_,_]) => {
+          val t = terms.asInstanceOf[Seq[String]].toArray
+          val m = index.asInstanceOf[Map[String, Int]]
+          val pt = pterms.asInstanceOf[Seq[String]].toArray
+          val pm = pindex.asInstanceOf[Map[String, Int]]
+          val inc = PassFun.increasingMatches(pm
+            .flatMap(z => if (m.contains(z._1)) Some((z._2, m(z._1), 1)) else None))
+          PassFun.gappedMatches(config.n, config.gap, inc)
+            .map(z => PassFun.alignEdges(matchMatrix, config.n, config.minAlg, 0,
+              PassFun.edgeText(config.gap, config.n, IdSeries(0, 0), pt, z._1),
+              PassFun.edgeText(config.gap, config.n, IdSeries(1, 0), t, z._2)))
+            .filter(_.size > 0)
+            .map(z => ((id, t.size),
+              PassAlign(pid,
+                z.head._2._1._1, z.head._2._1._2,
+                z.last._2._1._1, z.last._2._1._2)))
         }
+      })
+      .groupByKey
+      .map(x => {
+        val ((id, termCount), alg) = x
+        val ids = alg.map(a => (PassimApp.hashString(a.id), a.id)).toMap
+        val merged = PassFun.mergeSpans(0, alg.map(z => ((z.cbegin, z.cend),
+          PassimApp.hashString(z.id))))
+        BoilerPass(id, termCount, merged.map(_._1._1).toArray, merged.map(_._1._2).toArray,
+          merged.map(p => p._2.map(ids(_)).sorted.last).toArray,
+          alg.toArray)
       })
       .toDF
   }
