@@ -248,34 +248,8 @@ object BoilerApp {
 
     val indexer = udf {(terms: Seq[String]) => hapaxIndex(config.n, terms)}
     val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
-
-    val corpus = df.select('id, 'terms, indexer(col("terms")).as("index"),
-      col(config.group).as("series"), datediff($"date", lit("1970-01-01")).as("eday"), 'issue)
-
-    val laggard = corpus.select($"id" as "p_id", $"terms" as "p_terms", $"index" as "p_index",
-      $"series" as "p_series", $"eday" as "p_eday", $"issue" as "p_issue")
-
-    // The important principle here is to ensure a hash join.
-    // This is possible, if ugly, with a finite number of integral day offsets.
-    // TODO: Figure out how to parameterize this by config.history.
-    // Might one create an array of DataFrames and reduce them with unionAll?
-    corpus.join(laggard, ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 1)))
-      .unionAll(corpus.join(laggard,
-        ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 2))))
-      .unionAll(corpus.join(laggard,
-        ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 3))))
-      .unionAll(corpus.join(laggard,
-        ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 4))))
-      .unionAll(corpus.join(laggard,
-        ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 5))))
-      .unionAll(corpus.join(laggard,
-        ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 6))))
-      .unionAll(corpus.join(laggard,
-        ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 7))))
-      .unionAll(corpus.join(laggard,
-        ($"series" === $"p_series") && ($"eday" === $"p_eday") && ($"issue" > $"p_issue")))
-      .select("id", "terms", "index", "p_id", "p_terms", "p_index")
-      .flatMap({
+    def alignPages(r: Row): Seq[((String, Int), PassAlign)] = {
+      r match {
         case Row(id: String, terms: Seq[_], index: Map[_,_],
           pid: String, pterms: Seq[_], pindex: Map[_,_]) => {
           val t = terms.asInstanceOf[Seq[String]].toArray
@@ -294,7 +268,31 @@ object BoilerApp {
                 z.head._2._1._1, z.head._2._1._2,
                 z.last._2._1._1, z.last._2._1._2)))
         }
-      })
+      }
+    }
+
+    val corpus = df.select('id, 'terms, indexer(col("terms")).as("index"),
+      col(config.group).as("series"), datediff($"date", lit("1970-01-01")).as("eday"), 'issue)
+
+    val laggard = corpus.select($"id" as "p_id", $"terms" as "p_terms", $"index" as "p_index",
+      $"series" as "p_series", $"eday" as "p_eday", $"issue" as "p_issue")
+
+    // The important principle here is to ensure a hash join.
+    // This is possible, if ugly, with a finite number of integral day offsets.
+    // TODO: Figure out how to parameterize this by config.history.
+    // Might one create an array of DataFrames and reduce them with unionAll?
+    // TODO: do alignments after each join to minimize shuffle
+    corpus.join(laggard, ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 1)))
+      .select("id", "terms", "index", "p_id", "p_terms", "p_index").flatMap(alignPages)
+      .union(corpus.join(laggard, ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 2)))
+        .select("id", "terms", "index", "p_id", "p_terms", "p_index").flatMap(alignPages))
+      .union(corpus.join(laggard, ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 3)))
+        .select("id", "terms", "index", "p_id", "p_terms", "p_index").flatMap(alignPages))
+      .union(corpus.join(laggard, ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 7)))
+        .select("id", "terms", "index", "p_id", "p_terms", "p_index").flatMap(alignPages))
+      .union(corpus.join(laggard,
+        ($"series" === $"p_series") && ($"eday" === $"p_eday") && ($"issue" > $"p_issue"))
+        .select("id", "terms", "index", "p_id", "p_terms", "p_index").flatMap(alignPages))
       .groupByKey
       .map(x => {
         val ((id, termCount), alg) = x
@@ -499,6 +497,7 @@ object PassimApp {
         .withColumn("uid", hashId('id))
 
       if ( boilerMake ) {
+        corpus.cache()
         val algFname = config.outputPath + "/alg." + config.outputFormat
         val alg = BoilerApp.matchPages(corpus, config, sqlContext)
         alg.cache()
