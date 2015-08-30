@@ -23,7 +23,7 @@ import java.nio.file.{Paths, Files}
 
 case class Config(mode: String= "cluster",
   n: Int = 5, maxSeries: Int = 100, minRep: Int = 5, minAlg: Int = 20,
-  gap: Int = 100, relOver: Double = 0.5, maxRep: Int = 10, history: Int = 0,
+  gap: Int = 100, relOver: Double = 0.5, maxRep: Int = 10, history: Int = 7,
   group: String = "series",
   inputFormat: String = "json", outputFormat: String = "json",
   inputPaths: String = "", outputPath: String = "")
@@ -539,7 +539,7 @@ object PassimApp {
       } text("index n-gram features; default=5")
       opt[Int]('h', "history") action { (x, c) => c.copy(history = x) } validate { x =>
         if ( x > 0 ) success else failure("history must be > 0")
-      } text("history in days for self reprinting; default=0")
+      } text("history in days for self reprinting; default=7")
       opt[Int]('u', "max-series") action { (x, c) =>
         c.copy(maxSeries = x) } text("Upper limit on effective series size; default=100")
       opt[Int]('m', "min-match") action { (x, c) =>
