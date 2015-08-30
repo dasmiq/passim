@@ -21,7 +21,8 @@ import java.security.MessageDigest
 import java.nio.ByteBuffer
 import java.nio.file.{Paths, Files}
 
-case class Config(n: Int = 5, maxSeries: Int = 100, minRep: Int = 5, minAlg: Int = 20,
+case class Config(mode: String= "cluster",
+  n: Int = 5, maxSeries: Int = 100, minRep: Int = 5, minAlg: Int = 20,
   gap: Int = 100, relOver: Double = 0.5, maxRep: Int = 10, history: Int = 0,
   group: String = "series",
   inputFormat: String = "json", outputFormat: String = "json",
@@ -43,6 +44,8 @@ case class BoilerPass(id: String, termCount: Int,
   alignments: Array[PassAlign])
 
 case class NewDoc(newid: String, newtext: String, aligned: Boolean)
+
+case class ClusterParent(id: String, begin: Long, date: String, matchProp: Float, score: Float)
 
 object CorpusFun {
   def boundingBox(regions: Array[imgCoord]): imgCoord = {
@@ -228,6 +231,51 @@ object PassFun {
     }
     passages ++= linkSpans(rover, spans.toList)
     passages.toList
+  }
+
+  case class AlignedPassage(s1: String, s2: String, b1: Int, b2: Int, matches: Int, score: Float)
+  def alignTerms(n: Int, gap: Int, matchMatrix: jaligner.matrix.Matrix,
+    t1: Array[String], t2: Array[String]): Seq[AlignedPassage] = {
+    val gap2 = gap * gap
+    val m1 = BoilerApp.hapaxIndex(n, t1)
+    val m2 = BoilerApp.hapaxIndex(n, t2)
+    val inc = PassFun.increasingMatches(m1
+      .flatMap(z => if (m2.contains(z._1)) Some((z._2, m2(z._1), 1)) else None))
+    if ( inc.size == 0 && (t1.size * t2.size) > gap2 ) {
+      Seq(AlignedPassage("...", "...", 0, 0, 0, -5.0f - 0.5f * t1.size - 0.5f * t2.size))
+    } else {
+      (Array((0, 0, 0)) ++ inc ++ Array((t1.size, t2.size, 0)))
+        .sliding(2).flatMap(z => {
+          val (b1, b2, c) = z(0)
+          val (e1, e2, _) = z(1)
+          val n1 = e1 - b1
+          val n2 = e2 - b2
+          if ( c == 0 && e1 == 0 && e2 == 0 ) {
+            Seq()
+          } else if ( (n1 * n2) <= gap2 ) {
+            val s1 = t1.slice(b1, e1).mkString(" ")
+            val s2 = t2.slice(b2, e2).mkString(" ")
+            if ( n1 == n2 && s1 == s2 ) {
+              Seq(AlignedPassage(s1, s2, b1, b2, s1.size, 2.0f * s2.size))
+            } else {
+              val alg = jaligner.NeedlemanWunschGotoh.align(new jaligner.Sequence(s1),
+                new jaligner.Sequence(s2), matchMatrix, 5, 0.5f)
+              Seq(AlignedPassage(new String(alg.getSequence1), new String(alg.getSequence2),
+                b1, b2, alg.getIdentity, alg.getScore))
+            }
+          } else {
+            if ( c > 0 ) {
+              val s1 = t1.slice(b1, b1+n).mkString(" ")
+              val s2 = t2.slice(b2, b2+n).mkString(" ")
+              // Array(AlignedPassage("TOO", "BIG", b1, b2, 0, 0f)) ++
+              Array(AlignedPassage(s1, s2, b1, b2, s1.size, 2.0f * s2.size)) ++
+              alignTerms(n, gap, matchMatrix, t1.slice(b1+n, e1), t2.slice(b2+n, e2))
+            } else {
+              alignTerms(n, gap, matchMatrix, t1.slice(b1, e1), t2.slice(b2, e2))
+            }
+          }
+        }).toSeq
+    }
   }
 }
 
@@ -431,6 +479,8 @@ object PassimApp {
     import sqlContext.implicits._
 
     val parser = new scopt.OptionParser[Config]("passim") {
+      opt[String]('M', "mode") action { (x, c) =>
+        c.copy(mode = x) } text("Mode: cluster, boilerplate, parents; default=cluster")
       opt[Int]('n', "n") action { (x, c) => c.copy(n = x) } validate { x =>
         if ( x > 0 ) success else failure("n-gram order must be > 0")
       } text("index n-gram features; default=5")
@@ -475,25 +525,70 @@ object PassimApp {
     val clusterFname = config.outputPath + "/clusters.parquet"
     val outFname = config.outputPath + "/out." + config.outputFormat
 
+    if ( config.mode == "parents" ) {
+      val raw = sqlContext.read.format(config.inputFormat).load(config.inputPaths)
+      val corpus = testTok(raw)
+
+      val candidates = corpus.select($"cluster" as "p_cluster",
+        $"id" as "p_id", $"begin" as "p_begin",
+        $"terms" as "p_terms", $"date" as "p_date")
+      val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
+      val gap2 = config.gap * config.gap
+
+      val pars = corpus
+        .join(candidates, ($"cluster" === $"p_cluster") && ($"date" > $"p_date"), "left_outer")
+        .select("cluster", "id", "begin", "end", "terms", "date",
+          "p_id", "p_begin", "p_terms", "p_date")
+        .map({
+          case Row(cluster: Long, id: String, begin: Long, end: Long, terms: Seq[_], date:String,
+            p_id: String, p_begin: Long, p_terms: Seq[_], p_date: String) => {
+            val t = terms.asInstanceOf[Seq[String]].toArray
+            val pt = p_terms.asInstanceOf[Seq[String]].toArray
+            val chunks = PassFun.alignTerms(config.n, config.gap, matchMatrix, pt, t)
+            val matches = chunks.map(_.matches).sum + (chunks.size - 1)
+            val score = chunks.map(_.score).sum + (chunks.size - 1) * 2.0f
+            val toklen = t.map(_.size).sum + (t.size - 1)
+            ((cluster, id, begin, date),
+              ClusterParent(p_id, p_begin, p_date, (matches*1.0f/toklen), score))
+          }
+          case Row(cluster: Long, id: String, begin: Long, end: Long, terms: Seq[_], date:String,
+            _, _, _, _) => {
+            ((cluster, id, begin, date), ClusterParent("", 0, "", 0f, 0f))
+          }
+        })
+        .groupByKey
+        .map(x => {
+          val ((cluster, id, begin, date), parents) = x
+          val best = parents.map(_.score).max
+          val threshold = if ( best > 0 ) best * 0.9f else best
+          val keepers = parents.filter(_.id != "").filter(_.score >= threshold).toArray
+          (cluster, id, begin, date, keepers)
+        })
+        .toDF("cluster", "id", "begin", "date", "parents")
+        .orderBy("cluster", "date")
+        .write.json(outFname)
+
+      sys.exit(0)
+    }
+
     // Warn about existing output directory before doing lots of work.
     // TODO: Use hadoop API
     val confMake = !Files.exists(Paths.get(confFname))
     val clusterMake = !Files.exists(Paths.get(clusterFname))
     val outMake = !Files.exists(Paths.get(outFname))
-    val boilerMake = config.history > 0
 
     if ( confMake ) {
       // TODO: Read configuration
       sc.parallelize(config :: Nil).toDF.coalesce(1).write.json(confFname)
     }
 
-    if ( clusterMake || outMake || boilerMake ) {
+    if ( clusterMake || outMake || config.mode == "boilerplate" ) {
       val raw = sqlContext.read.format(config.inputFormat).load(config.inputPaths)
 
       val corpus = testTok(testGroup(config.group, raw))
         .withColumn("uid", hashId('id))
 
-      if ( boilerMake ) {
+      if ( config.mode == "boilerplate" ) {
         val algFname = config.outputPath + "/alg." + config.outputFormat
         val alg = BoilerApp.matchPages(corpus, config, sqlContext)
         alg.cache()
