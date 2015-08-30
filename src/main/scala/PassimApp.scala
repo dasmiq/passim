@@ -337,18 +337,18 @@ object BoilerApp {
     // This is possible, if ugly, with a finite number of integral day offsets.
     // TODO: Figure out how to parameterize this by config.history.
     // Might one create an array of DataFrames and reduce them with unionAll?
-    // TODO: do alignments after each join to minimize shuffle
-    corpus.join(laggard, ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 1)))
-      .select("id", "terms", "index", "p_id", "p_terms", "p_index").flatMap(alignPages)
-      .union(corpus.join(laggard, ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 2)))
-        .select("id", "terms", "index", "p_id", "p_terms", "p_index").flatMap(alignPages))
-      .union(corpus.join(laggard, ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 3)))
-        .select("id", "terms", "index", "p_id", "p_terms", "p_index").flatMap(alignPages))
-      .union(corpus.join(laggard, ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 7)))
-        .select("id", "terms", "index", "p_id", "p_terms", "p_index").flatMap(alignPages))
-      .union(corpus.join(laggard,
-        ($"series" === $"p_series") && ($"eday" === $"p_eday") && ($"issue" > $"p_issue"))
-        .select("id", "terms", "index", "p_id", "p_terms", "p_index").flatMap(alignPages))
+    corpus.join(laggard,
+      ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 1)))
+      .unionAll(corpus.join(laggard,
+        ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 2))))
+      .unionAll(corpus.join(laggard,
+        ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 3))))
+      .unionAll(corpus.join(laggard,
+        ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 7))))
+      .unionAll(corpus.join(laggard,
+        ($"series" === $"p_series") && ($"eday" === $"p_eday") && ($"issue" > $"p_issue")))
+      .select("id", "terms", "index", "p_id", "p_terms", "p_index")
+      .flatMap(alignPages)
       .groupByKey
       .map(x => {
         val ((id, termCount), alg) = x
