@@ -4,12 +4,14 @@ version := "1.0"
 
 scalaVersion := "2.10.4"
 
-libraryDependencies += "org.apache.spark" %% "spark-core" % "1.4.1"
-libraryDependencies += "org.apache.spark" %% "spark-graphx" % "1.4.1"
-libraryDependencies += "org.apache.spark" %% "spark-mllib" % "1.4.1"
-libraryDependencies += "org.apache.spark" %% "spark-sql" % "1.4.1"
-
 resolvers += Resolver.mavenLocal
+
+resolvers += "ASF Staging repository" at "https://repository.apache.org/content/repositories/orgapachespark-1140"
+
+libraryDependencies += "org.apache.spark" %% "spark-core" % "1.5.0"
+libraryDependencies += "org.apache.spark" %% "spark-graphx" % "1.5.0"
+libraryDependencies += "org.apache.spark" %% "spark-mllib" % "1.5.0"
+libraryDependencies += "org.apache.spark" %% "spark-sql" % "1.5.0"
 
 libraryDependencies += "com.github.scopt" %% "scopt" % "3.3.0"
 
