@@ -235,8 +235,16 @@ object PassFun {
 
   case class AlignedPassage(s1: String, s2: String, b1: Int, b2: Int, matches: Int, score: Float)
   def alignTerms(n: Int, gap: Int, matchMatrix: jaligner.matrix.Matrix,
+    t1: Array[String], t2: Array[String]): AlignedPassage = {
+    val chunks = recursivelyAlignTerms(n, gap * gap, matchMatrix, t1, t2)
+    // Could make only one pass through chunks if we implemented a merger for AlignedPassages.
+    AlignedPassage(chunks.map(_.s1).mkString(" "), chunks.map(_.s2).mkString(" "),
+      0, 0,
+      chunks.map(_.matches).sum + chunks.size - 1,
+      chunks.map(_.score).sum + (chunks.size - 1) * 2.0f)
+  }
+  def recursivelyAlignTerms(n: Int, gap2: Int, matchMatrix: jaligner.matrix.Matrix,
     t1: Array[String], t2: Array[String]): Seq[AlignedPassage] = {
-    val gap2 = gap * gap
     val m1 = BoilerApp.hapaxIndex(n, t1)
     val m2 = BoilerApp.hapaxIndex(n, t2)
     val inc = PassFun.increasingMatches(m1
@@ -269,9 +277,9 @@ object PassFun {
               val s2 = t2.slice(b2, b2+n).mkString(" ")
               // Array(AlignedPassage("TOO", "BIG", b1, b2, 0, 0f)) ++
               Array(AlignedPassage(s1, s2, b1, b2, s1.size, 2.0f * s2.size)) ++
-              alignTerms(n, gap, matchMatrix, t1.slice(b1+n, e1), t2.slice(b2+n, e2))
+              recursivelyAlignTerms(n, gap2, matchMatrix, t1.slice(b1+n, e1), t2.slice(b2+n, e2))
             } else {
-              alignTerms(n, gap, matchMatrix, t1.slice(b1, e1), t2.slice(b2, e2))
+              recursivelyAlignTerms(n, gap2, matchMatrix, t1.slice(b1, e1), t2.slice(b2, e2))
             }
           }
         }).toSeq
@@ -533,7 +541,6 @@ object PassimApp {
         $"id" as "p_id", $"begin" as "p_begin",
         $"terms" as "p_terms", $"date" as "p_date")
       val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
-      val gap2 = config.gap * config.gap
 
       val pars = corpus
         .join(candidates, ($"cluster" === $"p_cluster") && ($"date" > $"p_date"), "left_outer")
@@ -543,13 +550,11 @@ object PassimApp {
           case Row(cluster: Long, id: String, begin: Long, end: Long, terms: Seq[_], date:String,
             p_id: String, p_begin: Long, p_terms: Seq[_], p_date: String) => {
             val t = terms.asInstanceOf[Seq[String]].toArray
-            val pt = p_terms.asInstanceOf[Seq[String]].toArray
-            val chunks = PassFun.alignTerms(config.n, config.gap, matchMatrix, pt, t)
-            val matches = chunks.map(_.matches).sum + (chunks.size - 1)
-            val score = chunks.map(_.score).sum + (chunks.size - 1) * 2.0f
+            val alg = PassFun.alignTerms(config.n, config.gap, matchMatrix,
+              p_terms.asInstanceOf[Seq[String]].toArray, t)
             val toklen = t.map(_.size).sum + (t.size - 1)
             ((cluster, id, begin, date),
-              ClusterParent(p_id, p_begin, p_date, (matches*1.0f/toklen), score))
+              ClusterParent(p_id, p_begin, p_date, (alg.matches*1.0f/toklen), alg.score))
           }
           case Row(cluster: Long, id: String, begin: Long, end: Long, terms: Seq[_], date:String,
             _, _, _, _) => {
