@@ -449,6 +449,50 @@ object PassimApp {
       TokApp.tokenizeText(df)
     }
   }
+
+  def matchParents(config: Config, sqlContext: SQLContext) {
+    import sqlContext.implicits._
+    val raw = sqlContext.read.format(config.inputFormat).load(config.inputPaths)
+    val corpus = testTok(raw)
+
+    val candidates = corpus.select($"cluster" as "p_cluster",
+      $"id" as "p_id", $"begin" as "p_begin",
+      $"terms" as "p_terms", $"date" as "p_date")
+    val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
+
+    // TODO: Pass through all original fields in raw.
+    corpus
+      .join(candidates, ($"cluster" === $"p_cluster") && ($"date" > $"p_date"), "left_outer")
+      .select("cluster", "id", "begin", "end", "terms", "date",
+        "p_id", "p_begin", "p_terms", "p_date")
+      .map({
+        case Row(cluster: Long, id: String, begin: Long, end: Long, terms: Seq[_], date:String,
+          p_id: String, p_begin: Long, p_terms: Seq[_], p_date: String) => {
+          val t = terms.asInstanceOf[Seq[String]].toArray
+          val alg = PassFun.alignTerms(config.n, config.gap, matchMatrix,
+            p_terms.asInstanceOf[Seq[String]].toArray, t)
+          val toklen = t.map(_.size).sum + (t.size - 1)
+          ((cluster, id, begin, date),
+            ClusterParent(p_id, p_begin, p_date, (alg.matches*1.0f/toklen), alg.score))
+        }
+        case Row(cluster: Long, id: String, begin: Long, end: Long, terms: Seq[_], date:String,
+          _, _, _, _) => {
+          ((cluster, id, begin, date), ClusterParent("", 0, "", 0f, 0f))
+        }
+      })
+      .groupByKey
+      .map(x => {
+        val ((cluster, id, begin, date), parents) = x
+        val best = parents.map(_.score).max
+        val threshold = if ( best > 0 ) best * 0.9f else best
+        val keepers = parents.filter(_.id != "").filter(_.score >= threshold).toArray
+        (cluster, id, begin, date, keepers)
+      })
+      .toDF("cluster", "id", "begin", "date", "parents")
+      .orderBy("cluster", "date")
+      .write.format(config.outputFormat).save(config.outputPath)
+  }
+
   val hashId = udf {(id: String) => hashString(id)}
   val getPassage = udf {
     (begin: Int, end: Int, text: String, termCharBegin: Seq[Int], termCharEnd: Seq[Int]) =>
@@ -529,52 +573,14 @@ object PassimApp {
         Config()
     }
 
+    if ( config.mode == "parents" ) {
+      matchParents(config, sqlContext)
+      sys.exit(0)
+    }
+
     val confFname = config.outputPath + "/conf"
     val clusterFname = config.outputPath + "/clusters.parquet"
     val outFname = config.outputPath + "/out." + config.outputFormat
-
-    if ( config.mode == "parents" ) {
-      val raw = sqlContext.read.format(config.inputFormat).load(config.inputPaths)
-      val corpus = testTok(raw)
-
-      val candidates = corpus.select($"cluster" as "p_cluster",
-        $"id" as "p_id", $"begin" as "p_begin",
-        $"terms" as "p_terms", $"date" as "p_date")
-      val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
-
-      val pars = corpus
-        .join(candidates, ($"cluster" === $"p_cluster") && ($"date" > $"p_date"), "left_outer")
-        .select("cluster", "id", "begin", "end", "terms", "date",
-          "p_id", "p_begin", "p_terms", "p_date")
-        .map({
-          case Row(cluster: Long, id: String, begin: Long, end: Long, terms: Seq[_], date:String,
-            p_id: String, p_begin: Long, p_terms: Seq[_], p_date: String) => {
-            val t = terms.asInstanceOf[Seq[String]].toArray
-            val alg = PassFun.alignTerms(config.n, config.gap, matchMatrix,
-              p_terms.asInstanceOf[Seq[String]].toArray, t)
-            val toklen = t.map(_.size).sum + (t.size - 1)
-            ((cluster, id, begin, date),
-              ClusterParent(p_id, p_begin, p_date, (alg.matches*1.0f/toklen), alg.score))
-          }
-          case Row(cluster: Long, id: String, begin: Long, end: Long, terms: Seq[_], date:String,
-            _, _, _, _) => {
-            ((cluster, id, begin, date), ClusterParent("", 0, "", 0f, 0f))
-          }
-        })
-        .groupByKey
-        .map(x => {
-          val ((cluster, id, begin, date), parents) = x
-          val best = parents.map(_.score).max
-          val threshold = if ( best > 0 ) best * 0.9f else best
-          val keepers = parents.filter(_.id != "").filter(_.score >= threshold).toArray
-          (cluster, id, begin, date, keepers)
-        })
-        .toDF("cluster", "id", "begin", "date", "parents")
-        .orderBy("cluster", "date")
-        .write.json(outFname)
-
-      sys.exit(0)
-    }
 
     // Warn about existing output directory before doing lots of work.
     // TODO: Use hadoop API
