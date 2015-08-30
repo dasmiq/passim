@@ -483,10 +483,8 @@ object PassimApp {
       .groupByKey
       .map(x => {
         val ((cluster, id, begin, date), parents) = x
-        val best = parents.map(_.score).max
-        val threshold = if ( best > 0 ) best * 0.9f else best
-        val keepers = parents.filter(_.id != "").filter(_.score >= threshold).toArray
-        (cluster, id, begin, date, keepers)
+        (cluster, id, begin, date,
+          parents.filter(_.id != "").toSeq.sortWith(_.score > _.score).toArray)
       })
       .toDF("cluster", "id", "begin", "date", "parents")
       .orderBy("cluster", "date")
