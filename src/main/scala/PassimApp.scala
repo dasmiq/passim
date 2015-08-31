@@ -299,8 +299,47 @@ object BoilerApp {
       .mapValues(_(0))
   }
 
-  def matchPages(df: DataFrame, config: Config, sqlContext: SQLContext): DataFrame = {
+  def splitDocs(r: Row): Array[NewDoc] = {
+    val id = r.getString(0)
+    val text = r.getString(1)
+    val docs = new ArrayBuffer[NewDoc]
+    if ( r.isNullAt(2) ) {
+      docs += NewDoc(id, text, false)
+    } else {
+      val passageBegin = r.getSeq[Int](2).toArray
+      val passageEnd = r.getSeq[Int](3).toArray
+      val termCharEnd = r.getSeq[Int](4).toArray
+      def tcOff(termOff: Int): Int = if ( termOff == 0 ) 0 else termCharEnd(termOff - 1)
+      for ( i <- 0 until passageBegin.size ) {
+        val begin = passageBegin(i)
+        val pBegin = if ( i == 0 ) {
+          if ( begin == 0 ) -1 else 0
+        } else
+          (passageEnd(i - 1) + 1)
+        if ( pBegin >= 0 && pBegin < (begin - 1)) {
+          docs += NewDoc(id + "_" + pBegin,
+            text.substring(tcOff(pBegin), termCharEnd(begin - 1)),
+            false)
+        }
+        docs += NewDoc(id + "_" + begin,
+          text.substring(tcOff(begin), termCharEnd(passageEnd(i))),
+          true)
+      }
+      if ( (passageEnd.last + 1) < termCharEnd.size ) {
+        val pBegin = passageEnd.last + 1
+        docs += NewDoc(id + "_" + pBegin, text.substring(tcOff(pBegin)), false)
+      }
+    }
+    docs.toArray
+  }
+
+  def matchPages(config: Config, sqlContext: SQLContext) = {
     import sqlContext.implicits._
+
+    val algFname = config.outputPath + "/alg." + config.outputFormat
+
+    val raw = sqlContext.read.format(config.inputFormat).load(config.inputPaths)
+    val corpus = PassimApp.testTok(PassimApp.testGroup(config.group, raw))
 
     val indexer = udf {(terms: Seq[String]) => hapaxIndex(config.n, terms)}
     val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
@@ -327,25 +366,25 @@ object BoilerApp {
       }
     }
 
-    val corpus = df.select('id, 'terms, indexer(col("terms")).as("index"),
+    val cur = corpus.select('id, 'terms, indexer(col("terms")).as("index"),
       col(config.group).as("series"), datediff($"date", lit("1970-01-01")).as("eday"), 'issue)
 
-    val laggard = corpus.select($"id" as "p_id", $"terms" as "p_terms", $"index" as "p_index",
+    val laggard = cur.select($"id" as "p_id", $"terms" as "p_terms", $"index" as "p_index",
       $"series" as "p_series", $"eday" as "p_eday", $"issue" as "p_issue")
 
     // The important principle here is to ensure a hash join.
     // This is possible, if ugly, with a finite number of integral day offsets.
     // TODO: Figure out how to parameterize this by config.history.
     // Might one create an array of DataFrames and reduce them with unionAll?
-    corpus.join(laggard,
+    val alg = cur.join(laggard,
       ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 1)))
-      .unionAll(corpus.join(laggard,
+      .unionAll(cur.join(laggard,
         ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 2))))
-      .unionAll(corpus.join(laggard,
+      .unionAll(cur.join(laggard,
         ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 3))))
-      .unionAll(corpus.join(laggard,
+      .unionAll(cur.join(laggard,
         ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 7))))
-      .unionAll(corpus.join(laggard,
+      .unionAll(cur.join(laggard,
         ($"series" === $"p_series") && ($"eday" === $"p_eday") && ($"issue" > $"p_issue")))
       .select("id", "terms", "index", "p_id", "p_terms", "p_index")
       .flatMap(alignPages)
@@ -360,6 +399,20 @@ object BoilerApp {
           alg.toArray)
       })
       .toDF
+
+    alg.cache()
+    alg.write.format(config.outputFormat).save(algFname)
+
+    alg.withColumnRenamed("id", "aid").drop("alignments")
+      .join(corpus.drop("terms").drop("uid"), 'aid === 'id, "right_outer")
+      .explode('id, 'text, 'passageBegin, 'passageEnd, 'termCharEnd)(splitDocs)
+      .drop("aid").withColumnRenamed("id", "docid").withColumnRenamed("newid", "id")
+      .drop("text").withColumnRenamed("newtext", "text")
+      .drop("termCharBegin").drop("termCharEnd")
+      .drop("termPages").drop("termRegions").drop("termLocs")
+      .drop("passageBegin").drop("passageEnd")
+      .write.format(config.outputFormat)
+      .save(config.outputPath + "/corpus." + config.outputFormat)
   }
 }
 
@@ -577,6 +630,9 @@ object PassimApp {
     if ( config.mode == "parents" ) {
       matchParents(config, sqlContext)
       sys.exit(0)
+    } else if ( config.mode == "boilerplate" ) {
+      BoilerApp.matchPages(config, sqlContext)
+      sys.exit(0)
     }
 
     val confFname = config.outputPath + "/conf"
@@ -594,63 +650,11 @@ object PassimApp {
       sc.parallelize(config :: Nil).toDF.coalesce(1).write.json(confFname)
     }
 
-    if ( clusterMake || outMake || config.mode == "boilerplate" ) {
+    if ( clusterMake || outMake ) {
       val raw = sqlContext.read.format(config.inputFormat).load(config.inputPaths)
 
       val corpus = testTok(testGroup(config.group, raw))
         .withColumn("uid", hashId('id))
-
-      if ( config.mode == "boilerplate" ) {
-        val algFname = config.outputPath + "/alg." + config.outputFormat
-        val alg = BoilerApp.matchPages(corpus, config, sqlContext)
-        alg.cache()
-        alg.write.format(config.outputFormat).save(algFname)
-        def splitDocs(r: Row): Array[NewDoc] = {
-          val id = r.getString(0)
-          val text = r.getString(1)
-          val docs = new ArrayBuffer[NewDoc]
-          if ( r.isNullAt(2) ) {
-            docs += NewDoc(id, text, false)
-          } else {
-            val passageBegin = r.getSeq[Int](2).toArray
-            val passageEnd = r.getSeq[Int](3).toArray
-            val termCharEnd = r.getSeq[Int](4).toArray
-            def tcOff(termOff: Int): Int = if ( termOff == 0 ) 0 else termCharEnd(termOff - 1)
-            for ( i <- 0 until passageBegin.size ) {
-              val begin = passageBegin(i)
-              val pBegin = if ( i == 0 ) {
-                if ( begin == 0 ) -1 else 0
-              } else
-                (passageEnd(i - 1) + 1)
-              if ( pBegin >= 0 && pBegin < (begin - 1)) {
-                docs += NewDoc(id + "_" + pBegin,
-                  text.substring(tcOff(pBegin), termCharEnd(begin - 1)),
-                  false)
-              }
-              docs += NewDoc(id + "_" + begin,
-                text.substring(tcOff(begin), termCharEnd(passageEnd(i))),
-                true)
-            }
-            if ( (passageEnd.last + 1) < termCharEnd.size ) {
-              val pBegin = passageEnd.last + 1
-              docs += NewDoc(id + "_" + pBegin, text.substring(tcOff(pBegin)), false)
-            }
-          }
-          docs.toArray
-        }
-        alg.withColumnRenamed("id", "aid").drop("alignments")
-          .join(corpus.drop("terms").drop("uid"), 'aid === 'id, "right_outer")
-          .explode('id, 'text, 'passageBegin, 'passageEnd, 'termCharEnd)(splitDocs)
-          .drop("aid").withColumnRenamed("id", "docid").withColumnRenamed("newid", "id")
-          .drop("text").withColumnRenamed("newtext", "text")
-          .drop("termCharBegin").drop("termCharEnd")
-          .drop("termPages").drop("termRegions").drop("termLocs")
-          .drop("passageBegin").drop("passageEnd")
-          .write.format(config.outputFormat)
-          .save(config.outputPath + "/corpus." + config.outputFormat)
-
-        sys.exit(0)
-      }
 
       if ( clusterMake ) {
         val gap2 = config.gap * config.gap
