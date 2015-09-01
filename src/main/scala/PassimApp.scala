@@ -653,6 +653,7 @@ object PassimApp {
     val fs = FileSystem.get(sc.hadoopConfiguration)
 
     val configFname = config.outputPath + "/conf"
+    val alignFname = config.outputPath + "/align.parquet"
     val clusterFname = config.outputPath + "/clusters.parquet"
     val outFname = config.outputPath + "/out." + config.outputFormat
 
@@ -733,22 +734,29 @@ object PassimApp {
 
         val graphParallelism = 1
 
-        val pass = pass1
+        pass1
           .groupByKey(graphParallelism * sc.getExecutorMemoryStatus.size)
           .flatMapValues(PassFun.mergeSpans(config.relOver, _))
           .zipWithUniqueId
         // This was getting recomputed on different partitions, thus reassigning IDs.
-          .persist(StorageLevel.MEMORY_AND_DISK_SER)
-        // pass.saveAsTextFile(args(1) + ".pass")
+          .map(v => {
+            val ((doc, (span, edges)), id) = v
+            (id, doc.id, doc.series, span._1, span._2, edges)
+          })
+          .toDF("nid", "uid", "gid", "begin", "end", "edges")
+          .write.parquet(alignFname)
 
-        val passNodes = pass.map(v => {
-          val ((doc, (span, edges)), id) = v
-          (id, (doc, span))
+        val pass = sqlContext.read.parquet(alignFname)
+
+        val passNodes = pass.map({
+          case Row(nid: Long, uid: Long, gid: Long, begin: Int, end: Int, edges: Seq[_]) =>
+            (nid, (IdSeries(uid, gid), (begin, end)))
         })
-        val passEdges = pass.flatMap(v => {
-          val ((doc, (span, edges)), id) = v
-          edges.map(e => (e, id))
-        }).groupByKey
+        val passEdges = pass.flatMap({
+          case Row(nid: Long, uid: Long, gid: Long, begin: Int, end: Int, edges: Seq[_]) =>
+            edges.asInstanceOf[Seq[Long]].map(e => (e, nid))
+        })
+          .groupByKey
           .map(e => {
             val nodes = e._2.toArray.sorted
             Edge(nodes(0), nodes(1), 1)
