@@ -10,6 +10,8 @@ import org.apache.spark.sql.Row
 import org.apache.spark.sql.functions._
 import org.apache.spark.storage.StorageLevel
 
+import org.apache.hadoop.fs.{FileSystem,Path}
+
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import java.sql.Date
 
@@ -19,14 +21,18 @@ import scala.collection.mutable.ArrayBuffer
 
 import java.security.MessageDigest
 import java.nio.ByteBuffer
-import java.nio.file.{Paths, Files}
 
 case class Config(mode: String= "cluster",
   n: Int = 5, maxSeries: Int = 100, minRep: Int = 5, minAlg: Int = 20,
   gap: Int = 100, relOver: Double = 0.5, maxRep: Int = 10, history: Int = 7,
   group: String = "series",
   inputFormat: String = "json", outputFormat: String = "json",
-  inputPaths: String = "", outputPath: String = "")
+  inputPaths: String = "", outputPath: String = "") {
+  def save(fname: String, sqlContext: SQLContext) {
+    import sqlContext.implicits._
+    sqlContext.sparkContext.parallelize(this :: Nil).toDF.coalesce(1).write.json(fname)
+  }
+}
 
 case class imgCoord(val x: Int, val y: Int, val w: Int, val h: Int) {
   def x2 = x + w
@@ -336,6 +342,14 @@ object BoilerApp {
   def matchPages(config: Config, sqlContext: SQLContext) = {
     import sqlContext.implicits._
 
+    val fs = FileSystem.get(sqlContext.sparkContext.hadoopConfiguration)
+    val configFname = config.outputPath + "/conf"
+    if ( fs.exists(new Path(configFname)) ) {
+      // TODO: Read configuration
+    } else {
+      config.save(configFname, sqlContext)
+    }
+
     val algFname = config.outputPath + "/alg." + config.outputFormat
 
     val raw = sqlContext.read.format(config.inputFormat).load(config.inputPaths)
@@ -376,6 +390,7 @@ object BoilerApp {
     // This is possible, if ugly, with a finite number of integral day offsets.
     // TODO: Figure out how to parameterize this by config.history.
     // Might one create an array of DataFrames and reduce them with unionAll?
+    // Or, one could sort, use mapPartitions, and exchance records at boundaries (or not).
     val alg = cur.join(laggard,
       ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 1)))
       .unionAll(cur.join(laggard,
@@ -635,28 +650,25 @@ object PassimApp {
       sys.exit(0)
     }
 
-    val confFname = config.outputPath + "/conf"
+    val fs = FileSystem.get(sc.hadoopConfiguration)
+
+    val configFname = config.outputPath + "/conf"
     val clusterFname = config.outputPath + "/clusters.parquet"
     val outFname = config.outputPath + "/out." + config.outputFormat
 
-    // Warn about existing output directory before doing lots of work.
-    // TODO: Use hadoop API
-    val confMake = !Files.exists(Paths.get(confFname))
-    val clusterMake = !Files.exists(Paths.get(clusterFname))
-    val outMake = !Files.exists(Paths.get(outFname))
-
-    if ( confMake ) {
+    if ( fs.exists(new Path(configFname)) ) {
       // TODO: Read configuration
-      sc.parallelize(config :: Nil).toDF.coalesce(1).write.json(confFname)
+    } else {
+      config.save(configFname, sqlContext)
     }
 
-    if ( clusterMake || outMake ) {
+    if ( !fs.exists(new Path(outFname)) ) {
       val raw = sqlContext.read.format(config.inputFormat).load(config.inputPaths)
 
       val corpus = testTok(testGroup(config.group, raw))
         .withColumn("uid", hashId('id))
 
-      if ( clusterMake ) {
+      if ( !fs.exists(new Path(clusterFname)) ) {
         val gap2 = config.gap * config.gap
         val upper = config.maxSeries * (config.maxSeries - 1) / 2
 
@@ -774,22 +786,20 @@ object PassimApp {
         termCorpus.unpersist()
       }
 
-      if ( outMake ) {
-        val cols = corpus.columns.toSet
-        val dateSort = if ( cols.contains("date") ) 'date else 'id
+      val cols = corpus.columns.toSet
+      val dateSort = if ( cols.contains("date") ) 'date else 'id
 
-        sqlContext.read.parquet(clusterFname)
-          .join(corpus.drop("terms"), "uid")
-          .withColumn("_text", getPassage('begin, 'end, 'text, 'termCharBegin, 'termCharEnd))
-          .drop("text").withColumnRenamed("_text", "text")
-          .withColumn("pages", getLocs('begin, 'end, 'termPages))
-          .withColumn("regions", getRegions('begin, 'end, 'termPages, 'termRegions))
-          .withColumn("locs", getLocs('begin, 'end, 'termLocs))
-          .drop("termCharBegin").drop("termCharEnd")
-          .drop("termPages").drop("termRegions").drop("termLocs")
-          .sort('size.desc, 'cluster, dateSort, 'id, 'begin)
-          .write.format(config.outputFormat).save(outFname)
-      }
+      sqlContext.read.parquet(clusterFname)
+        .join(corpus.drop("terms"), "uid")
+        .withColumn("_text", getPassage('begin, 'end, 'text, 'termCharBegin, 'termCharEnd))
+        .drop("text").withColumnRenamed("_text", "text")
+        .withColumn("pages", getLocs('begin, 'end, 'termPages))
+        .withColumn("regions", getRegions('begin, 'end, 'termPages, 'termRegions))
+        .withColumn("locs", getLocs('begin, 'end, 'termLocs))
+        .drop("termCharBegin").drop("termCharEnd")
+        .drop("termPages").drop("termRegions").drop("termLocs")
+        .sort('size.desc, 'cluster, dateSort, 'id, 'begin)
+        .write.format(config.outputFormat).save(outFname)
     }
   }
 }
