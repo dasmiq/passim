@@ -6,7 +6,7 @@ import HTMLParser
 
 from pyspark import SparkContext
 from pyspark.sql import SQLContext
-from pyspark.sql.functions import udf, array_contains, explode
+from pyspark.sql.functions import udf, array_contains, explode, desc
 from pyspark.sql.types import StringType
 
 def formatURL(url, corpus, id, pages, regions):
@@ -50,7 +50,7 @@ if __name__ == "__main__":
           .withColumn("url", constructURL(raw.url, raw.corpus, raw.id, raw.pages, raw.regions))\
           .drop("locs").drop("pages").drop("regions")
 
-    out.write.format(outputFormat).options(header='true').save(sys.argv[3])
+    out.orderBy(desc("size"), "cluster", "date", "id", "begin").write.format(outputFormat).options(header='true').save(sys.argv[3])
 
     sc.stop()
     
