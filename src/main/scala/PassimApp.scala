@@ -713,7 +713,7 @@ object PassimApp {
           }
 
           val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
-          val pass1 = sqlContext.read.load(pairsFname)
+          val pass1 = sqlContext.read.parquet(pairsFname)
             .join(termCorpus, "uid")
             .map({
               case Row(uid: Long, begin: Int, end: Int, mid: Long, terms: Seq[_], gid: Long) => {
