@@ -44,7 +44,8 @@ case class IdSeries(id: Long, series: Long)
 
 case class SpanMatch(uid: Long, begin: Int, end: Int, mid: Long)
 
-case class PassAlign(id: String, begin: Int, end: Int, cbegin: Int, cend: Int)
+case class PassAlign(id: String, begin: Int, end: Int, cbegin: Int, cend: Int,
+  palg: String, calg: String)
 
 case class BoilerPass(id: String, termCount: Int,
   passageBegin: Array[Int], passageEnd: Array[Int], passageLastId: Array[String],
@@ -359,26 +360,27 @@ object BoilerApp {
     val indexer = udf {(terms: Seq[String]) => hapaxIndex(config.n, terms)}
     val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
     def alignPages(r: Row): Seq[((String, Int), PassAlign)] = {
-      r match {
-        case Row(id: String, terms: Seq[_], index: Map[_,_],
-          pid: String, pterms: Seq[_], pindex: Map[_,_]) => {
-          val t = terms.asInstanceOf[Seq[String]].toArray
-          val m = index.asInstanceOf[Map[String, Int]]
-          val pt = pterms.asInstanceOf[Seq[String]].toArray
-          val pm = pindex.asInstanceOf[Map[String, Int]]
-          val inc = PassFun.increasingMatches(pm
-            .flatMap(z => if (m.contains(z._1)) Some((z._2, m(z._1), 1)) else None))
-          PassFun.gappedMatches(config.n, config.gap, inc)
-            .map(z => PassFun.alignEdges(matchMatrix, config.n, config.minAlg, 0,
-              PassFun.edgeText(config.gap, config.n, IdSeries(0, 0), pt, z._1),
-              PassFun.edgeText(config.gap, config.n, IdSeries(1, 0), t, z._2)))
-            .filter(_.size > 0)
-            .map(z => ((id, t.size),
-              PassAlign(pid,
-                z.head._2._1._1, z.head._2._1._2,
-                z.last._2._1._1, z.last._2._1._2)))
-        }
-      }
+      val id = r.getString(0)
+      val t = r.getAs[Seq[String]](1).toArray
+      val m = r.getAs[Map[String, Int]](2)
+      val pid = r.getString(3)
+      val pt = r.getAs[Seq[String]](4).toArray
+      val pm = r.getAs[Map[String, Int]](5)
+      val inc = PassFun.increasingMatches(pm
+        .flatMap(z => if (m.contains(z._1)) Some((z._2, m(z._1), 1)) else None))
+      PassFun.gappedMatches(config.n, config.gap, inc)
+        .map(z => PassFun.alignEdges(matchMatrix, config.n, config.minAlg, 0,
+          PassFun.edgeText(config.gap * 2/3, config.n, IdSeries(0, 0), pt, z._1),
+          PassFun.edgeText(config.gap * 2/3, config.n, IdSeries(1, 0), t, z._2)))
+        .filter(_.size > 0)
+      // Merge spans here, too
+        .map(z => {
+          val (pb, pe) = z.head._2._1
+          val (cb, ce) = z.last._2._1
+          val alg = PassFun.alignTerms(config.n, config.gap, matchMatrix,
+            pt.slice(pb, pe), t.slice(cb, ce))
+          ((id, t.size), PassAlign(pid, pb, pe, cb, ce, alg.s1, alg.s2))
+        })
     }
 
     val cur = corpus.select('id, 'terms, indexer(col("terms")).as("index"),
@@ -392,7 +394,7 @@ object BoilerApp {
     // TODO: Figure out how to parameterize this by config.history.
     // Might one create an array of DataFrames and reduce them with unionAll?
     // Or, one could sort, use mapPartitions, and exchance records at boundaries (or not).
-    val alg = cur.join(laggard,
+    cur.join(laggard,
       ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 1)))
       .unionAll(cur.join(laggard,
         ($"series" === $"p_series") && ($"eday" === ($"p_eday" + 2))))
@@ -415,11 +417,10 @@ object BoilerApp {
           alg.toArray)
       })
       .toDF
+      .write.format(config.outputFormat).save(algFname)
 
-    alg.cache()
-    alg.write.format(config.outputFormat).save(algFname)
-
-    alg.withColumnRenamed("id", "aid").drop("alignments")
+    sqlContext.read.format(config.outputFormat).load(algFname)
+      .withColumnRenamed("id", "aid").drop("alignments")
       .join(corpus.drop("terms").drop("uid"), 'aid === 'id, "right_outer")
       .explode('id, 'text, 'passageBegin, 'passageEnd, 'termCharEnd)(splitDocs)
       .drop("aid").withColumnRenamed("id", "docid").withColumnRenamed("newid", "id")
