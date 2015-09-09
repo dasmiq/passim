@@ -25,6 +25,7 @@ import java.nio.ByteBuffer
 case class Config(mode: String= "cluster",
   n: Int = 5, maxSeries: Int = 100, minRep: Int = 5, minAlg: Int = 20,
   gap: Int = 100, relOver: Double = 0.5, maxRep: Int = 10, history: Int = 7,
+  wordLength: Double = 1.5,
   group: String = "series",
   inputFormat: String = "json", outputFormat: String = "json",
   inputPaths: String = "", outputPath: String = "") {
@@ -626,6 +627,9 @@ object PassimApp {
         c.copy(inputFormat = x) } text("Input format; default=json")
       opt[String]("output-format") action { (x, c) =>
         c.copy(outputFormat = x) } text("Output format; default=json")
+      opt[Double]('w', "word-length") action { (x, c) => c.copy(wordLength = x)
+      } validate { x => if ( x >= 1 ) success else failure("average word length must be >= 1")
+      } text("Minimum average word length to match; default=1.5")
       help("help") text("prints usage text")
       arg[String]("<path>,<path>,...") action { (x, c) =>
         c.copy(inputPaths = x)
@@ -676,11 +680,14 @@ object PassimApp {
           .select('uid, 'terms, hashId(corpus(config.group)).as("gid"))
         // Performance will be awful unless spark.sql.shuffle.partitions is appropriate
           .persist(StorageLevel.MEMORY_AND_DISK_SER)
-    
+
+        val minFeatLen: Double = config.wordLength * config.n
+
         val pairs = termCorpus
           .flatMap({
             case Row(uid: Long, terms: Seq[_], gid: Long) =>
               terms.asInstanceOf[Seq[String]].sliding(config.n)
+                .filter(_.map(_.size).sum >= minFeatLen)
                 .map(x => ByteBuffer.wrap(MessageDigest.getInstance("MD5")
                   .digest(x.mkString("~").getBytes("UTF-8")).take(8)).getLong)
                 .zipWithIndex
