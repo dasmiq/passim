@@ -654,6 +654,8 @@ object PassimApp {
     val fs = FileSystem.get(sc.hadoopConfiguration)
 
     val configFname = config.outputPath + "/conf"
+    val pairsFname = config.outputPath + "/pairs.parquet"
+    val alignFname = config.outputPath + "/align.parquet"
     val clusterFname = config.outputPath + "/clusters.parquet"
     val outFname = config.outputPath + "/out." + config.outputFormat
 
@@ -670,89 +672,94 @@ object PassimApp {
         .withColumn("uid", hashId('id))
 
       if ( !fs.exists(new Path(clusterFname)) ) {
-        val gap2 = config.gap * config.gap
-        val upper = config.maxSeries * (config.maxSeries - 1) / 2
+        if ( !fs.exists(new Path(alignFname)) ) {
+          val termCorpus = corpus
+            .select('uid, 'terms, hashId(corpus(config.group)).as("gid"))
+          // Performance will be awful unless spark.sql.shuffle.partitions is appropriate
 
-        val termCorpus = corpus
-          .select('uid, 'terms, hashId(corpus(config.group)).as("gid"))
-        // Performance will be awful unless spark.sql.shuffle.partitions is appropriate
-          .persist(StorageLevel.MEMORY_AND_DISK_SER)
+          if ( !fs.exists(new Path(pairsFname)) ) {
+            val upper = config.maxSeries * (config.maxSeries - 1) / 2
+            val minFeatLen: Double = config.wordLength * config.n
 
-        val minFeatLen: Double = config.wordLength * config.n
+            termCorpus
+              .flatMap({
+                case Row(uid: Long, terms: Seq[_], gid: Long) =>
+                  terms.asInstanceOf[Seq[String]].sliding(config.n)
+                    .filter(_.map(_.size).sum >= minFeatLen)
+                    .map(x => ByteBuffer.wrap(MessageDigest.getInstance("MD5")
+                      .digest(x.mkString("~").getBytes("UTF-8")).take(8)).getLong)
+                    .zipWithIndex
+                    .toArray
+                    .groupBy(_._1)
+                    .map { case (feat, post) => (feat, (uid, gid, post.map(_._2))) }
+              })
+              .groupByKey
+            // Just use plain old document frequency
+              .filter(x => x._2.size >= 2 && x._2.size <= config.maxSeries
+                && CorpusFun.crossCounts(x._2.groupBy(_._2).map(_._2.map(_._3.size).sum).toArray) <= upper )
+              .flatMap { case (f, docs) => for ( a <- docs; b <- docs; if a._1 < b._1 && a._2 != b._2 && a._3.size == 1 && b._3.size == 1 ) yield ((a._1, b._1), (a._3(0), b._3(0), docs.size)) }
+              .groupByKey
+              .filter(_._2.size >= config.minRep)
+              .mapValues(PassFun.increasingMatches)
+              .filter(_._2.size >= config.minRep)
+              .flatMapValues(PassFun.gappedMatches(config.n, config.gap, _))
+            // Unique IDs will serve as edge IDs in connected component graph
+              .zipWithUniqueId
+              .flatMap(x => {
+                val (((uid1, uid2), ((s1, e1), (s2, e2))), mid) = x
+                Array(SpanMatch(uid1, s1, e1, mid),
+                  SpanMatch(uid2, s2, e2, mid))
+              })
+              .toDF
+            // But we need to cache so IDs don't get reassigned.
+              .write.parquet(pairsFname)
+          }
 
-        val pairs = termCorpus
-          .flatMap({
-            case Row(uid: Long, terms: Seq[_], gid: Long) =>
-              terms.asInstanceOf[Seq[String]].sliding(config.n)
-                .filter(_.map(_.size).sum >= minFeatLen)
-                .map(x => ByteBuffer.wrap(MessageDigest.getInstance("MD5")
-                  .digest(x.mkString("~").getBytes("UTF-8")).take(8)).getLong)
-                .zipWithIndex
-                .toArray
-                .groupBy(_._1)
-                .map { case (feat, post) => (feat, (uid, gid, post.map(_._2))) }
-          })
-          .groupByKey
-        // Just use plain old document frequency
-          .filter(x => x._2.size >= 2 && x._2.size <= config.maxSeries
-            && CorpusFun.crossCounts(x._2.groupBy(_._2).map(_._2.map(_._3.size).sum).toArray) <= upper )
-          .flatMap { case (f, docs) => for ( a <- docs; b <- docs; if a._1 < b._1 && a._2 != b._2 && a._3.size == 1 && b._3.size == 1 ) yield ((a._1, b._1), (a._3(0), b._3(0), docs.size)) }
-          .groupByKey
-          .filter(_._2.size >= config.minRep)
-          .mapValues(PassFun.increasingMatches)
-          .filter(_._2.size >= config.minRep)
-          .flatMapValues(PassFun.gappedMatches(config.n, config.gap, _))
-        // Unique IDs will serve as edge IDs in connected component graph
-          .zipWithUniqueId
+          val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
+          val pass1 = sqlContext.read.parquet(pairsFname)
+            .join(termCorpus, "uid")
+            .map({
+              case Row(uid: Long, begin: Int, end: Int, mid: Long, terms: Seq[_], gid: Long) => {
+                (mid,
+                  PassFun.edgeText(config.gap * 2/3, config.n,
+                    IdSeries(uid, gid), terms.asInstanceOf[Seq[String]].toArray, (begin, end)))
+              }
+            })
+            .groupByKey
+            .flatMap(x => {
+              val pass = x._2.toArray
+              // The only reason for this array not to have exactly two
+              // elements would be erroneous recomputation of the passage
+              // pairs.  We've left it unchecked to warn us of errors.
+              PassFun.alignEdges(matchMatrix, config.n, config.minAlg, x._1, pass(0), pass(1))
+            })
 
-        // But we need to cache so IDs don't get reassigned.
-        pairs.persist(StorageLevel.MEMORY_AND_DISK_SER)
+          val graphParallelism = 1
 
-        // pairs.saveAsTextFile(args(1) + ".pairs")
+          pass1
+            .groupByKey(graphParallelism * sc.getExecutorMemoryStatus.size)
+            .flatMapValues(PassFun.mergeSpans(config.relOver, _))
+            .zipWithUniqueId
+          // This was getting recomputed on different partitions, thus reassigning IDs.
+            .map(v => {
+              val ((doc, (span, edges)), id) = v
+              (id, doc.id, doc.series, span._1, span._2, edges)
+            })
+            .toDF("nid", "uid", "gid", "begin", "end", "edges")
+            .write.parquet(alignFname)
+        }
 
-        val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
-        val pass1 = pairs
-          .flatMap(x => {
-            val (((uid1, uid2), ((s1, e1), (s2, e2))), mid) = x
-            Array(SpanMatch(uid1, s1, e1, mid),
-              SpanMatch(uid2, s2, e2, mid))
-          })
-          .toDF
-          .join(termCorpus, "uid")
-          .map({
-            case Row(uid: Long, begin: Int, end: Int, mid: Long, terms: Seq[_], gid: Long) => {
-              (mid,
-                PassFun.edgeText(config.gap * 2/3, config.n,
-                  IdSeries(uid, gid), terms.asInstanceOf[Seq[String]].toArray, (begin, end)))
-            }
-          })
-          .groupByKey
-          .flatMap(x => {
-            val pass = x._2.toArray
-            // The only reason for this array not to have exactly two
-            // elements would be erroneous recomputation of the passage
-            // pairs.  We've left it unchecked to warn us of errors.
-            PassFun.alignEdges(matchMatrix, config.n, config.minAlg, x._1, pass(0), pass(1))
-          })
+        val pass = sqlContext.read.parquet(alignFname)
 
-        val graphParallelism = 1
-
-        val pass = pass1
-          .groupByKey(graphParallelism * sc.getExecutorMemoryStatus.size)
-          .flatMapValues(PassFun.mergeSpans(config.relOver, _))
-          .zipWithUniqueId
-        // This was getting recomputed on different partitions, thus reassigning IDs.
-          .persist(StorageLevel.MEMORY_AND_DISK_SER)
-        // pass.saveAsTextFile(args(1) + ".pass")
-
-        val passNodes = pass.map(v => {
-          val ((doc, (span, edges)), id) = v
-          (id, (doc, span))
+        val passNodes = pass.map({
+          case Row(nid: Long, uid: Long, gid: Long, begin: Int, end: Int, edges: Seq[_]) =>
+            (nid, (IdSeries(uid, gid), (begin, end)))
         })
-        val passEdges = pass.flatMap(v => {
-          val ((doc, (span, edges)), id) = v
-          edges.map(e => (e, id))
-        }).groupByKey
+        val passEdges = pass.flatMap({
+          case Row(nid: Long, uid: Long, gid: Long, begin: Int, end: Int, edges: Seq[_]) =>
+            edges.asInstanceOf[Seq[Long]].map(e => (e, nid))
+        })
+          .groupByKey
           .map(e => {
             val nodes = e._2.toArray.sorted
             Edge(nodes(0), nodes(1), 1)
@@ -785,9 +792,6 @@ object PassimApp {
           .toDF("uid", "cluster", "size", "begin", "end")
 
         clusters.write.parquet(clusterFname)
-
-        pairs.unpersist()
-        termCorpus.unpersist()
       }
 
       val cols = corpus.columns.toSet
