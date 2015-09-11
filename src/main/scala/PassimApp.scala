@@ -3,7 +3,6 @@ import org.apache.spark.SparkContext._
 import org.apache.spark.SparkConf
 import org.apache.spark.rdd.RDD
 import org.apache.spark.graphx._
-import org.apache.spark.mllib.rdd.RDDFunctions._
 import org.apache.spark.sql.SQLContext
 import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.Row
@@ -199,7 +198,7 @@ object PassFun {
   
   def linkSpans(rover: Double,
 		init: List[((Int, Int), Array[Long])]): Array[((Int, Int), Array[Long])] = {
-    var passages = new ArrayBuffer[((Int, Int), Array[Long])]
+    val passages = new ArrayBuffer[((Int, Int), Array[Long])]
     // We had sorted in descreasing order of span length, but that leaves gaps in the output.
     for ( cur <- init ) { //.sortWith((a, b) => (a._1._1 - a._1._2) < (b._1._1 - b._1._2)) ) {
       val curLen = cur._1._2 - cur._1._1
@@ -224,8 +223,8 @@ object PassFun {
   def mergeSpans(rover: Double, init: Iterable[((Int, Int), Long)]): Seq[((Int, Int), Array[Long])] = {
     val in = init.toArray.sorted
     var top = -1
-    var passages = new ListBuffer[((Int, Int), Array[Long])]
-    var spans = new ListBuffer[((Int, Int), Array[Long])]
+    val passages = new ListBuffer[((Int, Int), Array[Long])]
+    val spans = new ListBuffer[((Int, Int), Array[Long])]
     for ( cur <- in ) {
       val span = cur._1
       if ( span._1 > top ) {
@@ -799,8 +798,7 @@ object PassimApp {
 
       sqlContext.read.parquet(clusterFname)
         .join(corpus.drop("terms"), "uid")
-        .withColumn("_text", getPassage('begin, 'end, 'text, 'termCharBegin, 'termCharEnd))
-        .drop("text").withColumnRenamed("_text", "text")
+        .withColumn("text", getPassage('begin, 'end, 'text, 'termCharBegin, 'termCharEnd))
         .withColumn("pages", getLocs('begin, 'end, 'termPages))
         .withColumn("regions", getRegions('begin, 'end, 'termPages, 'termRegions))
         .withColumn("locs", getLocs('begin, 'end, 'termLocs))
