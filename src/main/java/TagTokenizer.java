@@ -111,7 +111,7 @@ public class TagTokenizer {
   }
 
   protected static HashSet<String> buildIgnoredTags() {
-    HashSet<String> tags = new HashSet<String>();
+    HashSet<String> tags = new HashSet<>();
     tags.add("style");
     tags.add("script");
     return tags;
@@ -401,7 +401,7 @@ public class TagTokenizer {
       BeginTag tag = new BeginTag(tagName, attributes, position + 1, tokens.size());
 
       if (!openTags.containsKey(tagName)) {
-        ArrayList tagList = new ArrayList();
+        ArrayList<BeginTag> tagList = new ArrayList<>();
         tagList.add(tag);
         openTags.put(tagName, tagList);
       } else {
@@ -671,7 +671,7 @@ public class TagTokenizer {
    * that are not matched by any patterns in the whitelist
    */
   protected ArrayList<Tag> coalesceTags() {
-    ArrayList<Tag> result = new ArrayList();
+    ArrayList<Tag> result = new ArrayList<Tag>();
 
     // close all open tags
     for (ArrayList<BeginTag> tagList : openTags.values()) {

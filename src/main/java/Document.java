@@ -17,8 +17,8 @@ public class Document {
   public Map<String, String> metadata;
   public String text;
   public List<String> terms;
-  public List<Integer> termCharBegin = new ArrayList();
-  public List<Integer> termCharEnd = new ArrayList();
+  public List<Integer> termCharBegin = new ArrayList<>();
+  public List<Integer> termCharEnd = new ArrayList<>();
   public List<Tag> tags;
   // other data - used to generate an identifier; these values can not be serialized!
   public int fileId = -1;
@@ -27,7 +27,7 @@ public class Document {
   public long fileLocation = -1;
 
   public Document() {
-    metadata = new HashMap();
+    metadata = new HashMap<>();
   }
 
   public Document(String externalIdentifier, String text) {
@@ -39,12 +39,12 @@ public class Document {
   public Document(Document d) {
     this.identifier = d.identifier;
     this.name = d.name;
-    this.metadata = new HashMap(d.metadata);
+    this.metadata = new HashMap<>(d.metadata);
     this.text = d.text;
-    this.terms = new ArrayList(d.terms);
-    this.termCharBegin = new ArrayList(d.termCharBegin);
-    this.termCharEnd = new ArrayList(d.termCharEnd);
-    this.tags = new ArrayList(d.tags);
+    this.terms = new ArrayList<>(d.terms);
+    this.termCharBegin = new ArrayList<>(d.termCharBegin);
+    this.termCharEnd = new ArrayList<>(d.termCharEnd);
+    this.tags = new ArrayList<>(d.tags);
     this.fileId = d.fileId;
     this.totalFileCount = d.totalFileCount;
   }
