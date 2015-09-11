@@ -6,8 +6,6 @@ scalaVersion := "2.10.4"
 
 resolvers += Resolver.mavenLocal
 
-resolvers += "ASF Staging repository" at "https://repository.apache.org/content/repositories/orgapachespark-1140"
-
 libraryDependencies += "org.apache.spark" %% "spark-core" % "1.5.0"
 libraryDependencies += "org.apache.spark" %% "spark-graphx" % "1.5.0"
 libraryDependencies += "org.apache.spark" %% "spark-mllib" % "1.5.0"
