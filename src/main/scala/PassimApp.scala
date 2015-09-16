@@ -245,6 +245,66 @@ object PassFun {
   }
 
   case class AlignedPassage(s1: String, s2: String, b1: Int, b2: Int, matches: Int, score: Float)
+  def alignStrings(n: Int, gap: Int, matchMatrix: jaligner.matrix.Matrix,
+    s1: String, s2: String): AlignedPassage ={
+    if ( (s1.size * s2.size) <= (gap * gap) ) {
+      // println("#small:" + s1 + "|" + s2 + "|")
+      val alg = jaligner.NeedlemanWunschGotoh.align(new jaligner.Sequence(s1),
+        new jaligner.Sequence(s2), matchMatrix, 5, 0.5f)
+      AlignedPassage(new String(alg.getSequence1), new String(alg.getSequence2),
+        0, 0, alg.getIdentity, alg.getScore)
+    } else {
+      val chunks = recursivelyAlignStrings(n, gap * gap, matchMatrix, s1, s2)
+      // Could make only one pass through chunks if we implemented a merger for AlignedPassages.
+      AlignedPassage(chunks.map(_.s1).mkString, chunks.map(_.s2).mkString,
+        0, 0,
+        chunks.map(_.matches).sum,
+        chunks.map(_.score).sum)
+    }
+  }
+  def recursivelyAlignStrings(n: Int, gap2: Int, matchMatrix: jaligner.matrix.Matrix,
+    s1: String, s2: String): Seq[AlignedPassage] = {
+    val m1 = BoilerApp.hapaxIndex(n, s1)
+    val m2 = BoilerApp.hapaxIndex(n, s2)
+    val inc = PassFun.increasingMatches(m1
+      .flatMap(z => if (m2.contains(z._1)) Some((z._2, m2(z._1), 1)) else None))
+    if ( inc.size == 0 && (s1.size * s2.size) > gap2 ) {
+      Seq(AlignedPassage("...", "...", 0, 0, 0, -5.0f - 0.5f * s1.size - 0.5f * s2.size))
+    } else {
+      (Array((0, 0, 0)) ++ inc ++ Array((s1.size, s2.size, 0)))
+        .sliding(2).flatMap(z => {
+          val (b1, b2, c) = z(0)
+          val (e1, e2, _) = z(1)
+          val n1 = e1 - b1
+          val n2 = e2 - b2
+          if ( c == 0 && e1 == 0 && e2 == 0 ) {
+            Seq()
+          } else if ( (n1 * n2) <= gap2 ) {
+            val p1 = s1.substring(b1, e1)
+            val p2 = s2.substring(b2, e2)
+            if ( n1 == n2 && s1 == s2 ) {
+              Seq(AlignedPassage(p1, p2, b1, b2, p1.size, 2.0f * p2.size))
+            } else {
+              val alg = jaligner.NeedlemanWunschGotoh.align(new jaligner.Sequence(p1),
+                new jaligner.Sequence(p2), matchMatrix, 5, 0.5f)
+              Seq(AlignedPassage(new String(alg.getSequence1), new String(alg.getSequence2),
+                b1, b2, alg.getIdentity, alg.getScore))
+            }
+          } else {
+            if ( c > 0 ) {
+              val p1 = s1.substring(b1, b1+n)
+              val p2 = s2.substring(b2, b2+n)
+              // Array(AlignedPassage("TOO", "BIG", b1, b2, 0, 0f)) ++
+              Array(AlignedPassage(p1, p2, b1, b2, s1.size, 2.0f * s2.size)) ++
+              recursivelyAlignStrings(n, gap2, matchMatrix, s1.substring(b1+n, e1), s2.substring(b2+n, e2))
+            } else {
+              recursivelyAlignStrings(n, gap2, matchMatrix, s1.substring(b1, e1), s2.substring(b2, e2))
+            }
+          }
+        }).toSeq
+    }
+  }
+
   def alignTerms(n: Int, gap: Int, matchMatrix: jaligner.matrix.Matrix,
     t1: Array[String], t2: Array[String]): AlignedPassage = {
     val chunks = recursivelyAlignTerms(n, gap * gap, matchMatrix, t1, t2)
@@ -309,6 +369,15 @@ object BoilerApp {
       .filter(_._2.size == 1)
       .mapValues(_(0))
   }
+  def hapaxIndex(n: Int, s: String) = {
+    s.sliding(n)
+      .zipWithIndex
+      .toArray
+      .groupBy(_._1)
+      .mapValues(_.map(_._2))
+      .filter(_._2.size == 1)
+      .mapValues(_(0))
+  }
 
   def splitDocs(r: Row): Array[NewDoc] = {
     val id = r.getString(0)
@@ -344,6 +413,15 @@ object BoilerApp {
     docs.toArray
   }
 
+  def cleanXML(s: String): String = {
+    s.replaceAll("</?[A-Za-z][^>]*>", "")
+      .replaceAll("&quot;", "\"")
+      .replaceAll("&apos;", "'")
+      .replaceAll("&lt;", "<")
+      .replaceAll("&gt;", ">")
+      .replaceAll("&amp;", "&")
+  }
+
   def matchPages(config: Config, sqlContext: SQLContext) = {
     import sqlContext.implicits._
 
@@ -366,14 +444,18 @@ object BoilerApp {
       .orderBy(col(config.group), $"eday", $"ed", $"issue", $"id")
 
     corpus
-      .select($"id", $"series", $"eday", $"issue", $"terms", indexer($"terms") as "index")
+      .select($"id", $"series", $"eday", $"issue", $"terms", indexer($"terms") as "index",
+        $"text", $"termCharBegin", $"termCharEnd")
       .mapPartitions(it => {
       val q = new Queue[Row]
       it.flatMap((c: Row) => c match {
         case Row(id: String, series: String, day: Int, issue: String,
-          terms: Seq[_], index: Map[_, _]) => {
+          terms: Seq[_], index: Map[_, _],
+          text: String, termCharBegin: Seq[_], termCharEnd: Seq[_]) => {
           val t = terms.asInstanceOf[Seq[String]].toArray
           val m = index.asInstanceOf[Map[String, Int]]
+          val tcb = termCharBegin.asInstanceOf[Seq[Int]].toArray
+          val tce = termCharEnd.asInstanceOf[Seq[Int]].toArray
           while ( !q.isEmpty && (series != q.head.getString(1))
             && (day - q.head.getInt(2)) > config.history ) {
             q.dequeue
@@ -394,8 +476,14 @@ object BoilerApp {
                   val (cb, ce) = z.last._2._1
                   // TODO: Should merge spans here before alignment.
                   // TODO: Align original, not tokenized, text.
-                  val alg = PassFun.alignTerms(config.n, config.gap, matchMatrix,
-                    pt.slice(pb, pe), t.slice(cb, ce))
+                  // val alg = PassFun.alignTerms(config.n, config.gap, matchMatrix,
+                  //   pt.slice(pb, pe), t.slice(cb, ce))
+                  val cs = text.substring(tcb(cb), tce(ce))
+                  val ps = p.getAs[String]("text")
+                    .substring(p.getAs[Seq[Int]]("termCharBegin")(pb),
+                      p.getAs[Seq[Int]]("termCharEnd")(pe))
+                  val alg = PassFun.alignStrings(config.n, config.gap * 5, matchMatrix,
+                    cleanXML(ps), cleanXML(cs))
                   PassAlign(pid, pb, pe, cb, ce, alg.s1, alg.s2)
                 })
             })
