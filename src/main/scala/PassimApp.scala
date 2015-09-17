@@ -246,15 +246,18 @@ object PassFun {
 
   case class AlignedPassage(s1: String, s2: String, b1: Int, b2: Int, matches: Int, score: Float)
   def alignStrings(n: Int, gap: Int, matchMatrix: jaligner.matrix.Matrix,
-    s1: String, s2: String): AlignedPassage ={
-    if ( (s1.size * s2.size) <= (gap * gap) ) {
+    s1: String, s2: String): AlignedPassage = {
+    val gap2 = gap * gap
+    val chartSize = s1.size * s2.size
+    if ( chartSize <= gap2 && chartSize >= 0 ) { // overflow!
       // println("#small:" + s1 + "|" + s2 + "|")
+      // println("#alg:" + (gap, s1.size, s2.size, s1.size*s2.size, gap*gap))
       val alg = jaligner.NeedlemanWunschGotoh.align(new jaligner.Sequence(s1),
         new jaligner.Sequence(s2), matchMatrix, 5, 0.5f)
       AlignedPassage(new String(alg.getSequence1), new String(alg.getSequence2),
         0, 0, alg.getIdentity, alg.getScore)
     } else {
-      val chunks = recursivelyAlignStrings(n, gap * gap, matchMatrix, s1, s2)
+      val chunks = recursivelyAlignStrings(n, gap2, matchMatrix, s1, s2)
       // Could make only one pass through chunks if we implemented a merger for AlignedPassages.
       AlignedPassage(chunks.map(_.s1).mkString, chunks.map(_.s2).mkString,
         0, 0,
@@ -268,7 +271,8 @@ object PassFun {
     val m2 = BoilerApp.hapaxIndex(n, s2)
     val inc = PassFun.increasingMatches(m1
       .flatMap(z => if (m2.contains(z._1)) Some((z._2, m2(z._1), 1)) else None))
-    if ( inc.size == 0 && (s1.size * s2.size) > gap2 ) {
+    val prod = s1.size * s2.size
+    if ( inc.size == 0 && (prod >= gap2 || prod < 0) ) {
       Seq(AlignedPassage("...", "...", 0, 0, 0, -5.0f - 0.5f * s1.size - 0.5f * s2.size))
     } else {
       (Array((0, 0, 0)) ++ inc ++ Array((s1.size, s2.size, 0)))
@@ -277,12 +281,13 @@ object PassFun {
           val (e1, e2, _) = z(1)
           val n1 = e1 - b1
           val n2 = e2 - b2
+          val chartSize = n1 * n2
           if ( c == 0 && e1 == 0 && e2 == 0 ) {
             Seq()
-          } else if ( (n1 * n2) <= gap2 ) {
+          } else if ( chartSize <= gap2 && chartSize >= 0 ) { // overflow!
             val p1 = s1.substring(b1, e1)
             val p2 = s2.substring(b2, e2)
-            if ( n1 == n2 && s1 == s2 ) {
+            if ( n1 == n2 && p1 == p2 ) {
               Seq(AlignedPassage(p1, p2, b1, b2, p1.size, 2.0f * p2.size))
             } else {
               val alg = jaligner.NeedlemanWunschGotoh.align(new jaligner.Sequence(p1),
@@ -294,6 +299,9 @@ object PassFun {
             if ( c > 0 ) {
               val p1 = s1.substring(b1, b1+n)
               val p2 = s2.substring(b2, b2+n)
+              println("#alg:" + ((b1,e1), (b2,e2), n))
+              println("#p1:" + p1)
+              println("#p2:" + p2)
               // Array(AlignedPassage("TOO", "BIG", b1, b2, 0, 0f)) ++
               Array(AlignedPassage(p1, p2, b1, b2, s1.size, 2.0f * s2.size)) ++
               recursivelyAlignStrings(n, gap2, matchMatrix, s1.substring(b1+n, e1), s2.substring(b2+n, e2))
@@ -461,41 +469,49 @@ object BoilerApp {
             q.dequeue
           }
           val alg = q.takeWhile(_.getAs[String]("issue") != issue)
-            .flatMap(p => {
+            .map(p => {
               val pid = p.getAs[String]("id")
-              val pt = p.getAs[Seq[String]]("terms").toArray
-              val inc = PassFun.increasingMatches(p.getAs[Map[String, Int]]("index")
-                .flatMap(z => if (m.contains(z._1)) Some((z._2, m(z._1), 1)) else None))
-              PassFun.gappedMatches(config.n, config.gap, inc)
-                .map(z => PassFun.alignEdges(matchMatrix, config.n, config.minAlg, 0,
-                  PassFun.edgeText(config.gap * 2/3, config.n, IdSeries(0, 0), pt, z._1),
-                  PassFun.edgeText(config.gap * 2/3, config.n, IdSeries(1, 0), t, z._2)))
-                .filter(_.size > 0)
-                .map(z => {
-                  val (pb, pe) = z.head._2._1
-                  val (cb, ce) = z.last._2._1
-                  // TODO: Should merge spans here before alignment.
-                  // TODO: Align original, not tokenized, text.
-                  // val alg = PassFun.alignTerms(config.n, config.gap, matchMatrix,
-                  //   pt.slice(pb, pe), t.slice(cb, ce))
-                  val cs = text.substring(tcb(cb), tce(ce))
-                  val ps = p.getAs[String]("text")
-                    .substring(p.getAs[Seq[Int]]("termCharBegin")(pb),
-                      p.getAs[Seq[Int]]("termCharEnd")(pe))
-                  val alg = PassFun.alignStrings(config.n, config.gap * 5, matchMatrix,
-                    cleanXML(ps), cleanXML(cs))
-                  PassAlign(pid, pb, pe, cb, ce, alg.s1, alg.s2)
-                })
+              val cur = PassFun.alignStrings(config.n * 5, config.gap, matchMatrix,
+                cleanXML(p.getAs[String]("text")), cleanXML(text))
+              PassAlign(pid, 0, 0, 0, 0, cur.s1, cur.s2)
             })
+          // val alg = q.takeWhile(_.getAs[String]("issue") != issue)
+          //   .flatMap(p => {
+          //     val pid = p.getAs[String]("id")
+          //     val pt = p.getAs[Seq[String]]("terms").toArray
+          //     val inc = PassFun.increasingMatches(p.getAs[Map[String, Int]]("index")
+          //       .flatMap(z => if (m.contains(z._1)) Some((z._2, m(z._1), 1)) else None))
+          //     PassFun.gappedMatches(config.n, config.gap, inc)
+          //       .map(z => PassFun.alignEdges(matchMatrix, config.n, config.minAlg, 0,
+          //         PassFun.edgeText(config.gap * 2/3, config.n, IdSeries(0, 0), pt, z._1),
+          //         PassFun.edgeText(config.gap * 2/3, config.n, IdSeries(1, 0), t, z._2)))
+          //       .filter(_.size > 0)
+          //       .map(z => {
+          //         val (pb, pe) = z.head._2._1
+          //         val (cb, ce) = z.last._2._1
+          //         // TODO: Should merge spans here before alignment.
+          //         // TODO: Align original, not tokenized, text.
+          //         // val alg = PassFun.alignTerms(config.n, config.gap, matchMatrix,
+          //         //   pt.slice(pb, pe), t.slice(cb, ce))
+          //         val cs = text.substring(tcb(cb), tce(ce))
+          //         val ps = p.getAs[String]("text")
+          //           .substring(p.getAs[Seq[Int]]("termCharBegin")(pb),
+          //             p.getAs[Seq[Int]]("termCharEnd")(pe))
+          //         val alg = PassFun.alignStrings(config.n * 5, config.gap * 5, matchMatrix,
+          //           cleanXML(ps), cleanXML(cs))
+          //         PassAlign(pid, pb, pe, cb, ce, alg.s1, alg.s2)
+          //       })
+          //   })
           q.enqueue(c)
           if ( alg.size > 0 ) {
-            val ids = alg.map(a => (PassimApp.hashString(a.id), a.id)).toMap
-            val merged = PassFun.mergeSpans(0, alg.map(z => ((z.cbegin, z.cend),
-              PassimApp.hashString(z.id))))
-            Some(BoilerPass(id, t.size,
-              merged.map(_._1._1).toArray, merged.map(_._1._2).toArray,
-              merged.map(p => p._2.map(ids(_)).sorted.last).toArray,
-              alg.toArray))
+            Some(BoilerPass(id, t.size, Array[Int](), Array[Int](), Array[String](), alg.toArray))
+            // val ids = alg.map(a => (PassimApp.hashString(a.id), a.id)).toMap
+            // val merged = PassFun.mergeSpans(0, alg.map(z => ((z.cbegin, z.cend),
+            //   PassimApp.hashString(z.id))))
+            // Some(BoilerPass(id, t.size,
+            //   merged.map(_._1._1).toArray, merged.map(_._1._2).toArray,
+            //   merged.map(p => p._2.map(ids(_)).sorted.last).toArray,
+            //   alg.toArray))
           } else {
             None
           }
@@ -503,19 +519,20 @@ object BoilerApp {
       })
     })
       .toDF
-      .write.parquet(algFname)
+      .write.json(algFname)
+      // .write.parquet(algFname)
 
-    sqlContext.read.parquet(algFname)
-      .withColumnRenamed("id", "aid").drop("alignments")
-      .join(corpus.drop("terms").drop("uid"), 'aid === 'id, "right_outer")
-      .explode('id, 'text, 'passageBegin, 'passageEnd, 'termCharEnd)(splitDocs)
-      .drop("aid").withColumnRenamed("id", "docid").withColumnRenamed("newid", "id")
-      .drop(config.text).withColumnRenamed("newtext", config.text)
-      .drop("termCharBegin").drop("termCharEnd")
-      .drop("termPages").drop("termRegions").drop("termLocs")
-      .drop("passageBegin").drop("passageEnd").drop("passageLastId")
-      .write.format(config.outputFormat)
-      .save(config.outputPath + "/corpus." + config.outputFormat)
+    // sqlContext.read.parquet(algFname)
+    //   .withColumnRenamed("id", "aid").drop("alignments")
+    //   .join(corpus.drop("terms").drop("uid"), 'aid === 'id, "right_outer")
+    //   .explode('id, 'text, 'passageBegin, 'passageEnd, 'termCharEnd)(splitDocs)
+    //   .drop("aid").withColumnRenamed("id", "docid").withColumnRenamed("newid", "id")
+    //   .drop("text").withColumnRenamed("newtext", "text")
+    //   .drop("termCharBegin").drop("termCharEnd")
+    //   .drop("termPages").drop("termRegions").drop("termLocs")
+    //   .drop("passageBegin").drop("passageEnd").drop("passageLastId")
+    //   .write.format(config.outputFormat)
+    //   .save(config.outputPath + "/corpus." + config.outputFormat)
   }
 }
 
