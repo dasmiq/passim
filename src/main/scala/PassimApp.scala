@@ -29,7 +29,7 @@ case class Config(version: String = BuildInfo.version,
   n: Int = 5, maxSeries: Int = 100, minRep: Int = 5, minAlg: Int = 20,
   gap: Int = 100, relOver: Double = 0.5, maxRep: Int = 10, history: Int = 7,
   wordLength: Double = 1.5,
-  group: String = "series",
+  id: String = "id", group: String = "series", text: String = "text",
   inputFormat: String = "json", outputFormat: String = "json",
   inputPaths: String = "", outputPath: String = "") {
   def save(fname: String, sqlContext: SQLContext) {
@@ -361,7 +361,7 @@ object BoilerApp {
     val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
 
     val raw = sqlContext.read.format(config.inputFormat).load(config.inputPaths)
-    val corpus = PassimApp.testTok(PassimApp.testGroup(config.group, raw))
+    val corpus = PassimApp.testTok(config, raw)
       .withColumn("eday", datediff($"date", lit("1970-01-01")))
       .orderBy(col(config.group), $"eday", $"ed", $"issue", $"id")
 
@@ -422,7 +422,7 @@ object BoilerApp {
       .join(corpus.drop("terms").drop("uid"), 'aid === 'id, "right_outer")
       .explode('id, 'text, 'passageBegin, 'passageEnd, 'termCharEnd)(splitDocs)
       .drop("aid").withColumnRenamed("id", "docid").withColumnRenamed("newid", "id")
-      .drop("text").withColumnRenamed("newtext", "text")
+      .drop(config.text).withColumnRenamed("newtext", config.text)
       .drop("termCharBegin").drop("termCharEnd")
       .drop("termPages").drop("termRegions").drop("termLocs")
       .drop("passageBegin").drop("passageEnd").drop("passageLastId")
@@ -484,10 +484,10 @@ object TokApp {
       (if ( curCoord == imgCoord(0, 0, 0, 0) ) Array[imgCoord]() else regions.toArray),
       (if ( curLoc == "" ) Array[String]() else locs.toArray))
   }
-  def tokenizeText(raw: DataFrame): DataFrame = {
+  def tokenizeText(config: Config, raw: DataFrame): DataFrame = {
     val tokenizeCol = udf {(s: String) => tokenize(s)}
-    raw.na.drop(Seq("id", "text"))
-      .withColumn("_tokens", tokenizeCol(col("text")))
+    raw.na.drop(Seq(config.id, config.text))
+      .withColumn("_tokens", tokenizeCol(col(config.text)))
       .withColumn("terms", col("_tokens")("terms"))
       .withColumn("termCharBegin", col("_tokens")("termCharBegin"))
       .withColumn("termCharEnd", col("_tokens")("termCharEnd"))
@@ -505,26 +505,18 @@ object PassimApp {
       MessageDigest.getInstance("MD5").digest(s.getBytes("UTF-8"))
     ).getLong
   }
-  def testGroup(group: String, df: DataFrame): DataFrame = {
-    if ( df.columns.contains(group) ) {
-      df
-    } else {
-      val sname = udf {(id: String) => id.split("[_/]")(0) }
-      df.withColumn(group, sname(df("id")))
-    }
-  }
-  def testTok(df: DataFrame): DataFrame = {
+  def testTok(config: Config, df: DataFrame): DataFrame = {
     if ( df.columns.contains("terms") ) {
       df
     } else {
-      TokApp.tokenizeText(df)
+      TokApp.tokenizeText(config, df)
     }
   }
 
   def matchParents(config: Config, sqlContext: SQLContext) {
     import sqlContext.implicits._
     val raw = sqlContext.read.format(config.inputFormat).load(config.inputPaths)
-    val corpus = testTok(raw)
+    val corpus = testTok(config, raw)
 
     val candidates = corpus.select($"cluster" as "p_cluster",
       $"id" as "p_id", $"begin" as "p_begin",
@@ -620,8 +612,12 @@ object PassimApp {
         c.copy(relOver = x) } text("Minimum relative overlap to merge passages; default=0.5")
       opt[Int]('r', "max-repeat") action { (x, c) =>
         c.copy(maxRep = x) } text("Maximum repeat of one series in a cluster; default=10")
-      opt[String]('s', "series-group") action { (x, c) =>
-        c.copy(group = x) } text("Field name to group documents into series; default=series")
+      opt[String]('i', "id") action { (x, c) =>
+        c.copy(id = x) } text("Field for unique document IDs; default=id")
+      opt[String]('t', "text") action { (x, c) =>
+        c.copy(text = x) } text("Field for document text; default=text")
+      opt[String]('s', "group") action { (x, c) =>
+        c.copy(group = x) } text("Field to group documents into series; default=series")
       opt[String]("input-format") action { (x, c) =>
         c.copy(inputFormat = x) } text("Input format; default=json")
       opt[String]("output-format") action { (x, c) =>
@@ -670,13 +666,15 @@ object PassimApp {
     if ( !fs.exists(new Path(outFname)) ) {
       val raw = sqlContext.read.format(config.inputFormat).load(config.inputPaths)
 
-      val corpus = testTok(testGroup(config.group, raw))
-        .withColumn("uid", hashId('id))
+      val corpus = testTok(config, raw)
+        .withColumn("uid", hashId(col(config.id)))
 
       if ( !fs.exists(new Path(clusterFname)) ) {
         if ( !fs.exists(new Path(alignFname)) ) {
+          val groupCol = if ( raw.columns.contains(config.group) ) config.group else config.id
+
           val termCorpus = corpus
-            .select('uid, 'terms, hashId(corpus(config.group)).as("gid"))
+            .select('uid, 'terms, hashId(corpus(groupCol)).as("gid"))
           // Performance will be awful unless spark.sql.shuffle.partitions is appropriate
 
           if ( !fs.exists(new Path(pairsFname)) ) {
