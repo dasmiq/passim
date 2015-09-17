@@ -1,3 +1,5 @@
+package passim
+
 import org.apache.spark.SparkContext
 import org.apache.spark.SparkContext._
 import org.apache.spark.SparkConf
@@ -22,7 +24,8 @@ import scala.collection.mutable.Queue
 import java.security.MessageDigest
 import java.nio.ByteBuffer
 
-case class Config(mode: String= "cluster",
+case class Config(version: String = BuildInfo.version,
+  mode: String = "cluster",
   n: Int = 5, maxSeries: Int = 100, minRep: Int = 5, minAlg: Int = 20,
   gap: Int = 100, relOver: Double = 0.5, maxRep: Int = 10, history: Int = 7,
   wordLength: Double = 1.5,
