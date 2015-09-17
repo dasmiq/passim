@@ -23,8 +23,8 @@ This should produce a runnable .jar in
 version of Scala and passim that you have.)
 
 The `bin` subdirectory of the passim distribution contains executable
-shell scripts such `passim`.  We recommend adding this subdirectory to
-your `PATH`.
+shell scripts such as `passim`.  We recommend adding this subdirectory
+to your `PATH`.
 
 Since passim defaults to the JSON format for input and output, it is
 convenient to have the
