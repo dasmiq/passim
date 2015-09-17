@@ -1,8 +1,0 @@
-#!/bin/sh
-
-passim=`which passim`
-java -server -Xms1500m -Xmx1900m -Dfile.encoding=UTF-8 \
-     -classpath $passim \
-     -Dapp.name="galago" \
-     org.lemurproject.galago.core.tools.App \
-     "$@"

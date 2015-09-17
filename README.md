@@ -1,176 +1,209 @@
 # passim
 
 This project implements algorithms for detecting and aligning similar
-passages in text, either from the command line or the clojure REPL.
-It can be run either in query mode, to find quoted passages from a
-reference text, or all-pairs mode, to find all pairs of passages
-within longer documents with substantial alignments.
+passages in text.  It can be run either in query mode, to find quoted
+passages from a reference text, or all-pairs mode, to find all pairs
+of passages within longer documents with substantial alignments.
 
 ## Installation
 
-To compile, install the [Leiningen build tool](http://leiningen.org/)
-and run:
+Passim relies on [Apache Spark](http://spark.apache.org) to manage
+parallel computations, either on a single machine or a cluster.  We
+recommend downloading a precompiled, binary distribution of Spark,
+unpacking it, and adding the `bin` subdirectory to your `PATH`.
 
-    $ lein bin
+To compile passim itself, install [sbt](http://www.scala-sbt.org/), a
+build tool for Scala, Java, and other JVM languages.  Then run:
+```
+$ sbt package
+```
 
-This should produce an executable `target/passim` and copy it to your
-`~/bin`.
+This should produce a runnable .jar in
+`target/scala_*/passim*.jar`. (The exact filename will depend on the
+version of Scala and passim that you have.)
+
+The `bin` subdirectory of the passim distribution contains executable
+shell scripts such `passim`.  We recommend adding this subdirectory to
+your `PATH`.
+
+Since passim defaults to the JSON format for input and output, it is
+convenient to have the
+[command-line JSON processor jq](http://stedolan.github.io/jq/)
+installed.
 
 ## Aligning and Clustering Matching Passage Pairs
 
-### Input Formats
+### Structuring the Input
 
-The first step is to index the input documents with galago.  These
-documents can be in any format that galago supports.  Galago requires
-that the suffixes for input documents encode the format.  You can then
-optionally append `.gz` or `.bz2` to filenames to indicate that
-they've been compressed.  One simple but useful
-format is _trectext_, which encodes a sequence of one or more
-documents along with their unique IDs like so:
+The input to passim is a set of _documents_. Depending on the kind of
+data you have, you might choose documents to be whole books, pages of
+books, whole issues of newspapers, individual newspaper articles, etc.
+Minimally, a document consists of an identifier string and a single
+string of text content.
 
-	<DOC>
-	<DOCNO> foo_1 </DOCNO>
-	<TEXT>
-	Contents
-	lasting
-	many lines.
-	...
-	</TEXT>
-	</DOC>
-	<DOC>
-	<DOCNO> foo_23 </DOCNO>
-	<TEXT>
-	More text appears.
-	The <emph>tags</emph> will be ignored unless otherwise specified.
-	...
-	</TEXT>
-	</DOC>
+For most text reuse detection problems, it is useful to group
+documents into _series_.  Text reuse within series will be ignored.
+We may, for example, be less interested in the masthead and ads that
+appear week after week in the same newspaper and more interested in
+articles that propagate from one city's newspapers to another's.  In
+that case, we would declare all issues of the same newspaper--or all
+articles within those issues--to have the same series.  Similarly, we
+might define documents to be the pages or chapters of a book and
+series to be whole books.
 
-In addition, passim supports a variant called _metatext_ that
-inserts a metadata field for every tag other than `docno` and
-`text`.  Consider the following document:
+The default input format for documents is in a file or set
+of files containing JSON records.  The record for a single document
+with the required `id` and `text` fields, as well as a `series` field,
+would look like:
+```
+{"id": "d1", "series": "abc", "text": "This is text that&apos;s interpreted as <code>XML</code>; the tags are ignored by default."}
+```
 
-	<doc>
-	<docno>foo_1</docno>
-	<date>1901-01-01</date>
-	<url>http://example.com/</url>
-	<text>
-	Contents
-	go here.
-	</text>
-	</doc>
-	<doc>
-	...
+Note that this is must be a single line in the file.  This JSON record
+format has two important differences from general-purpose JSON files.
+First, the JSON records for each document are concatenated together,
+rather than being nested inside a top-level array.  Second, each
+record must be contained on one line, rather than extending over
+multiple lines until the closing curly brace.  These restrictions make
+it more efficient to process in parallel large numbers of documents
+spread across multiple files.
 
-In addition to indexing the contents, galago will attach a `date` and
-`url` field to document `foo_1`.  Those two fields, along with
-`title`, are used by passim when formatting cluster output.  Note that
-the tags are in lower case.
+In addition to the fields `id`, `text`, and `series`, other metadata
+included in the record for each document will be passed through into
+the output.  In particular, a `date` field, if present, will be used
+to sort passages within each cluster.
 
-### Document Identifiers and Duplicate Detection
+Natural language text is redundant, and adding XML markup and JSON
+field names increases the redundancy.  Spark and passim support
+several compression schemes.  For relatively small files, gzip is
+adequate; however, when the input files are large enough that the do
+not comfortably fit in memory, bzip2 is preferable since programs can
+split it into blocks before decompressing.
 
-Many passages are duplicated among documents from the same source, and
-these local instances of text reuse are uninteresting for many
-applications.  For instance, different issues of the same newspaper
-might repeat the same masthead or advertisements.  The search for
-matching document pairs therefore uses the _series_ of each document
-to suppress these pairs.  By default, the series is the initial part
-of a document identifier before the first underscore (\_) or slash
-(/).  In the trectext example above, the series of both documents
-would be "foo".  You can override this default behavior by passing a
-map from _internal_ document IDs to series numbers with the
-`--series-map` option.  This would be useful if you wanted to reuse
-the same document collection and index with different groupings of
-documents into series.
+### Running passim
 
-### Using `make` to Process Data
+The simplest invocation contains list of inputs and a directory name
+for the output.
 
-In the `build` subdirectory, there is a Makefile and a few helper
-scripts that automate the data processing pipeline.  We recommend that
-you symlink these files into your working directory.  Then inside your
-working directory, put a subdirectory `coll/input` with the input
-files for your collection.  You directory structure under `work` would
-thus look something like this:
+```
+$ passim input.json output
+```
 
-	work/Makefile -> $SRC/passim/build/Makefile
-	work/build.json -> $SRC/passim/build/build.json
-	work/coll
-	work/coll/input
-	work/coll/input/data1.trectext.gz
-	work/coll/input/data2.trectext.gz
-	work/galago -> $SRC/passim/build/galago
-	work/lsf-galago -> $SRC/passim/build/lsf-galago
-	work/window.json -> $SRC/passim/build/window.json
+Following Spark conventions, input may be a single file, a single
+directory full of files, or a `*` wildcard (glob) expression.
+Multiple input paths should be separated by commas.  Files may also be
+compressed.
 
-The basic pipeline uses the subcommands `index`, `pairs`, `align`,
-`cluster`, `clinfo`.
+```
+$ passim input.json,directory-of-json-files,some*.json.bz2 output
+```
 
-To build the file of pairwise local alignments, run
+Output is to a directory that, on completion, will contain an
+`out.json` directory with `part-*` files rather than a single file.
+This allows multiple workers to efficiently write it (and read it back
+in) in parallel.  In addition, the output directory should contain the
+parameters used to invoke passim in `conf` and the intermediate
+cluster membership data in `clusters.parquet`.
 
-	$ make align
+The output contains one JSON record for each reused passage.  Each
+record echoes the fields in the JSON input and adds the following
+extra fields to describe the clustered passages:
 
-To run single-link clustering of these aligned passages, run
+Field | Description
+----- | ------------
+`cluster` | unique identifier for each cluster
+`size` | number of passages in each cluster
+`begin` | offset in the document of the token where the reused passage begins
+`end` | offset in the document of the token where the reused passage ends
+`uid` | unique internal ID for each document, used for debugging
 
-	$ make clinfo
-
-You can pass several arguments to alter the behavior of make.  For
-example, to change the collection subdirectory from `coll` to `bills`
-and to change the n-gram feature length from 5 to 10, run
-
-	$ make COLL=bills NGRAM=10 clinfo
-
-The build process will place output in directories like
-`coll/pairs-n10u100`, depending on the value of various parameters.
+In addition, `pages`, `regions`, and `locs` include information about
+locations in the underlying text of the reused passage.  See [Marking
+Locations inside Documents](#locations) below.
 
 Some useful parameters are:
 
 Parameter | Default value | Description
 --------- | ------------- | -----------
-`COLL` | coll | Subdirectory containing collection input in `input`.
-`NGRAM` | 5 | N-gram order for text-reuse detection
-`UPPER` | 100 | Maximum document frequency of n-grams used.
-`MINREP` | 5 | Minimum number of matching n-grams between two documents.
-`RELOVER` | 0.5 | Proportion that two different aligned passages from the same document must overlap to be clustered together, as measured on the longer passage.
+`--n` | 5 | N-gram order for text-reuse detection
+`---max-series` | 100 | Maximum document frequency of n-grams used.
+`--min-match` | 5 | Minimum number of matching n-grams between two documents.
+`--relative-overlap` | 0.5 | Proportion that two different aligned passages from the same document must overlap to be clustered together, as measured on the longer passage.
 
-Use `make clean` to remove temporary build directories and `make
-distclean` to remove all output files.
+Pass parameters to the underlying Spark processes using the
+`SPARK_SUBMIT_ARGS` environment variable.  For example, to run passim
+on a local machine with 10 cores and 200GB of memory, do:
+
+```
+$ SPARK_SUBMIT_ARGS='--master local[10] --driver-memory 200G --executor-memory 200G' passim input.json output
+```
+
+See the
+[Spark documentation](https://spark.apache.org/docs/latest/index.html)
+for further configuration options.
+
+If `jq` is installed, you can convert JSON output to a tab-separated
+table with `tabcluster.sh` and to CSV with `csvcluster.sh`.
+
+## <a name="locations"></a> Marking Locations inside Documents
+
+As mentioned above, the `text` field is interpreted as XML.  The
+parser expands character entities and, for the most part, ignores
+tags.
+
+Three XML elements, however, are recorded when documents are
+tokenized.  Each marks the location of structural features within the
+document:
+* `<pb n="..." />` marks the beginning of a page, with the `n`
+  attribute parsed as a string;
+
+* `<w coords="..." />` marks the beginning of a region on a page
+  image, with the `coords=` attributed parsed as a 4-tuple of
+  integers for upper left, upper right, width, and height; and
+
+* `<loc n="..." />` marks the beginning of a citable passage
+  ("locus") according to some canonical scheme such as the books,
+  chapters, and verses of the Bible; acts, scenes, and Globe lines in
+  Shakespeare; or Stephanus pages in Plato.  We recommend
+  [Canonical Text Servive (CTS) URNs](http://www.homermultitext.org/hmt-doc/cite/index.html)
+  for referring to these locations independently of any particular
+  edition.  Although many canonical citations schemes have a
+  hierarchical structure of books, chapters, etc., passim interprets
+  the `n=` attribute as an atomic string.
+
+These elements are empty so as not to interfere with other tags.  When
+reused passages contain these location markers, the output records
+will store the information in the `pages`, `regions`, and `locs`
+fields.
 
 ## Quotations of Reference Texts
 
-Run with a galago n-gram index and reference text(s):
+TODO.  For now, including the query texts in the corpus will
+automatically include them in any clustering.  We are working on
+including implementations of more efficient query procedures.
 
-	$ passim quotes [options] <n-gram index> <reference text file>
+<!-- You can use any galago n-gram index: 4-gram, 5-gram, etc. For several -->
+<!-- tasks, 5-grams seem like a good tradeoff. -->
 
-A reference text file of `-` will read the standard input.  The only
-notable option is `--pretty` to pretty-print the JSON output.
+<!-- For best results, index the reference texts---as trectext or some -->
+<!-- other plaintext format---along with the target document.  This ensures -->
+<!-- that any n-gram in the reference texts occurs at least once in the -->
+<!-- index.  The quotes program will then automatically filter out matches -->
+<!-- of a reference text with itself.  There is one other advantage of -->
+<!-- including the reference texts in the index.  Since you guarantee that -->
+<!-- all n-grams in the reference texts will be seen, you can shard the -->
+<!-- index of the books without having any useful n-grams fall below -->
+<!-- threshold (as long as you add a copy of the reference texts to each -->
+<!-- shard). -->
 
-The reference text format is a unique citation, followed by a tab and
-some text:
+## Acknowledgements
 
-	urn:cts:englishLit:shakespeare.ham:1.1.6	You come most carefully upon your hour.
-	urn:cts:englishLit:shakespeare.ham:1.1.7	'Tis now struck twelve; get thee to bed, Francisco.
-
-This program treats citations as unparsed, atomic strings, though URNs
-in a standard scheme, such as the CTS citations used here, are
-encouraged.
-
-You can use any galago n-gram index: 4-gram, 5-gram, etc. For several
-tasks, 5-grams seem like a good tradeoff.
-
-For best results, index the reference texts---as trectext or some
-other plaintext format---along with the target document.  This ensures
-that any n-gram in the reference texts occurs at least once in the
-index.  The quotes program will then automatically filter out matches
-of a reference text with itself.  There is one other advantage of
-including the reference texts in the index.  Since you guarantee that
-all n-grams in the reference texts will be seen, you can shard the
-index of the books without having any useful n-grams fall below
-threshold (as long as you add a copy of the reference texts to each
-shard).
-
+We insert the appropriate text in gratitude to our sponsors at the
+Andrew W. Mellon Foundation and the National Endowment for the
+Humanities. TODO.
 
 ## License
 
-Copyright © 2012-3 David A. Smith
+Copyright © 2012-5 David A. Smith
 
-Distributed under the Eclipse Public License, the same as Clojure.
+Distributed under the Eclipse Public License.
