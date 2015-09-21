@@ -247,68 +247,65 @@ object PassFun {
   case class AlignedPassage(s1: String, s2: String, b1: Int, b2: Int, matches: Int, score: Float)
   def alignStrings(n: Int, gap: Int, matchMatrix: jaligner.matrix.Matrix,
     s1: String, s2: String): AlignedPassage = {
-    val gap2 = gap * gap
-    val chartSize = s1.size * s2.size
-    if ( chartSize <= gap2 && chartSize >= 0 ) { // overflow!
-      // println("#small:" + s1 + "|" + s2 + "|")
-      // println("#alg:" + (gap, s1.size, s2.size, s1.size*s2.size, gap*gap))
-      val alg = jaligner.NeedlemanWunschGotoh.align(new jaligner.Sequence(s1),
-        new jaligner.Sequence(s2), matchMatrix, 5, 0.5f)
-      AlignedPassage(new String(alg.getSequence1), new String(alg.getSequence2),
-        0, 0, alg.getIdentity, alg.getScore)
-    } else {
-      val chunks = recursivelyAlignStrings(n, gap2, matchMatrix, s1, s2)
-      // Could make only one pass through chunks if we implemented a merger for AlignedPassages.
-      AlignedPassage(chunks.map(_.s1).mkString, chunks.map(_.s2).mkString,
-        0, 0,
-        chunks.map(_.matches).sum,
-        chunks.map(_.score).sum)
-    }
+    val chunks = recursivelyAlignStrings(n, gap * gap, matchMatrix, s1, s2)
+    // Could make only one pass through chunks if we implemented a merger for AlignedPassages.
+    AlignedPassage(chunks.map(_.s1).mkString, chunks.map(_.s2).mkString,
+      0, 0,
+      chunks.map(_.matches).sum,
+      chunks.map(_.score).sum)
   }
   def recursivelyAlignStrings(n: Int, gap2: Int, matchMatrix: jaligner.matrix.Matrix,
     s1: String, s2: String): Seq[AlignedPassage] = {
-    val m1 = BoilerApp.hapaxIndex(n, s1)
-    val m2 = BoilerApp.hapaxIndex(n, s2)
-    val inc = PassFun.increasingMatches(m1
-      .flatMap(z => if (m2.contains(z._1)) Some((z._2, m2(z._1), 1)) else None))
-    val prod = s1.size * s2.size
-    if ( inc.size == 0 && (prod >= gap2 || prod < 0) ) {
-      Seq(AlignedPassage(s1 + ("-" * s2.size), ("-" * s1.size) + s2,
-        0, 0, 0, -5.0f - 0.5f * s1.size - 0.5f * s2.size))
+    val csiz = s1.size * s2.size
+    if ( csiz <= gap2 && csiz >= 0 ) { // overflow!
+      val alg = jaligner.NeedlemanWunschGotoh.align(new jaligner.Sequence(s1),
+        new jaligner.Sequence(s2), matchMatrix, 5, 0.5f)
+      Seq(AlignedPassage(new String(alg.getSequence1), new String(alg.getSequence2),
+        0, 0, alg.getIdentity, alg.getScore))
     } else {
-      (Array((0, 0, 0)) ++ inc ++ Array((s1.size, s2.size, 0)))
-        .sliding(2).flatMap(z => {
-          val (b1, b2, c) = z(0)
-          val (e1, e2, _) = z(1)
-          val n1 = e1 - b1
-          val n2 = e2 - b2
-          val chartSize = n1 * n2
-          if ( c == 0 && e1 == 0 && e2 == 0 ) {
-            Seq()
-          } else if ( chartSize <= gap2 && chartSize >= 0 ) { // overflow!
-            val p1 = s1.substring(b1, e1)
-            val p2 = s2.substring(b2, e2)
-            if ( n1 == n2 && p1 == p2 ) {
-              Seq(AlignedPassage(p1, p2, b1, b2, p1.size, 2.0f * p2.size))
+      val m1 = BoilerApp.hapaxIndex(n, s1)
+      val m2 = BoilerApp.hapaxIndex(n, s2)
+      val inc = PassFun.increasingMatches(m1
+        .flatMap(z => if (m2.contains(z._1)) Some((z._2, m2(z._1), 1)) else None))
+      val prod = s1.size * s2.size
+      if ( inc.size == 0 && (prod >= gap2 || prod < 0) ) {
+        Seq(AlignedPassage(s1 + ("-" * s2.size), ("-" * s1.size) + s2,
+          0, 0, 0, -5.0f - 0.5f * s1.size - 0.5f * s2.size))
+      } else {
+        (Array((0, 0, 0)) ++ inc ++ Array((s1.size, s2.size, 0)))
+          .sliding(2).flatMap(z => {
+            val (b1, b2, c) = z(0)
+            val (e1, e2, _) = z(1)
+            val n1 = e1 - b1
+            val n2 = e2 - b2
+            val chartSize = n1 * n2
+            if ( c == 0 && e1 == 0 && e2 == 0 ) {
+              Seq()
+            } else if ( chartSize <= gap2 && chartSize >= 0 ) { // overflow!
+              val p1 = s1.substring(b1, e1)
+              val p2 = s2.substring(b2, e2)
+              if ( n1 == n2 && p1 == p2 ) {
+                Seq(AlignedPassage(p1, p2, b1, b2, p1.size, 2.0f * p2.size))
+              } else {
+                val alg = jaligner.NeedlemanWunschGotoh.align(new jaligner.Sequence(p1),
+                  new jaligner.Sequence(p2), matchMatrix, 5, 0.5f)
+                Seq(AlignedPassage(new String(alg.getSequence1), new String(alg.getSequence2),
+                  b1, b2, alg.getIdentity, alg.getScore))
+              }
             } else {
-              val alg = jaligner.NeedlemanWunschGotoh.align(new jaligner.Sequence(p1),
-                new jaligner.Sequence(p2), matchMatrix, 5, 0.5f)
-              Seq(AlignedPassage(new String(alg.getSequence1), new String(alg.getSequence2),
-                b1, b2, alg.getIdentity, alg.getScore))
+              if ( c > 0 ) {
+                val split1 = b1 + Math.min(n, n1)
+                val split2 = b2 + Math.min(n, n2)
+                val p1 = s1.substring(b1, split1)
+                val p2 = s2.substring(b2, split2)
+                Array(AlignedPassage(p1, p2, b1, b2, p1.size, 2.0f * p2.size)) ++
+                recursivelyAlignStrings(n, gap2, matchMatrix, s1.substring(split1, e1), s2.substring(split2, e2))
+              } else {
+                recursivelyAlignStrings(n, gap2, matchMatrix, s1.substring(b1, e1), s2.substring(b2, e2))
+              }
             }
-          } else {
-            if ( c > 0 ) {
-              val split1 = b1 + Math.min(n, n1)
-              val split2 = b2 + Math.min(n, n2)
-              val p1 = s1.substring(b1, split1)
-              val p2 = s2.substring(b2, split2)
-              Array(AlignedPassage(p1, p2, b1, b2, p1.size, 2.0f * p2.size)) ++
-              recursivelyAlignStrings(n, gap2, matchMatrix, s1.substring(split1, e1), s2.substring(split2, e2))
-            } else {
-              recursivelyAlignStrings(n, gap2, matchMatrix, s1.substring(b1, e1), s2.substring(b2, e2))
-            }
-          }
-        }).toSeq
+          }).toSeq
+      }
     }
   }
 
