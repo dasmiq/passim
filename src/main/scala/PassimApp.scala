@@ -273,7 +273,8 @@ object PassFun {
       .flatMap(z => if (m2.contains(z._1)) Some((z._2, m2(z._1), 1)) else None))
     val prod = s1.size * s2.size
     if ( inc.size == 0 && (prod >= gap2 || prod < 0) ) {
-      Seq(AlignedPassage("...", "...", 0, 0, 0, -5.0f - 0.5f * s1.size - 0.5f * s2.size))
+      Seq(AlignedPassage(s1 + ("-" * s2.size), ("-" * s1.size) + s2,
+        0, 0, 0, -5.0f - 0.5f * s1.size - 0.5f * s2.size))
     } else {
       (Array((0, 0, 0)) ++ inc ++ Array((s1.size, s2.size, 0)))
         .sliding(2).flatMap(z => {
@@ -297,14 +298,12 @@ object PassFun {
             }
           } else {
             if ( c > 0 ) {
-              val p1 = s1.substring(b1, b1+n)
-              val p2 = s2.substring(b2, b2+n)
-              println("#alg:" + ((b1,e1), (b2,e2), n))
-              println("#p1:" + p1)
-              println("#p2:" + p2)
-              // Array(AlignedPassage("TOO", "BIG", b1, b2, 0, 0f)) ++
-              Array(AlignedPassage(p1, p2, b1, b2, s1.size, 2.0f * s2.size)) ++
-              recursivelyAlignStrings(n, gap2, matchMatrix, s1.substring(b1+n, e1), s2.substring(b2+n, e2))
+              val split1 = b1 + Math.min(n, n1)
+              val split2 = b2 + Math.min(n, n2)
+              val p1 = s1.substring(b1, split1)
+              val p2 = s2.substring(b2, split2)
+              Array(AlignedPassage(p1, p2, b1, b2, p1.size, 2.0f * p2.size)) ++
+              recursivelyAlignStrings(n, gap2, matchMatrix, s1.substring(split1, e1), s2.substring(split2, e2))
             } else {
               recursivelyAlignStrings(n, gap2, matchMatrix, s1.substring(b1, e1), s2.substring(b2, e2))
             }
@@ -471,7 +470,7 @@ object BoilerApp {
           val alg = q.takeWhile(_.getAs[String]("issue") != issue)
             .map(p => {
               val pid = p.getAs[String]("id")
-              val cur = PassFun.alignStrings(config.n * 5, config.gap, matchMatrix,
+              val cur = PassFun.alignStrings(config.n * 5, config.gap * 5, matchMatrix,
                 cleanXML(p.getAs[String]("text")), cleanXML(text))
               PassAlign(pid, 0, 0, 0, 0, cur.s1, cur.s2)
             })
