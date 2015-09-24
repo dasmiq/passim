@@ -238,7 +238,8 @@ object PassFun {
   def alignStrings(id1: String, id2: String,
     n: Int, gap: Int, matchMatrix: jaligner.matrix.Matrix,
     s1: String, s2: String): PassAlign = {
-    val chunks = recursivelyAlignStrings(n, gap * gap, matchMatrix, s1, s2)
+    val chunks = recursivelyAlignStrings(n, gap * gap, matchMatrix,
+      s1.replaceAll("-", "_"), s2.replaceAll("-", "_"))
     // Could make only one pass through chunks if we implemented a merger for AlignedPassages.
     PassAlign(id1, id2, chunks.map(_.s1).mkString, chunks.map(_.s2).mkString,
       0, 0,
@@ -273,9 +274,14 @@ object PassFun {
             } else {
               val alg = jaligner.NeedlemanWunschGotoh.align(new jaligner.Sequence(p1),
                 new jaligner.Sequence(p2), matchMatrix, 5, 0.5f)
-              // HACK!! WHY ?!?!?!? 
-              Seq(AlignedPassage(new String(alg.getSequence2), new String(alg.getSequence1),
-                b1, b2, alg.getIdentity, alg.getScore))
+              // // HACK!! WHY does JAligner swap sequences ?!?!?!?
+              val a1 = new String(alg.getSequence2)
+              val a2 = new String(alg.getSequence1)
+              if ( a1.replaceAll("-", "") == p2 && a2.replaceAll("-", "") == p1 ) {
+                Seq(AlignedPassage(a2, a1, b1, b2, alg.getIdentity, alg.getScore))
+              } else {
+                Seq(AlignedPassage(a1, a2, b1, b2, alg.getIdentity, alg.getScore))
+              }
             }
           } else {
             if ( c > 0 ) {
