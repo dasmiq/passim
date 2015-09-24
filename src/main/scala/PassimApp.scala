@@ -47,8 +47,8 @@ case class IdSeries(id: Long, series: Long)
 
 case class SpanMatch(uid: Long, begin: Int, end: Int, mid: Long)
 
-case class PassAlign(id: String, begin: Int, end: Int, cbegin: Int, cend: Int,
-  palg: String, calg: String)
+case class PassAlign(id1: String, id2: String,
+  s1: String, s2: String, b1: Int, b2: Int, matches: Int, score: Float)
 
 case class BoilerPass(id: String, termCount: Int,
   passageBegin: Array[Int], passageEnd: Array[Int], passageLastId: Array[String],
@@ -113,7 +113,7 @@ object PassFun {
     res.toArray
   }
 
-  def gappedMatches(n: Int, gapSize: Int, matches: Array[(Int, Int, Int)]) = {
+  def gappedMatches(n: Int, gapSize: Int, minAlg: Int, matches: Array[(Int, Int, Int)]) = {
     val N = matches.size
     var i = 0
     var res = new ListBuffer[((Int,Int), (Int,Int))]
@@ -121,8 +121,8 @@ object PassFun {
       val j1 = j + 1
       if ( j == (N-1) || (matches(j1)._1 - matches(j)._1) > gapSize || (matches(j1)._2 - matches(j)._2) > gapSize) {
 	// This is where we'd score the spans
-	if ( j > i && (matches(j)._1 - matches(i)._1 + n - 1) >= 10
-	     && (matches(j)._2 - matches(i)._2 + n - 1) >= 10) {
+	if ( j > i && (matches(j)._1 - matches(i)._1 + n - 1) >= minAlg
+	     && (matches(j)._2 - matches(i)._2 + n - 1) >= minAlg) {
 	  res += (((matches(i)._1, matches(j)._1 + n - 1),
 		   (matches(i)._2, matches(j)._2 + n - 1)))
 	}
@@ -162,11 +162,6 @@ object PassFun {
 	if ( pextra > 2 ) {
 	  s1 -= ps1.count(_ == ' ') - (if (ps1(0) == ' ') 1 else 0) - n + 1
 	  s2 -= ps2.count(_ == ' ') - (if (ps2(0) == ' ') 1 else 0) - n + 1
-	  // println((id1,id2))
-	  // println("prefix extra: " + pextra)
-	  // println(ps1.mkString)
-	  // println(palg.getMarkupLine().mkString)
-	  // println(ps2.mkString)
 	}
       }
     }
@@ -183,11 +178,6 @@ object PassFun {
 	if ( sextra > 2 ) {
 	  e1 += ss1.count(_ == ' ') - (if (ss1(ss1.size - 1) == ' ') 1 else 0) - n + 1
 	  e2 += ss2.count(_ == ' ') - (if (ss2(ss2.size - 1) == ' ') 1 else 0) - n + 1
-	  // println((id1,id2))
-	  // println("suffix extra: " + sextra)
-	  // println(ss1.mkString)
-	  // println(salg.getMarkupLine().mkString)
-	  // println(ss2.mkString)
 	}
       }
     }
@@ -245,67 +235,61 @@ object PassFun {
   }
 
   case class AlignedPassage(s1: String, s2: String, b1: Int, b2: Int, matches: Int, score: Float)
-  def alignStrings(n: Int, gap: Int, matchMatrix: jaligner.matrix.Matrix,
-    s1: String, s2: String): AlignedPassage = {
+  def alignStrings(id1: String, id2: String,
+    n: Int, gap: Int, matchMatrix: jaligner.matrix.Matrix,
+    s1: String, s2: String): PassAlign = {
     val chunks = recursivelyAlignStrings(n, gap * gap, matchMatrix, s1, s2)
     // Could make only one pass through chunks if we implemented a merger for AlignedPassages.
-    AlignedPassage(chunks.map(_.s1).mkString, chunks.map(_.s2).mkString,
+    PassAlign(id1, id2, chunks.map(_.s1).mkString, chunks.map(_.s2).mkString,
       0, 0,
       chunks.map(_.matches).sum,
       chunks.map(_.score).sum)
   }
   def recursivelyAlignStrings(n: Int, gap2: Int, matchMatrix: jaligner.matrix.Matrix,
     s1: String, s2: String): Seq[AlignedPassage] = {
-    val csiz = s1.size * s2.size
-    if ( csiz <= gap2 && csiz >= 0 ) { // overflow!
-      val alg = jaligner.NeedlemanWunschGotoh.align(new jaligner.Sequence(s1),
-        new jaligner.Sequence(s2), matchMatrix, 5, 0.5f)
-      Seq(AlignedPassage(new String(alg.getSequence1), new String(alg.getSequence2),
-        0, 0, alg.getIdentity, alg.getScore))
+    val m1 = BoilerApp.hapaxIndex(n, s1)
+    val m2 = BoilerApp.hapaxIndex(n, s2)
+    val inc = PassFun.increasingMatches(m1
+      .flatMap(z => if (m2.contains(z._1)) Some((z._2, m2(z._1), 1)) else None))
+    val prod = s1.size * s2.size
+    if ( inc.size == 0 && (prod >= gap2 || prod < 0) ) {
+      Seq(AlignedPassage(s1 + ("-" * s2.size), ("-" * s1.size) + s2,
+        0, 0, 0, -5.0f - 0.5f * s1.size - 0.5f * s2.size))
     } else {
-      val m1 = BoilerApp.hapaxIndex(n, s1)
-      val m2 = BoilerApp.hapaxIndex(n, s2)
-      val inc = PassFun.increasingMatches(m1
-        .flatMap(z => if (m2.contains(z._1)) Some((z._2, m2(z._1), 1)) else None))
-      val prod = s1.size * s2.size
-      if ( inc.size == 0 && (prod >= gap2 || prod < 0) ) {
-        Seq(AlignedPassage(s1 + ("-" * s2.size), ("-" * s1.size) + s2,
-          0, 0, 0, -5.0f - 0.5f * s1.size - 0.5f * s2.size))
-      } else {
-        (Array((0, 0, 0)) ++ inc ++ Array((s1.size, s2.size, 0)))
-          .sliding(2).flatMap(z => {
-            val (b1, b2, c) = z(0)
-            val (e1, e2, _) = z(1)
-            val n1 = e1 - b1
-            val n2 = e2 - b2
-            val chartSize = n1 * n2
-            if ( c == 0 && e1 == 0 && e2 == 0 ) {
-              Seq()
-            } else if ( chartSize <= gap2 && chartSize >= 0 ) { // overflow!
-              val p1 = s1.substring(b1, e1)
-              val p2 = s2.substring(b2, e2)
-              if ( n1 == n2 && p1 == p2 ) {
-                Seq(AlignedPassage(p1, p2, b1, b2, p1.size, 2.0f * p2.size))
-              } else {
-                val alg = jaligner.NeedlemanWunschGotoh.align(new jaligner.Sequence(p1),
-                  new jaligner.Sequence(p2), matchMatrix, 5, 0.5f)
-                Seq(AlignedPassage(new String(alg.getSequence1), new String(alg.getSequence2),
-                  b1, b2, alg.getIdentity, alg.getScore))
-              }
+      (Array((0, 0, 0)) ++ inc ++ Array((s1.size, s2.size, 0)))
+        .sliding(2).flatMap(z => {
+          val (b1, b2, c) = z(0)
+          val (e1, e2, _) = z(1)
+          val n1 = e1 - b1
+          val n2 = e2 - b2
+          val chartSize = n1 * n2
+          if ( c == 0 && e1 == 0 && e2 == 0 ) {
+            Seq()
+          } else if ( chartSize <= gap2 && chartSize >= 0 ) { // overflow!
+            val p1 = s1.substring(b1, e1)
+            val p2 = s2.substring(b2, e2)
+            if ( n1 == n2 && p1 == p2 ) {
+              Seq(AlignedPassage(p1, p2, b1, b2, p1.size, 2.0f * p2.size))
             } else {
-              if ( c > 0 ) {
-                val split1 = b1 + Math.min(n, n1)
-                val split2 = b2 + Math.min(n, n2)
-                val p1 = s1.substring(b1, split1)
-                val p2 = s2.substring(b2, split2)
-                Array(AlignedPassage(p1, p2, b1, b2, p1.size, 2.0f * p2.size)) ++
-                recursivelyAlignStrings(n, gap2, matchMatrix, s1.substring(split1, e1), s2.substring(split2, e2))
-              } else {
-                recursivelyAlignStrings(n, gap2, matchMatrix, s1.substring(b1, e1), s2.substring(b2, e2))
-              }
+              val alg = jaligner.NeedlemanWunschGotoh.align(new jaligner.Sequence(p1),
+                new jaligner.Sequence(p2), matchMatrix, 5, 0.5f)
+              // HACK!! WHY ?!?!?!? 
+              Seq(AlignedPassage(new String(alg.getSequence2), new String(alg.getSequence1),
+                b1, b2, alg.getIdentity, alg.getScore))
             }
-          }).toSeq
-      }
+          } else {
+            if ( c > 0 ) {
+              val split1 = b1 + Math.min(n, n1)
+              val split2 = b2 + Math.min(n, n2)
+              val p1 = s1.substring(b1, split1)
+              val p2 = s2.substring(b2, split2)
+              Array(AlignedPassage(p1, p2, b1, b2, p1.size, 2.0f * p2.size)) ++
+              recursivelyAlignStrings(n, gap2, matchMatrix, s1.substring(split1, e1), s2.substring(split2, e2))
+            } else {
+              recursivelyAlignStrings(n, gap2, matchMatrix, s1.substring(b1, e1), s2.substring(b2, e2))
+            }
+          }
+        }).toSeq
     }
   }
 
@@ -417,6 +401,7 @@ object BoilerApp {
     docs.toArray
   }
 
+  // TODO: Unescape other character entities to UTF.
   def cleanXML(s: String): String = {
     s.replaceAll("</?[A-Za-z][^>]*>", "")
       .replaceAll("&quot;", "\"")
@@ -449,74 +434,63 @@ object BoilerApp {
 
     corpus
       .select($"id", $"series", $"eday", $"issue", $"terms", indexer($"terms") as "index",
-        $"text", $"termCharBegin", $"termCharEnd")
+        $"text")
       .mapPartitions(it => {
       val q = new Queue[Row]
       it.flatMap((c: Row) => c match {
         case Row(id: String, series: String, day: Int, issue: String,
           terms: Seq[_], index: Map[_, _],
-          text: String, termCharBegin: Seq[_], termCharEnd: Seq[_]) => {
-          val t = terms.asInstanceOf[Seq[String]].toArray
-          val m = index.asInstanceOf[Map[String, Int]]
-          val tcb = termCharBegin.asInstanceOf[Seq[Int]].toArray
-          val tce = termCharEnd.asInstanceOf[Seq[Int]].toArray
-          while ( !q.isEmpty && (series != q.head.getString(1))
-            && (day - q.head.getInt(2)) > config.history ) {
+          text: String) => { //, termCharBegin: Seq[_], termCharEnd: Seq[_]) => {
+          val cs = cleanXML(text)
+          val cm = index.asInstanceOf[Map[String, Int]]
+          while ( !q.isEmpty
+            && ((series != q.head.getString(1))
+              || (day - q.head.getInt(2)) > config.history) ) {
             q.dequeue
           }
           val alg = q.takeWhile(_.getAs[String]("issue") != issue)
-            .map(p => {
+            .flatMap(p => {
               val pid = p.getAs[String]("id")
-              val cur = PassFun.alignStrings(config.n * 5, config.gap * 5, matchMatrix,
-                cleanXML(p.getAs[String]("text")), cleanXML(text))
-              PassAlign(pid, 0, 0, 0, 0, cur.s1, cur.s2)
+              val ps = cleanXML(p.getAs[String]("text"))
+              val pm = p.getAs[Map[String, Int]]("index")
+              val inc = PassFun.increasingMatches(pm
+                .flatMap(z => if (cm.contains(z._1)) Some((z._2, cm(z._1), 1)) else None))
+              val gapped = PassFun.gappedMatches(config.n, config.gap, config.minAlg, inc)
+              println("# rep: " + (pid, id, inc.size, gapped.size))
+              if ( inc.size >= config.minRep && gapped.size > 0 ) {
+                // TODO: Give high cost to newline mismatches.
+                Some(PassFun.alignStrings(pid, id, config.n * 5, config.gap * 5, matchMatrix,
+                  ps, cs))
+              } else {
+                None
+              }
             })
-          // val alg = q.takeWhile(_.getAs[String]("issue") != issue)
-          //   .flatMap(p => {
-          //     val pid = p.getAs[String]("id")
-          //     val pt = p.getAs[Seq[String]]("terms").toArray
-          //     val inc = PassFun.increasingMatches(p.getAs[Map[String, Int]]("index")
-          //       .flatMap(z => if (m.contains(z._1)) Some((z._2, m(z._1), 1)) else None))
-          //     PassFun.gappedMatches(config.n, config.gap, inc)
-          //       .map(z => PassFun.alignEdges(matchMatrix, config.n, config.minAlg, 0,
-          //         PassFun.edgeText(config.gap * 2/3, config.n, IdSeries(0, 0), pt, z._1),
-          //         PassFun.edgeText(config.gap * 2/3, config.n, IdSeries(1, 0), t, z._2)))
-          //       .filter(_.size > 0)
-          //       .map(z => {
-          //         val (pb, pe) = z.head._2._1
-          //         val (cb, ce) = z.last._2._1
-          //         // TODO: Should merge spans here before alignment.
-          //         // TODO: Align original, not tokenized, text.
-          //         // val alg = PassFun.alignTerms(config.n, config.gap, matchMatrix,
-          //         //   pt.slice(pb, pe), t.slice(cb, ce))
-          //         val cs = text.substring(tcb(cb), tce(ce))
-          //         val ps = p.getAs[String]("text")
-          //           .substring(p.getAs[Seq[Int]]("termCharBegin")(pb),
-          //             p.getAs[Seq[Int]]("termCharEnd")(pe))
-          //         val alg = PassFun.alignStrings(config.n * 5, config.gap * 5, matchMatrix,
-          //           cleanXML(ps), cleanXML(cs))
-          //         PassAlign(pid, pb, pe, cb, ce, alg.s1, alg.s2)
-          //       })
-          //   })
           q.enqueue(c)
-          if ( alg.size > 0 ) {
-            Some(BoilerPass(id, t.size, Array[Int](), Array[Int](), Array[String](), alg.toArray))
-            // val ids = alg.map(a => (PassimApp.hashString(a.id), a.id)).toMap
-            // val merged = PassFun.mergeSpans(0, alg.map(z => ((z.cbegin, z.cend),
-            //   PassimApp.hashString(z.id))))
-            // Some(BoilerPass(id, t.size,
-            //   merged.map(_._1._1).toArray, merged.map(_._1._2).toArray,
-            //   merged.map(p => p._2.map(ids(_)).sorted.last).toArray,
-            //   alg.toArray))
-          } else {
-            None
-          }
+          alg
+          // if ( alg.size > 0 ) {
+          //   Some(BoilerPass(id, t.size, Array[Int](), Array[Int](), Array[String](), alg.toArray))
+          //   // val ids = alg.map(a => (PassimApp.hashString(a.id), a.id)).toMap
+          //   // val merged = PassFun.mergeSpans(0, alg.map(z => ((z.cbegin, z.cend),
+          //   //   PassimApp.hashString(z.id))))
+          //   // Some(BoilerPass(id, t.size,
+          //   //   merged.map(_._1._1).toArray, merged.map(_._1._2).toArray,
+          //   //   merged.map(p => p._2.map(ids(_)).sorted.last).toArray,
+          //   //   alg.toArray))
+          // } else {
+          //   None
+          // }
         }
       })
     })
       .toDF
       .write.json(algFname)
       // .write.parquet(algFname)
+  }
+
+  def bpSegment(config: Config, sqlContext: SQLContext) = {
+    import sqlContext.implicits._
+
+    val fs = FileSystem.get(sqlContext.sparkContext.hadoopConfiguration)
 
     // sqlContext.read.parquet(algFname)
     //   .withColumnRenamed("id", "aid").drop("alignments")
@@ -803,7 +777,7 @@ object PassimApp {
               .filter(_._2.size >= config.minRep)
               .mapValues(PassFun.increasingMatches)
               .filter(_._2.size >= config.minRep)
-              .flatMapValues(PassFun.gappedMatches(config.n, config.gap, _))
+              .flatMapValues(PassFun.gappedMatches(config.n, config.gap, config.minAlg, _))
             // Unique IDs will serve as edge IDs in connected component graph
               .zipWithUniqueId
               .flatMap(x => {
