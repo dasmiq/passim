@@ -45,8 +45,6 @@ case class imgCoord(val x: Int, val y: Int, val w: Int, val h: Int) {
 
 case class IdSeries(id: Long, series: Long)
 
-case class SpanMatch(uid: Long, begin: Int, end: Int, mid: Long)
-
 case class PassAlign(id1: String, id2: String,
   s1: String, s2: String, b1: Int, b2: Int, matches: Int, score: Float)
 
@@ -667,7 +665,7 @@ object PassimApp {
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
       .registerKryoClasses(Array(classOf[imgCoord],
         classOf[PassAlign], classOf[BoilerPass],
-        classOf[TokText], classOf[SpanMatch], classOf[IdSeries]))
+        classOf[TokText], classOf[IdSeries]))
     val sc = new SparkContext(conf)
     val sqlContext = new SQLContext(sc)
     import sqlContext.implicits._
@@ -778,7 +776,7 @@ object PassimApp {
             // Just use plain old document frequency
               .filter(x => x._2.size >= 2 && x._2.size <= config.maxSeries
                 && CorpusFun.crossCounts(x._2.groupBy(_._2).map(_._2.map(_._3.size).sum).toArray) <= upper )
-              .flatMap { case (f, docs) => for ( a <- docs; b <- docs; if a._1 < b._1 && a._2 != b._2 && a._3.size == 1 && b._3.size == 1 ) yield ((a._1, b._1), (a._3(0), b._3(0), docs.size)) }
+              .flatMap { case (f, docs) => for ( a <- docs; b <- docs; if a._1 < b._1 && a._2 != b._2 && a._3.size == 1 && b._3.size == 1 ) yield (((a._1, a._2), (b._1, b._2)), (a._3(0), b._3(0), docs.size)) }
               .groupByKey
               .filter(_._2.size >= config.minRep)
               .mapValues(PassFun.increasingMatches)
@@ -787,11 +785,11 @@ object PassimApp {
             // Unique IDs will serve as edge IDs in connected component graph
               .zipWithUniqueId
               .flatMap(x => {
-                val (((uid1, uid2), ((s1, e1), (s2, e2))), mid) = x
-                Array(SpanMatch(uid1, s1, e1, mid),
-                  SpanMatch(uid2, s2, e2, mid))
+                val ((((uid1, gid1), (uid2, gid2)), ((s1, e1), (s2, e2))), mid) = x
+                Array((uid1, gid1, s1, e1, mid),
+                  (uid2, gid2, s2, e2, mid))
               })
-              .toDF
+              .toDF("uid", "gid", "begin", "end", "mid")
             // But we need to cache so IDs don't get reassigned.
               .write.parquet(pairsFname)
           }
@@ -800,7 +798,7 @@ object PassimApp {
           val pass1 = sqlContext.read.parquet(pairsFname)
             .join(termCorpus, "uid")
             .map({
-              case Row(uid: Long, begin: Int, end: Int, mid: Long, terms: Seq[_], gid: Long) => {
+              case Row(uid: Long, gid: Long, begin: Int, end: Int, mid: Long, terms: Seq[_], gid2: Long) => {
                 (mid,
                   PassFun.edgeText(config.gap * 2/3, config.n,
                     IdSeries(uid, gid), terms.asInstanceOf[Seq[String]].toArray, (begin, end)))
