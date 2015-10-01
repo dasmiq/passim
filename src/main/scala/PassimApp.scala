@@ -29,6 +29,7 @@ case class Config(version: String = BuildInfo.version,
   n: Int = 5, maxSeries: Int = 100, minRep: Int = 5, minAlg: Int = 20,
   gap: Int = 100, relOver: Double = 0.5, maxRep: Int = 10, history: Int = 7,
   wordLength: Double = 1.5,
+  pairwise: Boolean = false, docwise: Boolean = false,
   id: String = "id", group: String = "series", text: String = "text",
   inputFormat: String = "json", outputFormat: String = "json",
   inputPaths: String = "", outputPath: String = "") {
@@ -46,7 +47,8 @@ case class imgCoord(val x: Int, val y: Int, val w: Int, val h: Int) {
 case class IdSeries(id: Long, series: Long)
 
 case class PassAlign(id1: String, id2: String,
-  s1: String, s2: String, b1: Int, b2: Int, matches: Int, score: Float)
+  s1: String, s2: String, b1: Int, e1: Int, n1: Int, b2: Int, e2: Int, n2: Int,
+  matches: Int, score: Float)
 
 case class BoilerPass(id: String, termCount: Int,
   passageBegin: Array[Int], passageEnd: Array[Int], passageLastId: Array[String],
@@ -232,15 +234,17 @@ object PassFun {
     passages.toList
   }
 
+  type DocPassage = (String, Int, Int, Int, String)
   case class AlignedPassage(s1: String, s2: String, b1: Int, b2: Int, matches: Int, score: Float)
-  def alignStrings(id1: String, id2: String,
-    n: Int, gap: Int, matchMatrix: jaligner.matrix.Matrix,
-    s1: String, s2: String): PassAlign = {
+  def alignStrings(n: Int, gap: Int, matchMatrix: jaligner.matrix.Matrix,
+    d1: DocPassage, d2: DocPassage): PassAlign = {
+    val (id1, b1, e1, n1, s1) = d1
+    val (id2, b2, e2, n2, s2) = d2
     val chunks = recursivelyAlignStrings(n, gap * gap, matchMatrix,
       s1.replaceAll("-", "_"), s2.replaceAll("-", "_"))
     // Could make only one pass through chunks if we implemented a merger for AlignedPassages.
     PassAlign(id1, id2, chunks.map(_.s1).mkString, chunks.map(_.s2).mkString,
-      0, 0,
+      b1, e1, n1, b2, e2, n2,
       chunks.map(_.matches).sum,
       chunks.map(_.score).sum)
   }
@@ -463,8 +467,8 @@ object BoilerApp {
               println("# rep: " + (pid, id, inc.size, gapped.size))
               if ( inc.size >= config.minRep && gapped.size > 0 ) {
                 // TODO: Give high cost to newline mismatches.
-                Some(PassFun.alignStrings(pid, id, config.n * 5, config.gap * 5, matchMatrix,
-                  ps, cs))
+                Some(PassFun.alignStrings(config.n * 5, config.gap * 5, matchMatrix,
+                  (pid, 0, ps.size, ps.size, ps), (id, 0, cs.size, cs.size, cs)))
               } else {
                 None
               }
@@ -691,6 +695,10 @@ object PassimApp {
         c.copy(relOver = x) } text("Minimum relative overlap to merge passages; default=0.5")
       opt[Int]('r', "max-repeat") action { (x, c) =>
         c.copy(maxRep = x) } text("Maximum repeat of one series in a cluster; default=10")
+      opt[Unit]('p', "pairwise") action { (_, c) =>
+        c.copy(pairwise = true) } text("Output pairwise alignments")
+      opt[Unit]('d', "docwise") action { (_, c) =>
+        c.copy(docwise = true) } text("Output docwise alignments")
       opt[String]('i', "id") action { (x, c) =>
         c.copy(id = x) } text("Field for unique document IDs; default=id")
       opt[String]('t', "text") action { (x, c) =>
@@ -732,7 +740,7 @@ object PassimApp {
 
     val configFname = config.outputPath + "/conf"
     val pairsFname = config.outputPath + "/pairs.parquet"
-    val alignFname = config.outputPath + "/align.parquet"
+    val passFname = config.outputPath + "/pass.parquet"
     val clusterFname = config.outputPath + "/clusters.parquet"
     val outFname = config.outputPath + "/out." + config.outputFormat
 
@@ -749,7 +757,7 @@ object PassimApp {
         .withColumn("uid", hashId(col(config.id)))
 
       if ( !fs.exists(new Path(clusterFname)) ) {
-        if ( !fs.exists(new Path(alignFname)) ) {
+        if ( !fs.exists(new Path(passFname)) ) {
           val groupCol = if ( raw.columns.contains(config.group) ) config.group else config.id
 
           val termCorpus = corpus
@@ -795,7 +803,32 @@ object PassimApp {
           }
 
           val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
-          val pass1 = sqlContext.read.parquet(pairsFname)
+
+          // TODO: Should probably be a separate mode.
+          if ( config.docwise ) {
+            sqlContext.read.parquet(pairsFname)
+              .select('uid, 'mid)
+              .join(corpus.select('uid, col(config.id), col(config.text)), "uid")
+              .map({
+                case Row(uid: Long, mid: Long, id: String, text: String) => {
+                  (mid, (id, 0, text.size, text.size, text))
+                }
+              })
+              .groupByKey
+              .map(x => {
+                val docs = x._2.toArray
+                PassFun.alignStrings(config.n * 5, config.gap * 5, matchMatrix, docs(0), docs(1))
+              })
+              .toDF
+              .write
+              .format(config.outputFormat)
+              .save(config.outputPath + "/docs." + config.outputFormat)
+          }
+
+          // TODO: Should probably prune document pairs that come from
+          // series pairs with inordinate overlap.  Or perhaps that
+          // should be an ancillary diagnostic program.
+          val align = sqlContext.read.parquet(pairsFname)
             .join(termCorpus, "uid")
             .map({
               case Row(uid: Long, gid: Long, begin: Int, end: Int, mid: Long, terms: Seq[_], gid2: Long) => {
@@ -813,9 +846,39 @@ object PassimApp {
               PassFun.alignEdges(matchMatrix, config.n, config.minAlg, x._1, pass(0), pass(1))
             })
 
+          if ( config.pairwise ) {
+            align.cache()
+            align
+              .map(x => {
+                val (doc, ((begin, end), mid)) = x
+                (doc.id, begin, end, mid)
+              })
+              .toDF("uid", "begin", "end", "mid")
+              .join(corpus.select('uid, col(config.id), col(config.text),
+                'termCharBegin, 'termCharEnd), "uid")
+              .map({
+                case Row(uid: Long, begin: Int, end: Int, mid: Long,
+                  id: String, text: String, termCharBegin: Seq[_], termCharEnd: Seq[_]) => {
+                  val tcb = termCharBegin.asInstanceOf[Seq[Int]]
+                  val tce = termCharEnd.asInstanceOf[Seq[Int]]
+
+                  (mid, (id, begin, end, tcb.size, text.substring(tcb(begin), tce(end))))
+                }
+              })
+              .groupByKey
+              .map(x => {
+                val d1 = x._2.head
+                val d2 = x._2.last
+                PassFun.alignStrings(config.n * 5, config.gap * 5, matchMatrix, d1, d2)
+              })
+              .toDF
+              .write.format(config.outputFormat)
+              .save(config.outputPath + "/align." + config.outputFormat)
+          }
+
           val graphParallelism = 1
 
-          pass1
+          align
             .groupByKey(graphParallelism * sc.getExecutorMemoryStatus.size)
             .flatMapValues(PassFun.mergeSpans(config.relOver, _))
             .zipWithUniqueId
@@ -825,10 +888,10 @@ object PassimApp {
               (id, doc.id, doc.series, span._1, span._2, edges)
             })
             .toDF("nid", "uid", "gid", "begin", "end", "edges")
-            .write.parquet(alignFname)
+            .write.parquet(passFname)
         }
 
-        val pass = sqlContext.read.parquet(alignFname)
+        val pass = sqlContext.read.parquet(passFname)
 
         val passNodes = pass.map({
           case Row(nid: Long, uid: Long, gid: Long, begin: Int, end: Int, edges: Seq[_]) =>
