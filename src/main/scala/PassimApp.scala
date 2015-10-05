@@ -287,12 +287,11 @@ object PassFun {
             }
           } else {
             if ( c > 0 ) {
-              val split1 = b1 + Math.min(n, n1)
-              val split2 = b2 + Math.min(n, n2)
-              val p1 = s1.substring(b1, split1)
-              val p2 = s2.substring(b2, split2)
-              Array(AlignedPassage(p1, p2, b1, b2, p1.size, 2.0f * p2.size)) ++
-              recursivelyAlignStrings(n, gap2, matchMatrix, s1.substring(split1, e1), s2.substring(split2, e2))
+              val len = Math.min(n, Math.min(n1, n2))
+              val p1 = s1.substring(b1, b1 + len)
+              val p2 = s2.substring(b2, b2 + len)
+              Array(AlignedPassage(p1, p2, b1, b2, len, 2.0f * len)) ++
+              recursivelyAlignStrings(n, gap2, matchMatrix, s1.substring(b1 + len, e1), s2.substring(b2 + len, e2))
             } else {
               recursivelyAlignStrings(n, gap2, matchMatrix, s1.substring(b1, e1), s2.substring(b2, e2))
             }
