@@ -637,9 +637,7 @@ object PassimApp {
   }
 
   val hashId = udf {(id: String) => hashString(id)}
-  val getPassage = udf {
-    (begin: Int, end: Int, text: String, termCharBegin: Seq[Int], termCharEnd: Seq[Int]) =>
-    text.substring(termCharBegin(begin), termCharEnd(end))}
+  val getPassage = udf { (text: String, begin: Int, end: Int) => text.substring(begin, end) }
   val getLocs = udf {
     (begin: Int, end: Int, termLocs: Seq[String]) =>
     if ( termLocs.size >= end )
@@ -940,13 +938,14 @@ object PassimApp {
 
       sqlContext.read.parquet(clusterFname)
         .join(corpus.drop("terms"), "uid")
-        .withColumn(config.text,
-          getPassage('begin, 'end, col(config.text), 'termCharBegin, 'termCharEnd))
         .withColumn("pages", getLocs('begin, 'end, 'termPages))
         .withColumn("regions", getRegions('begin, 'end, 'termPages, 'termRegions))
         .withColumn("locs", getLocs('begin, 'end, 'termLocs))
-        .drop("termCharBegin").drop("termCharEnd")
         .drop("termPages").drop("termRegions").drop("termLocs")
+        .withColumn("begin", 'termCharBegin('begin))
+        .withColumn("end", 'termCharEnd('end))
+        .drop("termCharBegin").drop("termCharEnd")
+        .withColumn(config.text, getPassage(col(config.text), 'begin, 'end))
         .sort('size.desc, 'cluster, dateSort, 'id, 'begin)
         .write.format(config.outputFormat).save(outFname)
     }
