@@ -26,9 +26,9 @@ import java.nio.ByteBuffer
 
 case class Config(version: String = BuildInfo.version,
   mode: String = "cluster",
-  n: Int = 5, maxSeries: Int = 100, minRep: Int = 5, minAlg: Int = 20,
-  gap: Int = 100, relOver: Double = 0.5, maxRep: Int = 10, history: Int = 7,
-  wordLength: Double = 1.5,
+  n: Int = 5, maxDF: Int = 100, minRep: Int = 5, minAlg: Int = 20,
+  gap: Int = 100, relOver: Double = 0.8, maxRep: Int = 10, history: Int = 7,
+  wordLength: Double = 2,
   pairwise: Boolean = false, docwise: Boolean = false,
   id: String = "id", group: String = "series", text: String = "text",
   inputFormat: String = "json", outputFormat: String = "json",
@@ -680,8 +680,8 @@ object PassimApp {
       opt[Int]('h', "history") action { (x, c) => c.copy(history = x) } validate { x =>
         if ( x > 0 ) success else failure("history must be > 0")
       } text("history in days for self reprinting; default=7")
-      opt[Int]('u', "max-series") action { (x, c) =>
-        c.copy(maxSeries = x) } text("Upper limit on effective series size; default=100")
+      opt[Int]('u', "maxDF") action { (x, c) =>
+        c.copy(maxDF = x) } text("Upper limit on document frequency; default=100")
       opt[Int]('m', "min-match") action { (x, c) =>
         c.copy(minRep = x) } text("Minimum number of n-gram matches between documents; default=5")
       opt[Int]('a', "min-align") action { (x, c) =>
@@ -689,7 +689,7 @@ object PassimApp {
       opt[Int]('g', "gap") action { (x, c) =>
         c.copy(gap = x) } text("Minimum size of the gap that separates passages; default=100")
       opt[Double]('o', "relative-overlap") action { (x, c) =>
-        c.copy(relOver = x) } text("Minimum relative overlap to merge passages; default=0.5")
+        c.copy(relOver = x) } text("Minimum relative overlap to merge passages; default=0.8")
       opt[Int]('r', "max-repeat") action { (x, c) =>
         c.copy(maxRep = x) } text("Maximum repeat of one series in a cluster; default=10")
       opt[Unit]('p', "pairwise") action { (_, c) =>
@@ -708,7 +708,7 @@ object PassimApp {
         c.copy(outputFormat = x) } text("Output format; default=json")
       opt[Double]('w', "word-length") action { (x, c) => c.copy(wordLength = x)
       } validate { x => if ( x >= 1 ) success else failure("average word length must be >= 1")
-      } text("Minimum average word length to match; default=1.5")
+      } text("Minimum average word length to match; default=2")
       help("help") text("prints usage text")
       arg[String]("<path>,<path>,...") action { (x, c) =>
         c.copy(inputPaths = x)
@@ -762,7 +762,7 @@ object PassimApp {
           // Performance will be awful unless spark.sql.shuffle.partitions is appropriate
 
           if ( !fs.exists(new Path(pairsFname)) ) {
-            val upper = config.maxSeries * (config.maxSeries - 1) / 2
+            val upper = config.maxDF * (config.maxDF - 1) / 2
             val minFeatLen: Double = config.wordLength * config.n
 
             termCorpus
@@ -775,13 +775,28 @@ object PassimApp {
                     .zipWithIndex
                     .toArray
                     .groupBy(_._1)
-                    .map { case (feat, post) => (feat, (uid, gid, post.map(_._2))) }
+                  // Store the count and first posting; could store
+                  // some other fixed number of postings.
+                    .map { case (feat, post) => (feat, (uid, gid, post.size, post(0)._2)) }
               })
               .groupByKey
             // Just use plain old document frequency
-              .filter(x => x._2.size >= 2 && x._2.size <= config.maxSeries
-                && CorpusFun.crossCounts(x._2.groupBy(_._2).map(_._2.map(_._3.size).sum).toArray) <= upper )
-              .flatMap { case (f, docs) => for ( a <- docs; b <- docs; if a._1 < b._1 && a._2 != b._2 && a._3.size == 1 && b._3.size == 1 ) yield (((a._1, a._2), (b._1, b._2)), (a._3(0), b._3(0), docs.size)) }
+              .filter(x => x._2.size >= 2 && x._2.size <= config.maxDF)
+              .flatMap { case (f, docs) => {
+                val df = docs.size
+                val hapax = docs.filter(_._3 == 1).toSeq.sorted.toArray
+                val res = new ListBuffer[(((Long, Long), (Long, Long)), (Int, Int, Int))]
+                for ( i <- 0 until hapax.size ) {
+                  val a = hapax(i)
+                  for ( j <- (i + 1) until hapax.size ) {
+                    val b = hapax(j)
+                    if ( a._2 != b._2 )
+                      res += ((((a._1, a._2), (b._1, b._2)), (a._4, b._4, df)))
+                  }
+                }
+                res.toList
+              }
+            }
               .groupByKey
               .filter(_._2.size >= config.minRep)
               .mapValues(PassFun.increasingMatches)
