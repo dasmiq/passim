@@ -601,14 +601,14 @@ object PassimApp {
     val corpus = testTok(config, raw)
 
     val candidates = corpus.select($"cluster" as "p_cluster",
-      $"id" as "p_id", $"begin" as "p_begin",
+      col(config.id) as "p_id", $"begin" as "p_begin",
       $"terms" as "p_terms", $"date" as "p_date")
     val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
 
     // TODO: Pass through all original fields in raw.
     corpus
       .join(candidates, ($"cluster" === $"p_cluster") && ($"date" > $"p_date"), "left_outer")
-      .select("cluster", "id", "begin", "end", "terms", "date",
+      .select("cluster", config.id, "begin", "end", "terms", "date",
         "p_id", "p_begin", "p_terms", "p_date")
       .map({
         case Row(cluster: Long, id: String, begin: Long, end: Long, terms: Seq[_], date:String,
@@ -631,7 +631,7 @@ object PassimApp {
         (cluster, id, begin, date,
           parents.filter(_.id != "").toSeq.sortWith(_.score > _.score).toArray)
       })
-      .toDF("cluster", "id", "begin", "date", "parents")
+      .toDF("cluster", config.id, "begin", "date", "parents")
       .orderBy("cluster", "date")
       .write.format(config.outputFormat).save(config.outputPath)
   }
@@ -949,7 +949,7 @@ object PassimApp {
       }
 
       val cols = corpus.columns.toSet
-      val dateSort = if ( cols.contains("date") ) 'date else 'id
+      val dateSort = if ( cols.contains("date") ) "date" else config.id
 
       sqlContext.read.parquet(clusterFname)
         .join(corpus.drop("terms"), "uid")
@@ -961,7 +961,7 @@ object PassimApp {
         .withColumn("end", 'termCharEnd('end))
         .drop("termCharBegin").drop("termCharEnd")
         .withColumn(config.text, getPassage(col(config.text), 'begin, 'end))
-        .sort('size.desc, 'cluster, dateSort, 'id, 'begin)
+        .sort('size.desc, 'cluster, col(dateSort), col(config.id), 'begin)
         .write.format(config.outputFormat).save(outFname)
     }
   }
