@@ -785,13 +785,14 @@ object PassimApp {
               .flatMap { case (f, docs) => {
                 val df = docs.size
                 val hapax = docs.filter(_._3 == 1).toSeq.sorted.toArray
-                val res = new ListBuffer[(((Long, Long), (Long, Long)), (Int, Int, Int))]
+                val res = new ListBuffer[((Long, Long, Long, Long), (Int, Int, Int))]
                 for ( i <- 0 until hapax.size ) {
                   val a = hapax(i)
                   for ( j <- (i + 1) until hapax.size ) {
                     val b = hapax(j)
-                    if ( a._2 != b._2 )
-                      res += ((((a._1, a._2), (b._1, b._2)), (a._4, b._4, df)))
+                    if ( a._2 != b._2 ) {
+                      res += (((a._1, a._2, b._1, b._2), (a._4, b._4, df)))
+                    }
                   }
                 }
                 res.toList
@@ -805,7 +806,7 @@ object PassimApp {
             // Unique IDs will serve as edge IDs in connected component graph
               .zipWithUniqueId
               .flatMap(x => {
-                val ((((uid1, gid1), (uid2, gid2)), ((s1, e1), (s2, e2))), mid) = x
+                val (((uid1, gid1, uid2, gid2), ((s1, e1), (s2, e2))), mid) = x
                 Array((uid1, gid1, s1, e1, mid),
                   (uid2, gid2, s2, e2, mid))
               })
