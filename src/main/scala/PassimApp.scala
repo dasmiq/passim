@@ -769,10 +769,11 @@ object PassimApp {
               .flatMap({
                 case Row(uid: Long, terms: Seq[_], gid: Long) =>
                   terms.asInstanceOf[Seq[String]].sliding(config.n)
-                    .filter(_.map(_.size).sum >= minFeatLen)
-                    .map(x => ByteBuffer.wrap(MessageDigest.getInstance("MD5")
-                      .digest(x.mkString("~").getBytes("UTF-8")).take(8)).getLong)
                     .zipWithIndex
+                    .filter(_._1.map(_.size).sum >= minFeatLen)
+                    .map(x => (ByteBuffer.wrap(MessageDigest.getInstance("MD5")
+                      .digest(x._1.mkString("~").getBytes("UTF-8")).take(8)).getLong,
+                      x._2))
                     .toArray
                     .groupBy(_._1)
                   // Store the count and first posting; could store
