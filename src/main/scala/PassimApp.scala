@@ -11,6 +11,8 @@ import org.apache.spark.sql.Row
 import org.apache.spark.sql.functions._
 import org.apache.spark.storage.StorageLevel
 
+import org.apache.spark.mllib.rdd.RDDFunctions._
+
 import org.apache.hadoop.fs.{FileSystem,Path}
 
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
@@ -429,7 +431,7 @@ object BoilerApp {
       config.save(configFname, sqlContext)
     }
 
-    val algFname = config.outputPath + "/alg.parquet"
+    val algFname = config.outputPath + "/alg.json"
 
     val indexer = udf {(terms: Seq[String]) => hapaxIndex(config.n, terms)}
     val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
@@ -442,53 +444,38 @@ object BoilerApp {
     corpus
       .select($"id", $"series", $"eday", $"issue", $"terms", indexer($"terms") as "index",
         $"text")
-      .mapPartitions(it => {
-      val q = new Queue[Row]
-      it.flatMap((c: Row) => c match {
-        case Row(id: String, series: String, day: Int, issue: String,
-          terms: Seq[_], index: Map[_, _],
-          text: String) => { //, termCharBegin: Seq[_], termCharEnd: Seq[_]) => {
-          val cs = cleanXML(text)
-          val cm = index.asInstanceOf[Map[String, Int]]
-          while ( !q.isEmpty
-            && ((series != q.head.getString(1))
-              || (day - q.head.getInt(2)) > config.history) ) {
-            q.dequeue
+      .rdd
+      .sliding(config.history * 6)
+      .flatMap(q => {
+        q.last match {
+          case Row(id: String, series: String, day: Int, issue: String,
+            terms: Seq[_], index: Map[_, _],
+            text: String) => {
+            val lag = day - config.history
+            val cs = cleanXML(text)
+            val cm = index.asInstanceOf[Map[String, Int]]
+            q.filter(x => (x.getAs[String]("series") == series)
+              && (x.getAs[Int]("eday") >= lag)
+              && (x.getAs[String]("issue") < issue))
+              .flatMap(p => {
+                val pid = p.getAs[String]("id")
+                val ps = cleanXML(p.getAs[String]("text"))
+                val pm = p.getAs[Map[String, Int]]("index")
+                val inc = PassFun.increasingMatches(pm
+                  .flatMap(z => if (cm.contains(z._1)) Some((z._2, cm(z._1), 1)) else None))
+                val gapped = PassFun.gappedMatches(config.n, config.gap, config.minAlg, inc)
+                // println("# rep: " + (pid, id, inc.size, gapped.size))
+                if ( inc.size >= config.minRep && gapped.size > 0 ) {
+                  // TODO: Give high cost to newline mismatches.
+                  Some(PassFun.alignStrings(config.n * 5, config.gap * 5, matchMatrix,
+                    (pid, 0, ps.size, ps.size, ps), (id, 0, cs.size, cs.size, cs)))
+                } else {
+                  None
+                }
+              })
           }
-          val alg = q.takeWhile(_.getAs[String]("issue") != issue)
-            .flatMap(p => {
-              val pid = p.getAs[String]("id")
-              val ps = cleanXML(p.getAs[String]("text"))
-              val pm = p.getAs[Map[String, Int]]("index")
-              val inc = PassFun.increasingMatches(pm
-                .flatMap(z => if (cm.contains(z._1)) Some((z._2, cm(z._1), 1)) else None))
-              val gapped = PassFun.gappedMatches(config.n, config.gap, config.minAlg, inc)
-              println("# rep: " + (pid, id, inc.size, gapped.size))
-              if ( inc.size >= config.minRep && gapped.size > 0 ) {
-                // TODO: Give high cost to newline mismatches.
-                Some(PassFun.alignStrings(config.n * 5, config.gap * 5, matchMatrix,
-                  (pid, 0, ps.size, ps.size, ps), (id, 0, cs.size, cs.size, cs)))
-              } else {
-                None
-              }
-            })
-          q.enqueue(c)
-          alg
-          // if ( alg.size > 0 ) {
-          //   Some(BoilerPass(id, t.size, Array[Int](), Array[Int](), Array[String](), alg.toArray))
-          //   // val ids = alg.map(a => (PassimApp.hashString(a.id), a.id)).toMap
-          //   // val merged = PassFun.mergeSpans(0, alg.map(z => ((z.cbegin, z.cend),
-          //   //   PassimApp.hashString(z.id))))
-          //   // Some(BoilerPass(id, t.size,
-          //   //   merged.map(_._1._1).toArray, merged.map(_._1._2).toArray,
-          //   //   merged.map(p => p._2.map(ids(_)).sorted.last).toArray,
-          //   //   alg.toArray))
-          // } else {
-          //   None
-          // }
         }
       })
-    })
       .toDF
       .write.json(algFname)
       // .write.parquet(algFname)
