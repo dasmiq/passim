@@ -458,7 +458,7 @@ object BoilerApp {
           val inc = PassFun.increasingMatches(pm
             .flatMap(z => if (cm.contains(z._1)) Some((z._2, cm(z._1), 1)) else None))
           val gapped = PassFun.gappedMatches(config.n, config.gap, config.minAlg, inc)
-          println("# rep: " + (pid, id, inc.size, gapped.size))
+          // println("# rep: " + (pid, id, inc.size, gapped.size))
           if ( inc.size >= config.minRep && gapped.size > 0 ) {
             // TODO: Give high cost to newline mismatches.
             Some(PassFun.alignStrings(config.n * 5, config.gap * 5, matchMatrix,
