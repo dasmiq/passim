@@ -438,14 +438,23 @@ object BoilerApp {
     val corpus = PassimApp.testTok(config, raw)
       .select($"id", $"series", datediff($"date", lit("1970-01-01")) as "day",
         $"issue", indexer($"terms") as "index", $"text")
+      .withColumn("daybin", ($"day" / config.history).cast("int"))
 
-    val corpus2 = corpus.select($"id" as "pid", $"series" as "pseries", $"day" as "pday",
+    val corpus2 = corpus.select($"id" as "pid", $"series" as "pseries",
+      $"day" as "pday", $"daybin" as "pdaybin",
       $"issue" as "pissue", $"index" as "pindex", $"text" as "ptext")
 
+    // The predecessor is either in the same history-sized day bin or
+    // in the previous one.  The bins are disjoint, so we don't need
+    // to dedup the result.
     corpus
       .join(corpus2,
-        ($"series" === $"pseries") && ($"pissue" < $"issue")
-          && (($"pday" + config.history) >= $"day"))
+        ($"pseries" === $"series") && ($"pdaybin" === $"daybin")
+          && ($"pissue" < $"issue") && (($"pday" + config.history) >= $"day"))
+      .unionAll(corpus.join(corpus2,
+        ($"pseries" === $"series") && (($"pdaybin" + 1) === $"daybin")
+          && ($"pissue" < $"issue") && (($"pday" + config.history) >= $"day")))
+      .drop("daybin").drop("pdaybin")
       .flatMap((c: Row) => c match {
         case Row(id: String, series: String, day: Int, issue: String,
           index: Map[_, _], text: String,
@@ -463,6 +472,7 @@ object BoilerApp {
             // TODO: Give high cost to newline mismatches.
             Some(PassFun.alignStrings(config.n * 5, config.gap * 5, matchMatrix,
               (pid, 0, ps.size, ps.size, ps), (id, 0, cs.size, cs.size, cs)))
+            // Some(PassAlign(pid, id, "", "", 0, 1, 1, 0, 1, 1, 1, -1))
           } else {
             None
           }
