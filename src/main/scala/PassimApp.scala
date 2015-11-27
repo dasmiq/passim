@@ -447,13 +447,12 @@ object BoilerApp {
     // The predecessor is either in the same history-sized day bin or
     // in the previous one.  The bins are disjoint, so we don't need
     // to dedup the result.
-    corpus
-      .join(corpus2,
+    corpus2
+      .withColumn("pdaybin", $"pdaybin" + 1)
+      .unionAll(corpus2)
+      .join(corpus,
         ($"pseries" === $"series") && ($"pdaybin" === $"daybin")
           && ($"pissue" < $"issue") && (($"pday" + config.history) >= $"day"))
-      .unionAll(corpus.join(corpus2,
-        ($"pseries" === $"series") && (($"pdaybin" + 1) === $"daybin")
-          && ($"pissue" < $"issue") && (($"pday" + config.history) >= $"day")))
       .drop("daybin").drop("pdaybin")
       .flatMap((c: Row) => c match {
         case Row(id: String, series: String, day: Int, issue: String,
