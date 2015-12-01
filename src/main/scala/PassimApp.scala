@@ -453,12 +453,10 @@ object BoilerApp {
       .join(corpus,
         ($"pseries" === $"series") && ($"pdaybin" === $"daybin")
           && ($"pissue" < $"issue") && (($"pday" + config.history) >= $"day"))
-      .drop("daybin").drop("pdaybin")
+      .select('pid, 'pindex, 'ptext, 'id, 'index, 'text)
       .flatMap((c: Row) => c match {
-        case Row(id: String, series: String, day: Int, issue: String,
-          index: Map[_, _], text: String,
-          pid: String, pseries: String, pday: Int, pissue: String,
-          pindex: Map[_, _], ptext: String) => {
+        case Row(pid: String, pindex: Map[_, _], ptext: String,
+          id: String, index: Map[_, _], text: String) => {
           val cs = cleanXML(text)
           val cm = index.asInstanceOf[Map[String, Int]]
           val ps = cleanXML(ptext)
