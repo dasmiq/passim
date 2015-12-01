@@ -121,6 +121,15 @@ In addition, `pages`, `regions`, and `locs` include information about
 locations in the underlying text of the reused passage.  See [Marking
 Locations inside Documents](#locations) below.
 
+The default input and output format is JSON.  Use the `--input-format
+parquet` and `--output-format parquet` to use the compressed Parquet
+format, which can speed up later processing.
+
+If, in addition to the clusters, you want to output pairwise
+alignments between all matching passages, invoke passim with the
+`--pairwise` flag.  These alignments will be in the `align.json` or
+`align.parquet`, depending on which output format you choose.
+
 Some useful parameters are:
 
 Parameter | Default value | Description
