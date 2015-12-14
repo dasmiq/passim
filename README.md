@@ -12,10 +12,12 @@ parallel computations, either on a single machine or a cluster.  We
 recommend downloading a precompiled, binary distribution of Spark,
 unpacking it, and adding the `bin` subdirectory to your `PATH`.
 
-To compile passim itself, install [sbt](http://www.scala-sbt.org/), a
-build tool for Scala, Java, and other JVM languages.  Then run:
+To compile passim itself, we use [sbt](http://www.scala-sbt.org/), a
+build tool for Scala, Java, and other JVM languages.  A script to
+automatically download the sbt libraries is included with passim.  You
+can thus run:
 ```
-$ sbt package
+$ build/sbt package
 ```
 
 This should produce a runnable .jar in
