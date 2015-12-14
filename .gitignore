@@ -1,3 +1,6 @@
+*~
+project/project
+project/target
 /target
 /classes
 /checkouts
@@ -7,3 +10,5 @@ pom.xml.asc
 *.class
 /.lein-*
 /.nrepl-port
+derby.log
+metastore_db/
