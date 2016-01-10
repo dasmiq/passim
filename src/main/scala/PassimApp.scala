@@ -722,6 +722,7 @@ object PassimApp {
     val fs = FileSystem.get(sc.hadoopConfiguration)
 
     val configFname = config.outputPath + "/conf"
+    val indexFname = config.outputPath + "/index.parquet"
     val pairsFname = config.outputPath + "/pairs.parquet"
     val passFname = config.outputPath + "/pass.parquet"
     val clusterFname = config.outputPath + "/clusters.parquet"
@@ -748,30 +749,40 @@ object PassimApp {
           // Performance will be awful unless spark.sql.shuffle.partitions is appropriate
 
           if ( !fs.exists(new Path(pairsFname)) ) {
-            val upper = config.maxDF * (config.maxDF - 1) / 2
-            val minFeatLen: Double = config.wordLength * config.n
 
-            termCorpus
-              .flatMap({
-                case Row(uid: Long, terms: Seq[_], gid: Long) =>
-                  terms.asInstanceOf[Seq[String]].sliding(config.n)
-                    .zipWithIndex
-                    .filter(_._1.map(_.size).sum >= minFeatLen)
-                    .map(x => (ByteBuffer.wrap(MessageDigest.getInstance("MD5")
-                      .digest(x._1.mkString("~").getBytes("UTF-8")).take(8)).getLong,
-                      x._2))
-                    .toArray
-                    .groupBy(_._1)
-                  // Store the count and first posting; could store
-                  // some other fixed number of postings.
-                    .map { case (feat, post) => (feat, (uid, gid, post.size, post(0)._2)) }
-              })
-              .groupByKey
-            // Just use plain old document frequency
-              .filter(x => x._2.size >= 2 && x._2.size <= config.maxDF)
-              .flatMap { case (f, docs) => {
+            if ( !fs.exists(new Path(indexFname)) ) {
+              val minFeatLen: Double = config.wordLength * config.n
+
+              termCorpus
+                .flatMap({
+                  case Row(uid: Long, terms: Seq[_], gid: Long) =>
+                    terms.asInstanceOf[Seq[String]].sliding(config.n)
+                      .zipWithIndex
+                      .filter(_._1.map(_.size).sum >= minFeatLen)
+                      .map(x => (ByteBuffer.wrap(MessageDigest.getInstance("MD5")
+                        .digest(x._1.mkString("~").getBytes("UTF-8")).take(8)).getLong,
+                        x._2))
+                      .toArray
+                      .groupBy(_._1)
+                    // Store the count and first posting; could store
+                    // some other fixed number of postings.
+                      .map { case (feat, post) => (feat, (uid, gid, post.size, post(0)._2)) }
+                })
+                .groupByKey
+              // Just use plain old document frequency
+                .filter(x => x._2.size >= 2 && x._2.size <= config.maxDF)
+                .mapValues(_.toArray)
+                .toDF("feat", "docs")
+                .write.parquet(indexFname)
+            }
+
+            sqlContext.read.parquet(indexFname)
+              .select("feat", "docs")
+              .flatMap { case Row(f: Long, docs: Seq[_]) => {
                 val df = docs.size
-                val hapax = docs.filter(_._3 == 1).toSeq.sorted.toArray
+                val hapax = docs
+                  .map { case Row(uid: Long, gid: Long, tf: Int, post: Int) => (uid, gid, tf, post) }
+                  .filter(_._3 == 1).toSeq.sorted.toArray
                 val res = new ListBuffer[((Long, Long, Long, Long), (Int, Int, Int))]
                 for ( i <- 0 until hapax.size ) {
                   val a = hapax(i)
