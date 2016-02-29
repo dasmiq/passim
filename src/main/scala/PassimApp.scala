@@ -44,6 +44,19 @@ case class imgCoord(val x: Int, val y: Int, val w: Int, val h: Int) {
   def y2 = y + h
 }
 
+// Could parameterized on index type instead of Int
+case class Span(val begin: Int, val end: Int) {
+  def length = end - begin
+  def size = this.length
+  def union(that: Span): Span = {
+    Span(Math.min(this.begin, that.begin), Math.max(this.end, that.end))
+  }
+  def intersect(that: Span): Span = {
+    val res = Span(Math.max(this.begin, that.begin), Math.min(this.end, that.end))
+    if ( res.begin >= res.end ) Span(0, 0) else res
+  }
+}
+
 case class IdSeries(id: Long, series: Long)
 
 case class PassAlign(id1: String, id2: String,
@@ -132,20 +145,20 @@ object PassFun {
     res.toList
   }
 
-  def edgeText(extent: Int, n: Int, id: IdSeries, terms: Array[String], span: (Int,Int)) = {
-    val (start, end) = span
+  def edgeText(extent: Int, n: Int, id: IdSeries, terms: Array[String], span: Span) = {
+    val (start, end) = (span.begin, span.end)
     (id, span,
      if (start <= 0) "" else terms.slice(Math.max(0, start - extent), start + n).mkString(" "),
      if (end >= terms.size) "" else terms.slice(end + 1 - n, Math.min(terms.size, end + 1 + extent)).mkString(" "))
   }
 
-  type Passage = (IdSeries, (Int, Int), String, String)
+  type Passage = (IdSeries, Span, String, String)
   def alignEdges(matchMatrix: jaligner.matrix.Matrix, n: Int, minAlg: Int,
 		 pid: Long, pass1: Passage, pass2: Passage) = {
     val (id1, span1, prefix1, suffix1) = pass1
     val (id2, span2, prefix2, suffix2) = pass2
-    var (s1, e1) = span1
-    var (s2, e2) = span2
+    var (s1, e1) = (span1.begin, span1.end)
+    var (s2, e2) = (span2.begin, span2.end)
 
     if ( s1 > 0 && s2 > 0 ) {
       val palg = jaligner.SmithWatermanGotoh.align(new jaligner.Sequence(prefix1),
@@ -183,55 +196,37 @@ object PassFun {
     }
 
     if ( ( e1 - s1 ) >= minAlg && ( e2 - s2 ) >= minAlg )
-      List((id1, ((s1, e1), pid)),
-	   (id2, ((s2, e2), pid)))
+      List((id1, (Span(s1, e1), pid)),
+	   (id2, (Span(s2, e2), pid)))
     else
       Nil
   }
-  
-  def linkSpans(rover: Double,
-		init: List[((Int, Int), Array[Long])]): Array[((Int, Int), Array[Long])] = {
-    val passages = new ArrayBuffer[((Int, Int), Array[Long])]
-    // We had sorted in descreasing order of span length, but that leaves gaps in the output.
-    for ( cur <- init ) { //.sortWith((a, b) => (a._1._1 - a._1._2) < (b._1._1 - b._1._2)) ) {
-      val curLen = cur._1._2 - cur._1._1
-      val N = passages.size
-      var pmod = false
-      for ( i <- 0 until N; if !pmod ) {
-	val pass = passages(i)
-	if ( Math.max(0.0, Math.min(cur._1._2, pass._1._2) - Math.max(cur._1._1, pass._1._1)) / Math.max(curLen, pass._1._2 - pass._1._1) > rover ) {
-	  passages(i) = ((Math.min(cur._1._1, pass._1._1),
-			  Math.max(cur._1._2, pass._1._2)),
-			 pass._2 ++ cur._2)
-	  pmod = true
-	}
-      }
-      if (!pmod) {
-	passages += cur
-      }
-    }
-    passages.toArray
-  }
-  
-  def mergeSpans(rover: Double, init: Iterable[((Int, Int), Long)]): Seq[((Int, Int), Array[Long])] = {
-    val in = init.toArray.sorted
-    var top = -1
-    val passages = new ListBuffer[((Int, Int), Array[Long])]
-    val spans = new ListBuffer[((Int, Int), Array[Long])]
+
+  // TODO: Could be sped up with an interval tree (though, e.g.,
+  // Guava's RangeTree is unsuitable since ranges can't overlap).
+  def mergeSpans(rover: Double, init: Iterable[(Span, Long)]): Seq[(Span, ArrayBuffer[Long])] = {
+    val res = ArrayBuffer[(Span, ArrayBuffer[Long])]()
+    val in = init.toArray.sortWith((a, b) => a._1.length < b._1.length)
     for ( cur <- in ) {
       val span = cur._1
-      if ( span._1 > top ) {
-	top = span._2
-	passages ++= linkSpans(rover, spans.toList)
-	spans.clear
+      var idx = -1
+      var best = 0.0
+      for ( i <- 0 until res.size ) {
+        val s = res(i)._1
+        val score = 1.0 * span.intersect(s).length / span.union(s).length
+        if ( score > rover && score > best ) {
+          idx = i
+          best = score
+        }
       }
-      else {
-	top = Math.max(top, span._2)
+      if ( idx < 0 ) {
+        res += ((span, ArrayBuffer(cur._2)))
+      } else {
+        val rec = ((res(idx)._1.union(span), res(idx)._2 ++ ArrayBuffer(cur._2)))
+        res(idx) = rec
       }
-      spans += ((span, Array(cur._2)))
     }
-    passages ++= linkSpans(rover, spans.toList)
-    passages.toList
+    res.toSeq
   }
 
   type DocPassage = (String, Int, Int, Int, String)
@@ -650,7 +645,7 @@ object PassimApp {
   def main(args: Array[String]) {
     val conf = new SparkConf().setAppName("Passim Application")
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-      .registerKryoClasses(Array(classOf[imgCoord],
+      .registerKryoClasses(Array(classOf[imgCoord], classOf[Span],
         classOf[PassAlign], classOf[BoilerPass],
         classOf[TokText], classOf[IdSeries]))
     val sc = new SparkContext(conf)
@@ -845,7 +840,7 @@ object PassimApp {
               case Row(uid: Long, gid: Long, begin: Int, end: Int, mid: Long, terms: Seq[_], gid2: Long) => {
                 (mid,
                   PassFun.edgeText(config.gap * 2/3, config.n,
-                    IdSeries(uid, gid), terms.asInstanceOf[Seq[String]].toArray, (begin, end)))
+                    IdSeries(uid, gid), terms.asInstanceOf[Seq[String]].toArray, Span(begin, end)))
               }
             })
             .groupByKey
@@ -861,8 +856,8 @@ object PassimApp {
             align.cache()
             align
               .map(x => {
-                val (doc, ((begin, end), mid)) = x
-                (doc.id, begin, end, mid)
+                val (doc, (span, mid)) = x
+                (doc.id, span.begin, span.end, mid)
               })
               .toDF("uid", "begin", "end", "mid")
               .join(corpus.select('uid, col(config.id), col(config.text),
@@ -892,21 +887,20 @@ object PassimApp {
           align
             .groupByKey(graphParallelism * sc.getExecutorMemoryStatus.size)
             .flatMapValues(PassFun.mergeSpans(config.relOver, _))
-            .zipWithUniqueId
-          // This was getting recomputed on different partitions, thus reassigning IDs.
             .map(v => {
-              val ((doc, (span, edges)), id) = v
-              (id, doc.id, doc.series, span._1, span._2, edges)
+              val (doc, (span, edges)) = v
+              (doc.id, doc.series, span.begin, span.end, edges)
             })
-            .toDF("nid", "uid", "gid", "begin", "end", "edges")
+            .toDF("uid", "gid", "begin", "end", "edges")
             .write.parquet(passFname)
         }
 
         val pass = sqlContext.read.parquet(passFname)
+          .select(monotonicallyIncreasingId(), 'uid, 'gid, 'begin, 'end, 'edges)
 
         val passNodes = pass.map({
           case Row(nid: Long, uid: Long, gid: Long, begin: Int, end: Int, edges: Seq[_]) =>
-            (nid, (IdSeries(uid, gid), (begin, end)))
+            (nid, (IdSeries(uid, gid), Span(begin, end)))
         })
         val passEdges = pass.flatMap({
           case Row(nid: Long, uid: Long, gid: Long, begin: Int, end: Int, edges: Seq[_]) =>
@@ -935,7 +929,7 @@ object PassimApp {
           .map(x => (x._1.id, x._2))
           .groupByKey
           .flatMap(x => x._2.groupBy(_._2).values.flatMap(p => {
-            PassFun.mergeSpans(0, p).map(z => (x._1, z._2(0), z._1._1, z._1._2))
+            PassFun.mergeSpans(0, p).map(z => (x._1, z._2(0), z._1.begin, z._1.end))
           }))
           .groupBy(_._2)
           .flatMap(x => {
