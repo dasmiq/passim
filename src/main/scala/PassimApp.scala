@@ -882,7 +882,7 @@ object PassimApp {
               .save(config.outputPath + "/align." + config.outputFormat)
           }
 
-          val graphParallelism = sc.getConf.getInt("spark.default.parallelism", 100)
+          val graphParallelism = sc.defaultParallelism
 
           align
             .groupByKey(graphParallelism)
