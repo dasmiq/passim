@@ -882,21 +882,22 @@ object PassimApp {
               .save(config.outputPath + "/align." + config.outputFormat)
           }
 
-          val graphParallelism = 1
+          val graphParallelism = sc.getConf.getInt("spark.default.parallelism", 100)
 
           align
-            .groupByKey(graphParallelism * sc.getExecutorMemoryStatus.size)
+            .groupByKey(graphParallelism)
             .flatMapValues(PassFun.mergeSpans(config.relOver, _))
+            .zipWithUniqueId
+          // This was getting recomputed on different partitions, thus reassigning IDs.
             .map(v => {
-              val (doc, (span, edges)) = v
-              (doc.id, doc.series, span.begin, span.end, edges)
+              val ((doc, (span, edges)), id) = v
+              (id, doc.id, doc.series, span.begin, span.end, edges)
             })
-            .toDF("uid", "gid", "begin", "end", "edges")
+            .toDF("nid", "uid", "gid", "begin", "end", "edges")
             .write.parquet(passFname)
         }
 
         val pass = sqlContext.read.parquet(passFname)
-          .select(monotonicallyIncreasingId(), 'uid, 'gid, 'begin, 'end, 'edges)
 
         val passNodes = pass.map({
           case Row(nid: Long, uid: Long, gid: Long, begin: Int, end: Int, edges: Seq[_]) =>
