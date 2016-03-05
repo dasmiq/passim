@@ -57,6 +57,8 @@ case class Span(val begin: Int, val end: Int) {
   }
 }
 
+case class Post(uid: Long, gid: Long, tf: Int, post: Int)
+
 case class IdSeries(id: Long, series: Long)
 
 case class PassAlign(id1: String, id2: String,
@@ -645,7 +647,7 @@ object PassimApp {
   def main(args: Array[String]) {
     val conf = new SparkConf().setAppName("Passim Application")
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-      .registerKryoClasses(Array(classOf[imgCoord], classOf[Span],
+      .registerKryoClasses(Array(classOf[imgCoord], classOf[Span], classOf[Post],
         classOf[PassAlign], classOf[BoilerPass],
         classOf[TokText], classOf[IdSeries]))
     val sc = new SparkContext(conf)
@@ -761,12 +763,12 @@ object PassimApp {
                       .groupBy(_._1)
                     // Store the count and first posting; could store
                     // some other fixed number of postings.
-                      .map { case (feat, post) => (feat, (uid, gid, post.size, post(0)._2)) }
+                      .map { case (feat, post) =>
+                        (feat, ArrayBuffer(Post(uid, gid, post.size, post(0)._2))) }
                 })
-                .groupByKey
+                .reduceByKey((a, b) => if (a.size == 0 || b.size == 0 || (a.size + b.size) > config.maxDF ) ArrayBuffer[Post]() else (a ++ b))
               // Just use plain old document frequency
-                .filter(x => x._2.size >= 2 && x._2.size <= config.maxDF)
-                .mapValues(_.toArray)
+                .filter(x => x._2.size >= 2)
                 .toDF("feat", "docs")
                 .write.parquet(indexFname)
             }
