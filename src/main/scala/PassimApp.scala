@@ -753,7 +753,7 @@ object PassimApp {
 
             if ( !hdfsExists(sc, indexFname) ) {
               val minFeatLen: Double = config.wordLength * config.n
-              val postingPartitions = sc.getInt("spark.sql.shuffle.partitions", 200)
+              val postingPartitions = sc.getConf.getInt("spark.sql.shuffle.partitions", 200)
 
               termCorpus
                 .coalesce(2 * postingPartitions)
