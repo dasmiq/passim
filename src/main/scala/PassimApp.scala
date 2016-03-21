@@ -643,6 +643,12 @@ object PassimApp {
           .map(x => CorpusFun.boundingBox(x._2.map(_._2).toArray)).toArray
     }
   }
+  def hdfsExists(sc: SparkContext, path: String) = {
+    val hdfsPath = new Path(path)
+    val fs = hdfsPath.getFileSystem(sc.hadoopConfiguration)
+    val qualified = hdfsPath.makeQualified(fs.getUri, fs.getWorkingDirectory)
+    fs.exists(qualified)
+  }
 
   def main(args: Array[String]) {
     val conf = new SparkConf().setAppName("Passim Application")
@@ -716,8 +722,6 @@ object PassimApp {
       sys.exit(0)
     }
 
-    val fs = FileSystem.get(sc.hadoopConfiguration)
-
     val configFname = config.outputPath + "/conf"
     val indexFname = config.outputPath + "/index.parquet"
     val pairsFname = config.outputPath + "/pairs.parquet"
@@ -725,32 +729,34 @@ object PassimApp {
     val clusterFname = config.outputPath + "/clusters.parquet"
     val outFname = config.outputPath + "/out." + config.outputFormat
 
-    if ( fs.exists(new Path(configFname)) ) {
+    if ( hdfsExists(sc, configFname) ) {
       // TODO: Read configuration
     } else {
       config.save(configFname, sqlContext)
     }
 
-    if ( !fs.exists(new Path(outFname)) ) {
+    if ( !hdfsExists(sc, outFname) ) {
       val raw = sqlContext.read.format(config.inputFormat).load(config.inputPaths)
 
       val corpus = testTok(config, raw)
         .withColumn("uid", hashId(col(config.id)))
 
-      if ( !fs.exists(new Path(clusterFname)) ) {
-        if ( !fs.exists(new Path(passFname)) ) {
+      if ( !hdfsExists(sc, clusterFname) ) {
+        if ( !hdfsExists(sc, passFname) ) {
           val groupCol = if ( raw.columns.contains(config.group) ) config.group else config.id
 
           val termCorpus = corpus
             .select('uid, 'terms, hashId(corpus(groupCol)).as("gid"))
           // Performance will be awful unless spark.sql.shuffle.partitions is appropriate
 
-          if ( !fs.exists(new Path(pairsFname)) ) {
+          if ( !hdfsExists(sc, pairsFname) ) {
 
-            if ( !fs.exists(new Path(indexFname)) ) {
+            if ( !hdfsExists(sc, indexFname) ) {
               val minFeatLen: Double = config.wordLength * config.n
+              val postingPartitions = sc.getInt("spark.sql.shuffle.partitions", 200)
 
               termCorpus
+                .coalesce(2 * postingPartitions)
                 .flatMap({
                   case Row(uid: Long, terms: Seq[_], gid: Long) =>
                     terms.asInstanceOf[Seq[String]].sliding(config.n)
@@ -766,7 +772,7 @@ object PassimApp {
                       .map { case (feat, post) =>
                         (feat, ArrayBuffer(Post(uid, gid, post.size, post(0)._2))) }
                 })
-                .reduceByKey((a, b) => if (a.size == 0 || b.size == 0 || (a.size + b.size) > config.maxDF ) ArrayBuffer[Post]() else (a ++ b))
+                .reduceByKey(((a, b) => if (a.size == 0 || b.size == 0 || (a.size + b.size) > config.maxDF ) ArrayBuffer[Post]() else (a ++ b)), postingPartitions)
               // Just use plain old document frequency
                 .filter(x => x._2.size >= 2)
                 .toDF("feat", "docs")
