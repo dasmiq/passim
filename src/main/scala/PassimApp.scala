@@ -753,17 +753,15 @@ object PassimApp {
 
             if ( !hdfsExists(sc, indexFname) ) {
               val minFeatLen: Double = config.wordLength * config.n
-              val postingPartitions = sc.getConf.getInt("spark.sql.shuffle.partitions", 200)
 
               termCorpus
-                .coalesce(2 * postingPartitions)
                 .flatMap({
-                  case Row(uid: Long, terms: Seq[_], gid: Long) =>
+                  case Row(uid: Long, terms: Seq[_], gid: Long) => {
+                    val md = MessageDigest.getInstance("MD5")
                     terms.asInstanceOf[Seq[String]].sliding(config.n)
                       .zipWithIndex
                       .filter(_._1.map(_.size).sum >= minFeatLen)
-                      .map(x => (ByteBuffer.wrap(MessageDigest.getInstance("MD5")
-                        .digest(x._1.mkString("~").getBytes("UTF-8")).take(8)).getLong,
+                      .map(x => (ByteBuffer.wrap(md.digest(x._1.mkString("~").getBytes("UTF-8")).take(8)).getLong,
                         x._2))
                       .toArray
                       .groupBy(_._1)
@@ -771,8 +769,9 @@ object PassimApp {
                     // some other fixed number of postings.
                       .map { case (feat, post) =>
                         (feat, ArrayBuffer(Post(uid, gid, post.size, post(0)._2))) }
+                    }
                 })
-                .reduceByKey(((a, b) => if (a.size == 0 || b.size == 0 || (a.size + b.size) > config.maxDF ) ArrayBuffer[Post]() else (a ++ b)), postingPartitions)
+                .reduceByKey(((a, b) => if (a.size == 0 || b.size == 0 || (a.size + b.size) > config.maxDF ) ArrayBuffer[Post]() else (a ++ b)))
               // Just use plain old document frequency
                 .filter(x => x._2.size >= 2)
                 .toDF("feat", "docs")
