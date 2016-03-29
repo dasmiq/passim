@@ -206,6 +206,34 @@ object PassFun {
 
   // TODO: Could be sped up with an interval tree (though, e.g.,
   // Guava's RangeTree is unsuitable since ranges can't overlap).
+  // HACK: Have a separate reverse-sort version for now. This works OK
+  // when we merge on any overlap at all. We need to be able to merge
+  // multiple spans at once.
+  def reverseMergeSpans(rover: Double, init: Iterable[(Span, Long)]): Seq[(Span, ArrayBuffer[Long])] = {
+    val res = ArrayBuffer[(Span, ArrayBuffer[Long])]()
+    val in = init.toArray.sortWith((a, b) => a._1.length > b._1.length)
+    for ( cur <- in ) {
+      val span = cur._1
+      var idx = -1
+      var best = 0.0
+      for ( i <- 0 until res.size ) {
+        val s = res(i)._1
+        val score = 1.0 * span.intersect(s).length / span.union(s).length
+        if ( score > rover && score > best ) {
+          idx = i
+          best = score
+        }
+      }
+      if ( idx < 0 ) {
+        res += ((span, ArrayBuffer(cur._2)))
+      } else {
+        val rec = ((res(idx)._1.union(span), res(idx)._2 ++ ArrayBuffer(cur._2)))
+        res(idx) = rec
+      }
+    }
+    res.toSeq
+  }
+
   def mergeSpans(rover: Double, init: Iterable[(Span, Long)]): Seq[(Span, ArrayBuffer[Long])] = {
     val res = ArrayBuffer[(Span, ArrayBuffer[Long])]()
     val in = init.toArray.sortWith((a, b) => a._1.length < b._1.length)
@@ -937,7 +965,7 @@ object PassimApp {
           .map(x => (x._1.id, x._2))
           .groupByKey
           .flatMap(x => x._2.groupBy(_._2).values.flatMap(p => {
-            PassFun.mergeSpans(0, p).map(z => (x._1, z._2(0), z._1.begin, z._1.end))
+            PassFun.reverseMergeSpans(0, p).map(z => (x._1, z._2(0), z._1.begin, z._1.end))
           }))
           .groupBy(_._2)
           .flatMap(x => {
