@@ -980,18 +980,21 @@ object PassimApp {
       val cols = corpus.columns.toSet
       val dateSort = if ( cols.contains("date") ) "date" else config.id
 
-      sqlContext.read.parquet(clusterFname)
-        .join(corpus.drop("terms"), "uid")
-        .withColumn("pages", getLocs('begin, 'end, 'termPages))
-        .withColumn("regions", getRegions('begin, 'end, 'termPages, 'termRegions))
-        .withColumn("locs", getLocs('begin, 'end, 'termLocs))
-        .drop("termPages").drop("termRegions").drop("termLocs")
-        .withColumn("begin", 'termCharBegin('begin))
-        .withColumn("end", 'termCharEnd('end))
-        .drop("termCharBegin").drop("termCharEnd")
-        .withColumn(config.text, getPassage(col(config.text), 'begin, 'end))
-        .sort('size.desc, 'cluster, col(dateSort), col(config.id), 'begin)
-        .write.format(config.outputFormat).save(outFname)
+      val joint =
+        sqlContext.read.parquet(clusterFname)
+          .join(corpus.drop("terms"), "uid")
+          .withColumn("pages", getLocs('begin, 'end, 'termPages))
+          .withColumn("regions", getRegions('begin, 'end, 'termPages, 'termRegions))
+          .withColumn("locs", getLocs('begin, 'end, 'termLocs))
+          .drop("termPages").drop("termRegions").drop("termLocs")
+          .withColumn("begin", 'termCharBegin('begin))
+          .withColumn("end", 'termCharEnd('end))
+          .drop("termCharBegin").drop("termCharEnd")
+          .withColumn(config.text, getPassage(col(config.text), 'begin, 'end))
+
+      val out = if ( config.outputFormat == "parquet" ) joint else joint.sort('size.desc, 'cluster, col(dateSort), col(config.id), 'begin)
+
+      out.write.format(config.outputFormat).save(outFname)
     }
   }
 }
