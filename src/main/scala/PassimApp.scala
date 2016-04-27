@@ -781,6 +781,8 @@ object PassimApp {
 
             if ( !hdfsExists(sc, indexFname) ) {
               val minFeatLen: Double = config.wordLength * config.n
+              val zero = new ArrayBuffer[Post]()
+              val guard = ArrayBuffer(Post(0L, 0L, -1, 0))
 
               termCorpus
                 .flatMap({
@@ -795,11 +797,11 @@ object PassimApp {
                       .groupBy(_._1)
                     // Store the count and first posting; could store
                     // some other fixed number of postings.
-                      .map { case (feat, post) =>
-                        (feat, ArrayBuffer(Post(uid, gid, post.size, post(0)._2))) }
+                      .map { case (feat, post) => (feat, Post(uid, gid, post.size, post(0)._2)) }
                     }
                 })
-                .reduceByKey(((a, b) => if (a.size == 0 || b.size == 0 || (a.size + b.size) > config.maxDF ) ArrayBuffer[Post]() else (a ++ b)))
+                .aggregateByKey(zero)((a, v) => if ( a.size > 0 && a(0).tf < 0 ) a else if ( a.size >= config.maxDF ) guard else (a += v),
+                  ((a, b) => if ( (a.size > 0 && a(0).tf < 0) || (b.size > 0 && b(0).tf < 0) || (a.size + b.size) > config.maxDF ) guard else (a ++= b)))
               // Just use plain old document frequency
                 .filter(x => x._2.size >= 2)
                 .toDF("feat", "docs")
