@@ -57,7 +57,7 @@ case class Span(val begin: Int, val end: Int) {
   }
 }
 
-case class Post(uid: Long, gid: Long, tf: Int, post: Int)
+case class Post(feat: Long, tf: Int, post: Int)
 
 case class IdSeries(id: Long, series: Long)
 
@@ -773,52 +773,43 @@ object PassimApp {
 
             if ( !hdfsExists(sc, indexFname) ) {
               val minFeatLen: Double = config.wordLength * config.n
-              val zero = new ArrayBuffer[Post]()
-              val guard = ArrayBuffer(Post(0L, 0L, -1, 0))
 
-              termCorpus
-                .flatMap({
-                  case Row(uid: Long, terms: Seq[_], gid: Long) => {
+              val postings =
+                termCorpus
+                  .explode('terms) { case Row(terms: Seq[_]) =>
                     val md = MessageDigest.getInstance("MD5")
                     terms.asInstanceOf[Seq[String]].sliding(config.n)
                       .zipWithIndex
                       .filter(_._1.map(_.size).sum >= minFeatLen)
-                      .map(x => (ByteBuffer.wrap(md.digest(x._1.mkString("~").getBytes("UTF-8")).take(8)).getLong,
+                      .map(x => (ByteBuffer.wrap(md.digest(x._1.mkString("~").getBytes("UTF-8"))
+                        .take(8)).getLong,
                         x._2))
                       .toArray
                       .groupBy(_._1)
                     // Store the count and first posting; could store
                     // some other fixed number of postings.
-                      .map { case (feat, post) => (feat, Post(uid, gid, post.size, post(0)._2)) }
-                    }
-                })
-                .aggregateByKey(zero)((a, v) => if ( a.size > 0 && a(0).tf < 0 ) a else if ( a.size >= config.maxDF ) guard else (a += v),
-                  ((a, b) => if ( (a.size > 0 && a(0).tf < 0) || (b.size > 0 && b(0).tf < 0) || (a.size + b.size) > config.maxDF ) guard else (a ++= b)))
-              // Just use plain old document frequency
-                .filter(x => x._2.size >= 2)
-                .toDF("feat", "docs")
-                .write.parquet(indexFname)
+                      .map { case (feat, post) => Post(feat, post.size, post(0)._2) }
+                }
+                  .drop("terms")
+
+              val df = postings.groupBy("feat").agg(count("uid") as "df")
+                .filter { ('df >= 2) && ('df <= config.maxDF) }
+
+              postings.join(df, "feat").write.parquet(indexFname)
             }
 
-            sqlContext.read.parquet(indexFname)
-              .select("feat", "docs")
-              .flatMap { case Row(f: Long, docs: Seq[_]) => {
-                val df = docs.size
-                val hapax = docs
-                  .map { case Row(uid: Long, gid: Long, tf: Int, post: Int) => (uid, gid, tf, post) }
-                  .filter(_._3 == 1).toSeq.sorted.toArray
-                val res = new ListBuffer[((Long, Long, Long, Long), (Int, Int, Int))]
-                for ( i <- 0 until hapax.size ) {
-                  val a = hapax(i)
-                  for ( j <- (i + 1) until hapax.size ) {
-                    val b = hapax(j)
-                    if ( a._2 != b._2 ) {
-                      res += (((a._1, a._2, b._1, b._2), (a._4, b._4, df)))
-                    }
-                  }
-                }
-                res.toList
-              }
+            val index = sqlContext.read.parquet(indexFname).filter('tf === 1).drop("tf")
+
+            val index2 = index.select((for (c <- index.columns) yield (col(c) as (c + "2"))):_*)
+
+            val pairs = index.join(index2,
+              ('feat === 'feat2) && ('gid !== 'gid2) && ('uid < 'uid2))
+
+            pairs.select('uid, 'gid, 'uid2, 'gid2, 'post, 'post2, 'df)
+              .map {
+              case Row(uid: Long, gid: Long, uid2: Long, gid2: Long,
+                post: Int, post2: Int, df: Long) =>
+                ((uid, gid, uid2, gid2), (post, post2, df.toInt))
             }
               .groupByKey
               .filter(_._2.size >= config.minRep)
