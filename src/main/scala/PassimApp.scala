@@ -792,24 +792,31 @@ object PassimApp {
                 }
                   .drop("terms")
 
-              val df = postings.groupBy("feat").agg(count("uid") as "df")
+              val df = postings.select('feat).groupBy("feat").agg(count("feat") as "df")
                 .filter { ('df >= 2) && ('df <= config.maxDF) }
 
-              postings.join(df, "feat").write.parquet(indexFname)
+              postings.join(df, "feat").filter('tf === 1).drop("tf").write.parquet(indexFname)
             }
 
-            val index = sqlContext.read.parquet(indexFname).filter('tf === 1).drop("tf")
-
-            val index2 = index.select((for (c <- index.columns) yield (col(c) as (c + "2"))):_*)
-
-            val pairs = index.join(index2,
-              ('feat === 'feat2) && ('gid !== 'gid2) && ('uid < 'uid2))
-
-            pairs.select('uid, 'gid, 'uid2, 'gid2, 'post, 'post2, 'df)
+            sqlContext.read.parquet(indexFname)
+              .select('feat, 'uid, 'gid, 'post, 'df)
               .map {
-              case Row(uid: Long, gid: Long, uid2: Long, gid2: Long,
-                post: Int, post2: Int, df: Long) =>
-                ((uid, gid, uid2, gid2), (post, post2, df.toInt))
+              case Row(feat: Long, uid: Long, gid: Long, post: Int, df: Long) => ((feat, df.toInt), (uid, gid, post))
+            }
+              .groupByKey
+              .flatMap { case ((feat, df), docs) =>
+                val hapax = docs.toSeq.sorted.toArray
+                val res = new ListBuffer[((Long, Long, Long, Long), (Int, Int, Int))]
+                for ( i <- 0 until hapax.size ) {
+                  val a = hapax(i)
+                  for ( j <- (i + 1) until hapax.size ) {
+                    val b = hapax(j)
+                    if ( a._2 != b._2 ) {
+                      res += (((a._1, a._2, b._1, b._2), (a._3, b._3, df)))
+                    }
+                  }
+                }
+                res.toList
             }
               .groupByKey
               .filter(_._2.size >= config.minRep)
