@@ -795,15 +795,14 @@ object PassimApp {
               val df = postings.groupBy("feat").agg(count("uid") as "df")
                 .filter { ('df >= 2) && ('df <= config.maxDF) }
 
-              postings.join(df, "feat").write.parquet(indexFname)
+              postings.join(df, "feat").filter('tf === 1).drop("tf").write.parquet(indexFname)
             }
 
-            val index = sqlContext.read.parquet(indexFname).filter('tf === 1).drop("tf")
+            val index = sqlContext.read.parquet(indexFname)
 
             val index2 = index.select((for (c <- index.columns) yield (col(c) as (c + "2"))):_*)
 
-            val pairs = index.join(index2,
-              ('feat === 'feat2) && ('gid !== 'gid2) && ('uid < 'uid2))
+            val pairs = index.join(index2, ('feat === 'feat2) && ('gid < 'gid2))
 
             pairs.select('uid, 'gid, 'uid2, 'gid2, 'post, 'post2, 'df)
               .map {
