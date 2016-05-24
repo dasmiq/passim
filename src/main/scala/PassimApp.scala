@@ -792,7 +792,7 @@ object PassimApp {
                 }
                   .drop("terms")
 
-              val df = postings.groupBy("feat").agg(count("uid") as "df")
+              val df = postings.select('feat).groupBy("feat").agg(count("feat").cast("int") as "df")
                 .filter { ('df >= 2) && ('df <= config.maxDF) }
 
               postings.join(df, "feat").filter('tf === 1).drop("tf").write.parquet(indexFname)
@@ -807,8 +807,8 @@ object PassimApp {
             pairs.select('uid, 'gid, 'uid2, 'gid2, 'post, 'post2, 'df)
               .map {
               case Row(uid: Long, gid: Long, uid2: Long, gid2: Long,
-                post: Int, post2: Int, df: Long) =>
-                ((uid, gid, uid2, gid2), (post, post2, df.toInt))
+                post: Int, post2: Int, df: Int) =>
+                ((uid, gid, uid2, gid2), (post, post2, df))
             }
               .groupByKey
               .filter(_._2.size >= config.minRep)
