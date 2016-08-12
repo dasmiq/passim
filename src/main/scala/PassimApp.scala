@@ -29,7 +29,7 @@ case class Config(version: String = BuildInfo.version,
   n: Int = 5, maxDF: Int = 100, minRep: Int = 5, minAlg: Int = 20,
   gap: Int = 100, relOver: Double = 0.8, maxRep: Int = 10, history: Int = 7,
   wordLength: Double = 2,
-  pairwise: Boolean = false, docwise: Boolean = false,
+  pairwise: Boolean = false, docwise: Boolean = false, dedup: Boolean = false,
   id: String = "id", group: String = "series", text: String = "text",
   inputFormat: String = "json", outputFormat: String = "json",
   inputPaths: String = "", outputPath: String = "") {
@@ -705,6 +705,8 @@ object PassimApp {
         c.copy(pairwise = true) } text("Output pairwise alignments")
       opt[Unit]('d', "docwise") action { (_, c) =>
         c.copy(docwise = true) } text("Output docwise alignments")
+      opt[Unit]('D', "dedup") action { (_, c) =>
+        c.copy(dedup = true) } text("Deduplicate series")
       opt[String]('i', "id") action { (x, c) =>
         c.copy(id = x) } text("Field for unique document IDs; default=id")
       opt[String]('t', "text") action { (x, c) =>
@@ -800,7 +802,7 @@ object PassimApp {
 
             val index = sqlContext.read.parquet(indexFname)
 
-            val index2 = index.select((for (c <- index.columns) yield (col(c) as (c + "2"))):_*)
+            val index2 = index.toDF(index.columns.map { _ + "2" }:_*)
 
             val pairs = index.join(index2, ('feat === 'feat2) && ('gid < 'gid2))
 
@@ -828,6 +830,16 @@ object PassimApp {
           }
 
           val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
+
+          if ( config.dedup ) {
+            val mpass = sqlContext.read.parquet(pairsFname)
+              .join(corpus.select('uid, col(config.id), col(groupCol), size('terms) as "nterms"), "uid")
+
+            mpass.join(mpass.toDF(mpass.columns.map { _ + "2" }:_*),
+              ('mid === 'mid2) && ('gid < 'gid2)).drop("mid2")
+              .write.save(config.outputPath + "/docstats.parquet")
+            sys.exit(0)
+          }
 
           // TODO: Should probably be a separate mode.
           if ( config.docwise ) {
