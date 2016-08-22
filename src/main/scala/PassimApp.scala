@@ -797,7 +797,7 @@ object PassimApp {
               val df = postings.select('feat).groupBy("feat").agg(count("feat").cast("int") as "df")
                 .filter { ('df >= 2) && ('df <= config.maxDF) }
 
-              postings.join(df, "feat").filter('tf === 1).drop("tf").write.parquet(indexFname)
+              postings.filter('tf === 1).drop("tf").join(df, "feat").write.parquet(indexFname)
             }
 
             val index = sqlContext.read.parquet(indexFname)
@@ -805,6 +805,19 @@ object PassimApp {
             val index2 = index.toDF(index.columns.map { _ + "2" }:_*)
 
             val pairs = index.join(index2, ('feat === 'feat2) && ('gid < 'gid2))
+
+            if ( config.dedup ) {
+              val docs = corpus.select('uid, col(config.id), col(groupCol), size('terms) as "nterms")
+              pairs.groupBy("uid", "uid2")
+                .agg(count("post") as "count",
+                  min("post") as "min", max("post") as "max",
+                  min("post2") as "min2", max("post2") as "max2")
+                .filter('count >= config.minRep)
+                .join(docs, "uid")
+                .join(docs.toDF(docs.columns.map { _ + "2" }:_*), "uid2")
+                .write.save(config.outputPath + "/docstats.parquet")
+              sys.exit(0)
+            }
 
             pairs.select('uid, 'gid, 'uid2, 'gid2, 'post, 'post2, 'df)
               .map {
@@ -830,16 +843,6 @@ object PassimApp {
           }
 
           val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
-
-          if ( config.dedup ) {
-            val mpass = sqlContext.read.parquet(pairsFname)
-              .join(corpus.select('uid, col(config.id), col(groupCol), size('terms) as "nterms"), "uid")
-
-            mpass.join(mpass.toDF(mpass.columns.map { _ + "2" }:_*),
-              ('mid === 'mid2) && ('gid < 'gid2)).drop("mid2")
-              .write.save(config.outputPath + "/docstats.parquet")
-            sys.exit(0)
-          }
 
           // TODO: Should probably be a separate mode.
           if ( config.docwise ) {
