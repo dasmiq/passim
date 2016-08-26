@@ -59,6 +59,8 @@ case class Span(val begin: Int, val end: Int) {
 
 case class Post(feat: Long, tf: Int, post: Int)
 
+case class Posting(feat: Long, uid: Long, gid: Long, post: Int, df: Int)
+
 case class IdSeries(id: Long, series: Long)
 
 case class PassAlign(id1: String, id2: String,
@@ -808,11 +810,21 @@ object PassimApp {
 
             if ( config.dedup ) {
               val docs = corpus.select('uid, col(config.id), col(groupCol), size('terms) as "nterms")
-              pairs.groupBy("uid", "uid2")
-                .agg(count("post") as "count",
-                  min("post") as "min", max("post") as "max",
-                  min("post2") as "min2", max("post2") as "max2")
-                .filter('count >= config.minRep)
+              index.as[Posting].groupBy(_.feat).flatMapGroups { (k, v) =>
+                val p = v.toArray
+                for ( i <- 0 until p.size; j <- (i+1) until p.size; if p(i).gid != p(j).gid )
+                  yield(if ( p(i).gid < p(j).gid) (p(i).uid, p(j).uid) else (p(j).uid, p(i).uid))
+              }
+                .toDF
+                .select(struct("_1", "_2").as("pair"))
+                .stat.freqItems(Seq("pair"), 0.0001)
+                .select(explode($"pair_freqItems") as "pair")
+                .select('pair("_1") as "uid", 'pair("_2") as "uid2")
+              // pairs.groupBy("uid", "uid2")
+              //   .agg(count("post") as "count",
+              //     min("post") as "min", max("post") as "max",
+              //     min("post2") as "min2", max("post2") as "max2")
+              //   .filter('count >= config.minRep)
                 .join(docs, "uid")
                 .join(docs.toDF(docs.columns.map { _ + "2" }:_*), "uid2")
                 .write.save(config.outputPath + "/docstats.parquet")
