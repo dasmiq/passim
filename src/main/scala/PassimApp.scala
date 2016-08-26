@@ -613,6 +613,7 @@ object PassimApp {
       .join(candidates, ($"cluster" === $"p_cluster") && ($"date" > $"p_date"), "left_outer")
       .select("cluster", config.id, "begin", "end", "terms", "date",
         "p_id", "p_begin", "p_terms", "p_date")
+      .rdd
       .map({
         case Row(cluster: Long, id: String, begin: Long, end: Long, terms: Seq[_], date:String,
           p_id: String, p_begin: Long, p_terms: Seq[_], p_date: String) => {
@@ -820,6 +821,7 @@ object PassimApp {
             }
 
             pairs.select('uid, 'gid, 'uid2, 'gid2, 'post, 'post2, 'df)
+              .rdd
               .map {
               case Row(uid: Long, gid: Long, uid2: Long, gid2: Long,
                 post: Int, post2: Int, df: Int) =>
@@ -849,6 +851,7 @@ object PassimApp {
             sqlContext.read.parquet(pairsFname)
               .select('uid, 'mid)
               .join(corpus.select('uid, col(config.id), col(config.text)), "uid")
+              .rdd
               .map({
                 case Row(uid: Long, mid: Long, id: String, text: String) => {
                   (mid, (id, 0, text.size, text.size, text))
@@ -870,6 +873,7 @@ object PassimApp {
           // should be an ancillary diagnostic program.
           val align = sqlContext.read.parquet(pairsFname)
             .join(termCorpus, "uid")
+            .rdd
             .map({
               case Row(uid: Long, gid: Long, begin: Int, end: Int, mid: Long, terms: Seq[_], gid2: Long) => {
                 (mid,
@@ -896,6 +900,7 @@ object PassimApp {
               .toDF("uid", "begin", "end", "mid")
               .join(corpus.select('uid, col(config.id), col(config.text),
                 'termCharBegin, 'termCharEnd), "uid")
+              .rdd
               .map({
                 case Row(uid: Long, begin: Int, end: Int, mid: Long,
                   id: String, text: String, termCharBegin: Seq[_], termCharEnd: Seq[_]) => {
@@ -935,7 +940,7 @@ object PassimApp {
             .write.parquet(passFname)
         }
 
-        val pass = sqlContext.read.parquet(passFname)
+        val pass = sqlContext.read.parquet(passFname).rdd
 
         val passNodes = pass.map({
           case Row(nid: Long, uid: Long, gid: Long, begin: Int, end: Int, edges: Seq[_]) =>

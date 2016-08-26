@@ -2,14 +2,14 @@ name := "passim"
 
 version := "1.0.0-alpha.1"
 
-scalaVersion := "2.10.5"
+scalaVersion := "2.11.8"
 
 resolvers += Resolver.mavenLocal
 
-libraryDependencies += "org.apache.spark" %% "spark-core" % "1.6.2"
-libraryDependencies += "org.apache.spark" %% "spark-graphx" % "1.6.2"
-libraryDependencies += "org.apache.spark" %% "spark-mllib" % "1.6.2"
-libraryDependencies += "org.apache.spark" %% "spark-sql" % "1.6.2"
+libraryDependencies += "org.apache.spark" %% "spark-core" % "2.0.0"
+libraryDependencies += "org.apache.spark" %% "spark-graphx" % "2.0.0"
+libraryDependencies += "org.apache.spark" %% "spark-mllib" % "2.0.0"
+libraryDependencies += "org.apache.spark" %% "spark-sql" % "2.0.0"
 
 libraryDependencies += "com.github.scopt" %% "scopt" % "3.3.0"
 
