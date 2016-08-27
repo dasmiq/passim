@@ -57,7 +57,9 @@ case class Span(val begin: Int, val end: Int) {
   }
 }
 
-case class Post(feat: Long, tf: Int, post: Int)
+case class DocTerms(uid: Long, gid: Long, terms: Array[String])
+
+case class Post(feat: Long, uid: Long, gid: Long, tf: Int, post: Int, df: Long)
 
 case class IdSeries(id: Long, series: Long)
 
@@ -768,59 +770,76 @@ object PassimApp {
         if ( !hdfsExists(sc, passFname) ) {
           val groupCol = if ( raw.columns.contains(config.group) ) config.group else config.id
 
-          val termCorpus = corpus
-            .select('uid, 'terms, hashId(corpus(groupCol)).as("gid"))
-          // Performance will be awful unless spark.sql.shuffle.partitions is appropriate
+          val termCorpus = corpus.withColumn("gid", hashId(col(groupCol))).as[DocTerms]
 
           if ( !hdfsExists(sc, pairsFname) ) {
 
             if ( !hdfsExists(sc, indexFname) ) {
               val minFeatLen: Double = config.wordLength * config.n
 
-              val postings =
-                termCorpus
-                  .explode('terms) { case Row(terms: Seq[_]) =>
-                    val md = MessageDigest.getInstance("MD5")
-                    terms.asInstanceOf[Seq[String]].sliding(config.n)
-                      .zipWithIndex
-                      .filter(_._1.map(_.size).sum >= minFeatLen)
-                      .map(x => (ByteBuffer.wrap(md.digest(x._1.mkString("~").getBytes("UTF-8"))
-                        .take(8)).getLong,
-                        x._2))
-                      .toArray
-                      .groupBy(_._1)
-                    // Store the count and first posting; could store
-                    // some other fixed number of postings.
-                      .map { case (feat, post) => Post(feat, post.size, post(0)._2) }
+              val postings = termCorpus.flatMap { case DocTerms(uid, gid, terms) =>
+                val md = MessageDigest.getInstance("MD5")
+                terms.sliding(config.n)
+                  .zipWithIndex
+                  .filter(_._1.map(_.size).sum >= minFeatLen)
+                  .map(x => (ByteBuffer.wrap(md.digest(x._1.mkString("~").getBytes("UTF-8"))
+                    .take(8)).getLong,
+                    x._2))
+                  .toArray
+                  .groupBy(_._1)
+                // Store the count and first posting; could store
+                // some other fixed number of postings.
+                  .map { case (feat, post) => Post(feat, uid, gid, post.size, post(0)._2, 0) }
                 }
-                  .drop("terms")
 
-              val df = postings.select('feat).groupBy("feat").agg(count("feat").cast("int") as "df")
-                .filter { ('df >= 2) && ('df <= config.maxDF) }
+              val featSketch =
+                postings.stat.countMinSketch('feat, eps=0.00001, confidence=0.99, seed=42)
 
-              postings.filter('tf === 1).drop("tf").join(df, "feat").write.parquet(indexFname)
+              val estdf = udf {(feat: Long) => featSketch.estimateCount(feat)}
+
+              // For an exact algorithm, don't filter until groupByKey & count at end.
+              postings.filter('tf === 1)
+                .withColumn("df", estdf('feat))
+                .filter { 'df >= 2 && 'df <= (config.maxDF * 1.1) }
+                .write.parquet(indexFname)
             }
 
             val index = sqlContext.read.parquet(indexFname)
 
             val index2 = index.toDF(index.columns.map { _ + "2" }:_*)
 
-            val pairs = index.join(index2, ('feat === 'feat2) && ('gid < 'gid2))
+            val ipairs = index.join(index2, ('feat === 'feat2) && ('gid < 'gid2))
 
             if ( config.dedup ) {
               val docs = corpus.select('uid, col(config.id), col(groupCol), size('terms) as "nterms")
-              pairs.groupBy("uid", "uid2")
-                .agg(count("post") as "count",
-                  min("post") as "min", max("post") as "max",
-                  min("post2") as "min2", max("post2") as "max2")
+              val pairs =
+                index.as[Post].groupByKey(_.feat).flatMapGroups { (k, v) =>
+                  val p = v.toArray
+                  if ( p.size > config.maxDF ) // In case of approximate counts in index
+                    None
+                  else {
+                    for ( i <- 0 until p.size; j <- (i+1) until p.size; if p(i).gid != p(j).gid )
+                      yield(if ( p(i).gid < p(j).gid ) (p(i).uid, p(j).uid) else (p(j).uid, p(i).uid))
+                  }
+                }
+                  .select(concat_ws(":", $"_1", $"_2") as "pair")
+
+              val pairSketch =
+                pairs.stat.countMinSketch('pair, eps=0.00001, confidence=0.99, seed=42)
+
+              pairs
+                .filter { p => pairSketch.estimateCount(p.getString(0)) >= config.minRep }
+                .groupBy("pair").count
                 .filter('count >= config.minRep)
+                .withColumn("pair", split('pair, ":"))
+                .select('pair(0) as "uid", 'pair(1) as "uid2", 'count)
                 .join(docs, "uid")
                 .join(docs.toDF(docs.columns.map { _ + "2" }:_*), "uid2")
                 .write.save(config.outputPath + "/docstats.parquet")
               sys.exit(0)
             }
 
-            pairs.select('uid, 'gid, 'uid2, 'gid2, 'post, 'post2, 'df)
+            ipairs.select('uid, 'gid, 'uid2, 'gid2, 'post, 'post2, 'df)
               .rdd
               .map {
               case Row(uid: Long, gid: Long, uid2: Long, gid2: Long,
