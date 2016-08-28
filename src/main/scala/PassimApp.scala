@@ -28,7 +28,7 @@ case class Config(version: String = BuildInfo.version,
   mode: String = "cluster",
   n: Int = 5, maxDF: Int = 100, minRep: Int = 5, minAlg: Int = 20,
   gap: Int = 100, relOver: Double = 0.8, maxRep: Int = 10, history: Int = 7,
-  wordLength: Double = 2,
+  wordLength: Double = 2, sketchWidth: Int = 30000, sketchDepth: Int = 10,
   pairwise: Boolean = false, docwise: Boolean = false, dedup: Boolean = false,
   id: String = "id", group: String = "series", text: String = "text",
   inputFormat: String = "json", outputFormat: String = "json",
@@ -720,6 +720,10 @@ object PassimApp {
         c.copy(inputFormat = x) } text("Input format; default=json")
       opt[String]("output-format") action { (x, c) =>
         c.copy(outputFormat = x) } text("Output format; default=json")
+      opt[Int]("sketch-width") action { (x, c) =>
+        c.copy(sketchWidth = x) } text("Sketch width; default=20000")
+      opt[Int]("sketch-depth") action { (x, c) =>
+        c.copy(sketchDepth = x) } text("Sketch depth; default=10")
       opt[Double]('w', "word-length") action { (x, c) => c.copy(wordLength = x)
       } validate { x => if ( x >= 1 ) success else failure("average word length must be >= 1")
       } text("Minimum average word length to match; default=2")
@@ -792,15 +796,15 @@ object PassimApp {
                   .map { case (feat, post) => Post(feat, uid, gid, post.size, post(0)._2, 0) }
                 }
 
-              val featSketch =
-                postings.stat.countMinSketch('feat, eps=0.00001, confidence=0.99, seed=42)
+              val featSketch = postings.stat.countMinSketch('feat,
+                width=config.sketchWidth, depth=config.sketchDepth, seed=42)
 
               val estdf = udf {(feat: Long) => featSketch.estimateCount(feat)}
 
               // For an exact algorithm, don't filter until groupByKey & count at end.
               postings.filter('tf === 1)
                 .withColumn("df", estdf('feat))
-                .filter { 'df >= 2 && 'df <= (config.maxDF * 1.1) }
+                .filter { 'df >= 2 }
                 .write.parquet(indexFname)
             }
 
@@ -824,8 +828,8 @@ object PassimApp {
                 }
                   .select(concat_ws(":", $"_1", $"_2") as "pair")
 
-              val pairSketch =
-                pairs.stat.countMinSketch('pair, eps=0.00001, confidence=0.99, seed=42)
+              val pairSketch = pairs.stat.countMinSketch('pair,
+                width=config.sketchWidth, depth=config.sketchDepth, seed=42)
 
               pairs
                 .filter { p => pairSketch.estimateCount(p.getString(0)) >= config.minRep }
