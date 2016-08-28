@@ -23,12 +23,14 @@ import scala.collection.mutable.Queue
 
 import java.security.MessageDigest
 import java.nio.ByteBuffer
+import org.apache.spark.unsafe.hash.Murmur3_x86_32._
+import org.apache.spark.unsafe.types.UTF8String
 
 case class Config(version: String = BuildInfo.version,
   mode: String = "cluster",
   n: Int = 5, maxDF: Int = 100, minRep: Int = 5, minAlg: Int = 20,
   gap: Int = 100, relOver: Double = 0.8, maxRep: Int = 10, history: Int = 7,
-  wordLength: Double = 2, sketchWidth: Int = 30000, sketchDepth: Int = 10,
+  wordLength: Double = 2, sketchWidth: Int = 30000, sketchDepth: Int = 5,
   pairwise: Boolean = false, docwise: Boolean = false, dedup: Boolean = false,
   id: String = "id", group: String = "series", text: String = "text",
   inputFormat: String = "json", outputFormat: String = "json",
@@ -672,6 +674,10 @@ object PassimApp {
     val qualified = hdfsPath.makeQualified(fs.getUri, fs.getWorkingDirectory)
     fs.exists(qualified)
   }
+  def nonNegativeMod(x: Int, mod: Int): Int = {
+    val rawMod = x % mod
+    rawMod + (if (rawMod < 0) mod else 0)
+  }
 
   def main(args: Array[String]) {
     val conf = new SparkConf().setAppName("Passim Application")
@@ -777,94 +783,81 @@ object PassimApp {
           val termCorpus = corpus.withColumn("gid", hashId(col(groupCol))).as[DocTerms]
 
           if ( !hdfsExists(sc, pairsFname) ) {
+            val minFeatLen: Double = config.wordLength * config.n
+            val seed = 42
+            val numFeatures = 1<<24
 
-            if ( !hdfsExists(sc, indexFname) ) {
-              val minFeatLen: Double = config.wordLength * config.n
-
-              val postings = termCorpus.flatMap { case DocTerms(uid, gid, terms) =>
-                val md = MessageDigest.getInstance("MD5")
-                terms.sliding(config.n)
-                  .zipWithIndex
-                  .filter(_._1.map(_.size).sum >= minFeatLen)
-                  .map(x => (ByteBuffer.wrap(md.digest(x._1.mkString("~").getBytes("UTF-8"))
-                    .take(8)).getLong,
-                    x._2))
-                  .toArray
-                  .groupBy(_._1)
-                // Store the count and first posting; could store
-                // some other fixed number of postings.
-                  .map { case (feat, post) => Post(feat, uid, gid, post.size, post(0)._2, 0) }
-                }
-
-              val featSketch = postings.stat.countMinSketch('feat,
-                width=config.sketchWidth, depth=config.sketchDepth, seed=42)
-
-              val estdf = udf {(feat: Long) => featSketch.estimateCount(feat)}
-
-              // For an exact algorithm, don't filter until groupByKey & count at end.
-              postings.filter('tf === 1)
-                .withColumn("df", estdf('feat))
-                .filter { 'df >= 2 }
-                .write.parquet(indexFname)
+            val pairs = termCorpus.flatMap { case DocTerms(uid, gid, terms) =>
+              val md = MessageDigest.getInstance("MD5")
+              terms.sliding(config.n)
+                .zipWithIndex
+                .filter(_._1.map(_.size).sum >= minFeatLen)
+                .map { case (s, pos) =>
+                  val utf8 = UTF8String.fromString(s.mkString("~"))
+                  (nonNegativeMod(hashUnsafeBytes(utf8.getBaseObject,
+                    utf8.getBaseOffset, utf8.numBytes(), seed),
+                    numFeatures),
+                    pos)
+              }
+                .toArray
+                .groupBy(_._1)
+              // Store the count and first posting; could store
+              // some other fixed number of postings.
+                .map { case (feat, post) => Post(feat, uid, gid, post.size, post(0)._2, 0) }
             }
-
-            val index = sqlContext.read.parquet(indexFname)
-
-            val index2 = index.toDF(index.columns.map { _ + "2" }:_*)
-
-            val ipairs = index.join(index2, ('feat === 'feat2) && ('gid < 'gid2))
+              .filter { _.tf == 1 }
+              .groupByKey(_.feat).flatMapGroups { (k, v) =>
+                val p = v.toArray
+                if ( p.size < 2 || p.size > (config.maxDF*2) )
+                  None
+                else {
+                  for ( i <- 0 until p.size; j <- (i+1) until p.size; if p(i).gid != p(j).gid )
+                    yield(if ( p(i).gid < p(j).gid ) (p(i), p(j)) else (p(j), p(i)))
+                }
+            }
+              .toDF("post1", "post2")
+              .withColumn("pair", concat_ws(":", $"post1.uid", $"post2.uid"))
 
             if ( config.dedup ) {
               val docs = corpus.select('uid, col(config.id), col(groupCol), size('terms) as "nterms")
-              val pairs =
-                index.as[Post].groupByKey(_.feat).flatMapGroups { (k, v) =>
-                  val p = v.toArray
-                  if ( p.size > config.maxDF ) // In case of approximate counts in index
-                    None
-                  else {
-                    for ( i <- 0 until p.size; j <- (i+1) until p.size; if p(i).gid != p(j).gid )
-                      yield(if ( p(i).gid < p(j).gid ) (p(i).uid, p(j).uid) else (p(j).uid, p(i).uid))
-                  }
-                }
-                  .select(concat_ws(":", $"_1", $"_2") as "pair")
 
-              val pairSketch = pairs.stat.countMinSketch('pair,
-                width=config.sketchWidth, depth=config.sketchDepth, seed=42)
+              val pairSketch =
+                pairs.stat.countMinSketch('pair,
+                  width=config.sketchWidth, depth=config.sketchDepth, seed=42)
 
               pairs
-                .filter { p => pairSketch.estimateCount(p.getString(0)) >= config.minRep }
-                .groupBy("pair").count
+                .filter { p => pairSketch.estimateCount(p.getString(2)) >= config.minRep }
+                .select($"post1.uid" as "uid", $"post2.uid" as "uid2")
+                .groupBy("uid", "uid2").count
                 .filter('count >= config.minRep)
-                .withColumn("pair", split('pair, ":"))
-                .select('pair(0) as "uid", 'pair(1) as "uid2", 'count)
                 .join(docs, "uid")
                 .join(docs.toDF(docs.columns.map { _ + "2" }:_*), "uid2")
                 .write.save(config.outputPath + "/docstats.parquet")
               sys.exit(0)
             }
 
-            ipairs.select('uid, 'gid, 'uid2, 'gid2, 'post, 'post2, 'df)
-              .rdd
-              .map {
-              case Row(uid: Long, gid: Long, uid2: Long, gid2: Long,
-                post: Int, post2: Int, df: Int) =>
-                ((uid, gid, uid2, gid2), (post, post2, df))
-            }
-              .groupByKey
-              .filter(_._2.size >= config.minRep)
-              .mapValues(PassFun.increasingMatches)
-              .filter(_._2.size >= config.minRep)
-              .flatMapValues(PassFun.gappedMatches(config.n, config.gap, config.minAlg, _))
-            // Unique IDs will serve as edge IDs in connected component graph
-              .zipWithUniqueId
-              .flatMap(x => {
-                val (((uid1, gid1, uid2, gid2), ((s1, e1), (s2, e2))), mid) = x
-                Array((uid1, gid1, s1, e1, mid),
-                  (uid2, gid2, s2, e2, mid))
-              })
-              .toDF("uid", "gid", "begin", "end", "mid")
-            // But we need to cache so IDs don't get reassigned.
-              .write.parquet(pairsFname)
+            // ipairs.select('uid, 'gid, 'uid2, 'gid2, 'post, 'post2, 'df)
+            //   .rdd
+            //   .map {
+            //   case Row(uid: Long, gid: Long, uid2: Long, gid2: Long,
+            //     post: Int, post2: Int, df: Int) =>
+            //     ((uid, gid, uid2, gid2), (post, post2, df))
+            // }
+            //   .groupByKey
+            //   .filter(_._2.size >= config.minRep)
+            //   .mapValues(PassFun.increasingMatches)
+            //   .filter(_._2.size >= config.minRep)
+            //   .flatMapValues(PassFun.gappedMatches(config.n, config.gap, config.minAlg, _))
+            // // Unique IDs will serve as edge IDs in connected component graph
+            //   .zipWithUniqueId
+            //   .flatMap(x => {
+            //     val (((uid1, gid1, uid2, gid2), ((s1, e1), (s2, e2))), mid) = x
+            //     Array((uid1, gid1, s1, e1, mid),
+            //       (uid2, gid2, s2, e2, mid))
+            //   })
+            //   .toDF("uid", "gid", "begin", "end", "mid")
+            // // But we need to cache so IDs don't get reassigned.
+            //   .write.parquet(pairsFname)
           }
 
           val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
