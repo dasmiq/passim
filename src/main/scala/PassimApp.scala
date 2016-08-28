@@ -590,9 +590,10 @@ object TokApp {
 
 object PassimApp {
   def hashString(s: String): Long = {
-    ByteBuffer.wrap(
+    nonNegativeMod(ByteBuffer.wrap(
       MessageDigest.getInstance("MD5").digest(s.getBytes("UTF-8"))
-    ).getLong
+    ).getLong,
+    1L<<62)
   }
   def testTok(config: Config, df: DataFrame): DataFrame = {
     if ( df.columns.contains("terms") ) {
@@ -675,6 +676,10 @@ object PassimApp {
     fs.exists(qualified)
   }
   def nonNegativeMod(x: Int, mod: Int): Int = {
+    val rawMod = x % mod
+    rawMod + (if (rawMod < 0) mod else 0)
+  }
+  def nonNegativeMod(x: Long, mod: Long): Long = {
     val rawMod = x % mod
     rawMod + (if (rawMod < 0) mod else 0)
   }
