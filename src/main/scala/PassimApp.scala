@@ -785,7 +785,7 @@ object PassimApp {
         if ( !hdfsExists(sc, passFname) ) {
           val groupCol = if ( raw.columns.contains(config.group) ) config.group else config.id
 
-          val termCorpus = corpus.withColumn("gid", hashId(col(groupCol))).as[DocTerms]
+          val termCorpus = corpus.select('uid, hashId(col(groupCol)) as "gid", 'terms).as[DocTerms]
 
           if ( !hdfsExists(sc, pairsFname) ) {
             val minFeatLen: Double = config.wordLength * config.n
@@ -886,7 +886,7 @@ object PassimApp {
             .join(termCorpus, "uid")
             .rdd
             .map({
-              case Row(uid: Long, gid: Long, begin: Int, end: Int, mid: Long, terms: Seq[_], gid2: Long) => {
+              case Row(uid: Long, gid: Long, begin: Int, end: Int, mid: Long, gid2: Long, terms: Seq[_]) => {
                 (mid,
                   PassFun.edgeText(config.gap * 2/3, config.n,
                     IdSeries(uid, gid), terms.asInstanceOf[Seq[String]].toArray, Span(begin, end)))
