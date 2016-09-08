@@ -742,7 +742,6 @@ object PassimApp {
             val minFeatLen: Double = config.wordLength * config.n
 
             val pairs = termCorpus.flatMap { case DocTerms(uid, gid, terms) =>
-              val md = MessageDigest.getInstance("MD5")
               terms.sliding(config.n)
                 .zipWithIndex
                 .filter { _._1.map(_.size).sum >= minFeatLen }
