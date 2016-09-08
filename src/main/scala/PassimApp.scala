@@ -1,13 +1,9 @@
 package passim
 
-import org.apache.spark.SparkContext
+import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.SparkContext._
-import org.apache.spark.SparkConf
-import org.apache.spark.rdd.RDD
 import org.apache.spark.graphx._
-import org.apache.spark.sql.SQLContext
-import org.apache.spark.sql.DataFrame
-import org.apache.spark.sql.Row
+import org.apache.spark.sql.{SQLContext, DataFrame, Row}
 import org.apache.spark.sql.functions._
 import org.apache.spark.storage.StorageLevel
 
@@ -17,14 +13,10 @@ import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import java.sql.Date
 
 import collection.JavaConversions._
-import scala.collection.mutable.ListBuffer
-import scala.collection.mutable.ArrayBuffer
-import scala.collection.mutable.Queue
+import scala.collection.mutable.{ArrayBuffer, ListBuffer}
 
 import java.security.MessageDigest
 import java.nio.ByteBuffer
-import org.apache.spark.unsafe.hash.Murmur3_x86_32._
-import org.apache.spark.unsafe.types.UTF8String
 
 case class Config(version: String = BuildInfo.version,
   mode: String = "cluster",
@@ -441,6 +433,7 @@ object BoilerApp {
 
   def matchPages(config: Config, sqlContext: SQLContext) = {
     import sqlContext.implicits._
+    import PassimApp.TextTokenizer
 
     val fs = FileSystem.get(sqlContext.sparkContext.hadoopConfiguration)
     val configFname = config.outputPath + "/conf"
@@ -456,7 +449,7 @@ object BoilerApp {
     val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
 
     val raw = sqlContext.read.format(config.inputFormat).load(config.inputPaths)
-    val corpus = PassimApp.testTok(config, raw)
+    val corpus = raw.tokenize(config.text)
       .select($"id", $"series", datediff($"date", lit("1970-01-01")) as "day",
         $"issue", indexer($"terms") as "index", $"text")
       .withColumn("daybin", ($"day" / config.history).cast("int"))
@@ -520,73 +513,7 @@ object BoilerApp {
   }
 }
 
-case class TokText(terms: Array[String], termCharBegin: Array[Int], termCharEnd: Array[Int],
-  termPages: Array[String], termRegions: Array[imgCoord], termLocs: Array[String])
-
-object TokApp {
-  def tokenize(text: String): TokText = {
-    val tok = new passim.TagTokenizer()
-
-    var d = new passim.Document("raw", text)
-    tok.tokenize(d)
-
-    val pages = new ArrayBuffer[String]
-    val regions = new ArrayBuffer[imgCoord]
-    val locs = new ArrayBuffer[String]
-    var curPage = ""
-    var curCoord = imgCoord(0, 0, 0, 0)
-    var curLoc = ""
-    var idx = 0
-    val p = """^(\d+),(\d+),(\d+),(\d+)$""".r
-    for ( t <- d.tags ) {
-      val off = t.begin
-      while ( idx < off ) {
-        pages += curPage
-        regions += curCoord
-        locs += curLoc
-        idx += 1
-      }
-      if ( t.name == "pb" )
-        curPage = t.attributes.getOrElse("n", "")
-      else if ( t.name == "loc" )
-        curLoc = t.attributes.getOrElse("n", "")
-      else if ( t.name == "w" ) {
-    	  t.attributes.getOrElse("coords", "") match {
-            case p(x, y, w, h) => curCoord = imgCoord(x.toInt, y.toInt, w.toInt, h.toInt)
-    	    case _ => curCoord
-    	  }
-    	}
-    }
-    if ( idx > 0 ) {
-      while ( idx < d.terms.size ) {
-        pages += curPage
-        regions += curCoord
-        locs += curLoc
-        idx += 1
-      }
-    }
-
-    TokText(d.terms.toSeq.toArray,
-      d.termCharBegin.map(_.toInt).toArray,
-      d.termCharEnd.map(_.toInt).toArray,
-      (if ( curPage == "" ) Array[String]() else pages.toArray),
-      (if ( curCoord == imgCoord(0, 0, 0, 0) ) Array[imgCoord]() else regions.toArray),
-      (if ( curLoc == "" ) Array[String]() else locs.toArray))
-  }
-  def tokenizeText(config: Config, raw: DataFrame): DataFrame = {
-    val tokenizeCol = udf {(s: String) => tokenize(s)}
-    raw.na.drop(Seq(config.id, config.text))
-      .withColumn("_tokens", tokenizeCol(col(config.text)))
-      .withColumn("terms", col("_tokens")("terms"))
-      .withColumn("termCharBegin", col("_tokens")("termCharBegin"))
-      .withColumn("termCharEnd", col("_tokens")("termCharEnd"))
-      .withColumn("termPages", col("_tokens")("termPages"))
-      .withColumn("termRegions", col("_tokens")("termRegions"))
-      .withColumn("termLocs", col("_tokens")("termLocs"))
-      .drop("_tokens")
-    // Used "explode" here, but it behaved badly in spark 1.5.0
-  }
-}
+case class TokText(terms: Array[String], termCharBegin: Array[Int], termCharEnd: Array[Int])
 
 object PassimApp {
   def hashString(s: String): Long = {
@@ -595,18 +522,41 @@ object PassimApp {
     ).getLong,
     1L<<62)
   }
-  def testTok(config: Config, df: DataFrame): DataFrame = {
-    if ( df.columns.contains("terms") ) {
-      df
-    } else {
-      TokApp.tokenizeText(config, df)
+  implicit class TextTokenizer(df: DataFrame) {
+    def tokenize(colName: String): DataFrame = {
+      if ( df.columns.contains("terms") ) {
+        df
+      } else {
+        val tokenizeCol = udf {(text: String) =>
+          val tok = new passim.TagTokenizer()
+
+          var d = new passim.Document("raw", text)
+          tok.tokenize(d)
+
+          TokText(d.terms.toSeq.toArray,
+            d.termCharBegin.map(_.toInt).toArray,
+            d.termCharEnd.map(_.toInt).toArray)
+        }
+        df.withColumn("_tokens", tokenizeCol(col(colName)))
+          .withColumn("terms", col("_tokens")("terms"))
+          .withColumn("termCharBegin", col("_tokens")("termCharBegin"))
+          .withColumn("termCharEnd", col("_tokens")("termCharEnd"))
+          .drop("_tokens")
+      }
     }
+    // def selectRegions(colName: String): DataFrame = {
+    //   if ( def.columns.contains(colName) ) {
+    //     df.withColumn(colName, getRegion('begin, 'end, col(colName)))
+    //   } else {
+    //     df
+    //   }
+    // }
   }
 
   def matchParents(config: Config, sqlContext: SQLContext) {
     import sqlContext.implicits._
     val raw = sqlContext.read.format(config.inputFormat).load(config.inputPaths)
-    val corpus = testTok(config, raw)
+    val corpus = raw.tokenize(config.text)
 
     val candidates = corpus.select($"cluster" as "p_cluster",
       col(config.id) as "p_id", $"begin" as "p_begin",
@@ -647,28 +597,28 @@ object PassimApp {
 
   val hashId = udf {(id: String) => hashString(id)}
   val getPassage = udf { (text: String, begin: Int, end: Int) => text.substring(begin, end) }
-  val getLocs = udf {
-    (begin: Int, end: Int, termLocs: Seq[String]) =>
-    if ( termLocs.size >= end )
-      termLocs.toArray.slice(begin, end).distinct.sorted // stable
-    else
-      Array[String]()
-  }
-  val getRegions = udf {
-    (begin: Int, end: Int, termPages: Seq[String], termRegions: Seq[Row]) =>
-    if ( termRegions.size < end )
-      Array[imgCoord]()
-    else {
-      val regions = termRegions.toArray.slice(begin, end)
-        .map({ case Row(x: Int, y: Int, w: Int, h: Int) => imgCoord(x, y, w, h) })
-        .toArray
-      if ( termPages.size < end )
-        Array(CorpusFun.boundingBox(regions))
-      else
-        termPages.slice(begin, end).zip(regions).groupBy(_._1).toIndexedSeq.sortBy(_._1)
-          .map(x => CorpusFun.boundingBox(x._2.map(_._2).toArray)).toArray
-    }
-  }
+  // val getLocs = udf {
+  //   (begin: Int, end: Int, termLocs: Seq[String]) =>
+  //   if ( termLocs.size >= end )
+  //     termLocs.toArray.slice(begin, end).distinct.sorted // stable
+  //   else
+  //     Array[String]()
+  // }
+  // val getRegions = udf {
+  //   (begin: Int, end: Int, termPages: Seq[String], termRegions: Seq[Row]) =>
+  //   if ( termRegions.size < end )
+  //     Array[imgCoord]()
+  //   else {
+  //     val regions = termRegions.toArray.slice(begin, end)
+  //       .map({ case Row(x: Int, y: Int, w: Int, h: Int) => imgCoord(x, y, w, h) })
+  //       .toArray
+  //     if ( termPages.size < end )
+  //       Array(CorpusFun.boundingBox(regions))
+  //     else
+  //       termPages.slice(begin, end).zip(regions).groupBy(_._1).toIndexedSeq.sortBy(_._1)
+  //         .map(x => CorpusFun.boundingBox(x._2.map(_._2).toArray)).toArray
+  //   }
+  // }
   def hdfsExists(sc: SparkContext, path: String) = {
     val hdfsPath = new Path(path)
     val fs = hdfsPath.getFileSystem(sc.hadoopConfiguration)
@@ -778,8 +728,9 @@ object PassimApp {
     if ( !hdfsExists(sc, outFname) ) {
       val raw = sqlContext.read.format(config.inputFormat).load(config.inputPaths)
 
-      val corpus = testTok(config, raw)
+      val corpus = raw.na.drop(Seq(config.id, config.text))
         .withColumn("uid", hashId(col(config.id)))
+        .tokenize(config.text)
 
       if ( !hdfsExists(sc, clusterFname) ) {
         if ( !hdfsExists(sc, passFname) ) {
@@ -1002,14 +953,13 @@ object PassimApp {
       val joint =
         sqlContext.read.parquet(clusterFname)
           .join(corpus.drop("terms"), "uid")
-          .withColumn("pages", getLocs('begin, 'end, 'termPages))
-          .withColumn("regions", getRegions('begin, 'end, 'termPages, 'termRegions))
-          .withColumn("locs", getLocs('begin, 'end, 'termLocs))
-          .drop("termPages").drop("termRegions").drop("termLocs")
           .withColumn("begin", 'termCharBegin('begin))
           .withColumn("end", 'termCharEnd('end))
-          .drop("termCharBegin").drop("termCharEnd")
+          .drop("termCharBegin", "termCharEnd")
           .withColumn(config.text, getPassage(col(config.text), 'begin, 'end))
+          // .selectRegions("regions")
+          // .selectLocs("pages")
+          // .selectLocs("locs")
 
       val out = if ( config.outputFormat == "parquet" ) joint else joint.sort('size.desc, 'cluster, col(dateSort), col(config.id), 'begin)
 

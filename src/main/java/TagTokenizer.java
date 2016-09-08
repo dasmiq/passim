@@ -76,10 +76,6 @@ public class TagTokenizer {
     closedTags = new ArrayList<ClosedTag>();
     tokenPositions = new ArrayList<Pair>();
     whitelist = new ArrayList<Pattern>();
-
-    whitelist.add(Pattern.compile("loc"));
-    whitelist.add(Pattern.compile("pb"));
-    whitelist.add(Pattern.compile("w"));
   }
 
   protected static boolean[] buildSplits() {
