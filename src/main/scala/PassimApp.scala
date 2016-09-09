@@ -523,20 +523,20 @@ object PassimApp {
     1L<<62)
   }
   implicit class TextTokenizer(df: DataFrame) {
+    val tokenizeCol = udf {(text: String) =>
+      val tok = new passim.TagTokenizer()
+
+      var d = new passim.Document("raw", text)
+      tok.tokenize(d)
+
+      TokText(d.terms.toSeq.toArray,
+        d.termCharBegin.map(_.toInt).toArray,
+        d.termCharEnd.map(_.toInt).toArray)
+    }
     def tokenize(colName: String): DataFrame = {
       if ( df.columns.contains("terms") ) {
         df
       } else {
-        val tokenizeCol = udf {(text: String) =>
-          val tok = new passim.TagTokenizer()
-
-          var d = new passim.Document("raw", text)
-          tok.tokenize(d)
-
-          TokText(d.terms.toSeq.toArray,
-            d.termCharBegin.map(_.toInt).toArray,
-            d.termCharEnd.map(_.toInt).toArray)
-        }
         df.withColumn("_tokens", tokenizeCol(col(colName)))
           .withColumn("terms", col("_tokens")("terms"))
           .withColumn("termCharBegin", col("_tokens")("termCharBegin"))
@@ -544,13 +544,24 @@ object PassimApp {
           .drop("_tokens")
       }
     }
-    // def selectRegions(colName: String): DataFrame = {
-    //   if ( def.columns.contains(colName) ) {
-    //     df.withColumn(colName, getRegion('begin, 'end, col(colName)))
-    //   } else {
-    //     df
-    //   }
-    // }
+    def selectRegions(regionCol: String, pageCol: String): DataFrame = {
+      if ( df.columns.contains(regionCol) ) {
+        if ( df.columns.contains(pageCol) ) {
+          df
+        } else {
+          df
+        }
+      } else {
+        df
+      }
+    }
+    def selectLocs(colName: String): DataFrame = {
+      if ( df.columns.contains(colName) ) {
+        df
+      } else {
+        df
+      }
+    }
   }
 
   def matchParents(config: Config, sqlContext: SQLContext) {
@@ -596,7 +607,6 @@ object PassimApp {
   }
 
   val hashId = udf {(id: String) => hashString(id)}
-  val getPassage = udf { (text: String, begin: Int, end: Int) => text.substring(begin, end) }
   // val getLocs = udf {
   //   (begin: Int, end: Int, termLocs: Seq[String]) =>
   //   if ( termLocs.size >= end )
@@ -795,11 +805,8 @@ object PassimApp {
               .flatMapValues(PassFun.gappedMatches(config.n, config.gap, config.minAlg, _))
             // Unique IDs will serve as edge IDs in connected component graph
               .zipWithUniqueId
-              .flatMap(x => {
-                val (((uid1, gid1, uid2, gid2), ((s1, e1), (s2, e2))), mid) = x
-                Array((uid1, gid1, s1, e1, mid),
-                  (uid2, gid2, s2, e2, mid))
-              })
+              .flatMap { case (((uid1, gid1, uid2, gid2), ((s1, e1), (s2, e2))), mid) =>
+                Array((uid1, gid1, s1, e1, mid), (uid2, gid2, s2, e2, mid)) }
               .toDF("uid", "gid", "begin", "end", "mid")
             // But we need to cache so IDs don't get reassigned.
               .write.parquet(pairsFname)
@@ -893,24 +900,20 @@ object PassimApp {
             .flatMapValues(PassFun.mergeSpans(config.relOver, _))
             .zipWithUniqueId
           // This was getting recomputed on different partitions, thus reassigning IDs.
-            .map(v => {
-              val ((doc, (span, edges)), id) = v
-              (id, doc.id, doc.series, span.begin, span.end, edges)
-            })
+            .map { case ((doc, (span, edges)), id) =>
+              (id, doc.id, doc.series, span.begin, span.end, edges) }
             .toDF("nid", "uid", "gid", "begin", "end", "edges")
             .write.parquet(passFname)
         }
 
         val pass = sqlContext.read.parquet(passFname).rdd
 
-        val passNodes = pass.map({
+        val passNodes = pass.map {
           case Row(nid: Long, uid: Long, gid: Long, begin: Int, end: Int, edges: Seq[_]) =>
-            (nid, (IdSeries(uid, gid), Span(begin, end)))
-        })
-        val passEdges = pass.flatMap({
+            (nid, (IdSeries(uid, gid), Span(begin, end))) }
+        val passEdges = pass.flatMap {
           case Row(nid: Long, uid: Long, gid: Long, begin: Int, end: Int, edges: Seq[_]) =>
-            edges.asInstanceOf[Seq[Long]].map(e => (e, nid))
-        })
+            edges.asInstanceOf[Seq[Long]].map(e => (e, nid)) }
           .groupByKey
           .map(e => {
             val nodes = e._2.toArray.sorted
@@ -955,10 +958,10 @@ object PassimApp {
           .withColumn("begin", 'termCharBegin('begin))
           .withColumn("end", 'termCharEnd('end))
           .drop("termCharBegin", "termCharEnd")
-          .withColumn(config.text, getPassage(col(config.text), 'begin, 'end))
-          // .selectRegions("regions")
-          // .selectLocs("pages")
-          // .selectLocs("locs")
+          .withColumn(config.text, col(config.text).substr('begin, 'end - 'begin))
+          .selectRegions("regions", "pages")
+          .selectLocs("pages")
+          .selectLocs("locs")
 
       val out = if ( config.outputFormat == "parquet" ) joint else joint.sort('size.desc, 'cluster, col(dateSort), col(config.id), 'begin)
 
