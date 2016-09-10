@@ -861,29 +861,24 @@ object PassimApp {
           if ( config.pairwise ) {
             align.cache()
             align
-              .map(x => {
-                val (doc, (span, mid)) = x
-                (doc.id, span.begin, span.end, mid)
-              })
+              .map { case (doc, (span, mid)) => (doc.id, span.begin, span.end, mid) }
               .toDF("uid", "begin", "end", "mid")
               .join(corpus.select('uid, col(config.id), col(config.text),
                 'termCharBegin, 'termCharEnd), "uid")
               .rdd
-              .map({
-                case Row(uid: Long, begin: Int, end: Int, mid: Long,
-                  id: String, text: String, termCharBegin: Seq[_], termCharEnd: Seq[_]) => {
-                  val tcb = termCharBegin.asInstanceOf[Seq[Int]]
-                  val tce = termCharEnd.asInstanceOf[Seq[Int]]
+              .map {
+              case Row(uid: Long, begin: Int, end: Int, mid: Long,
+                id: String, text: String, termCharBegin: Seq[_], termCharEnd: Seq[_]) =>
+                val tcb = termCharBegin.asInstanceOf[Seq[Int]]
+                val tce = termCharEnd.asInstanceOf[Seq[Int]]
 
-                  (mid, (id, begin, end, tcb.size, text.substring(tcb(begin), tce(end))))
-                }
-              })
+                (mid, (id, begin, end, tcb.size, text.substring(tcb(begin), tce(end)))) }
               .groupByKey
-              .map(x => {
-                val d1 = x._2.head
-                val d2 = x._2.last
-                PassFun.alignStrings(config.n * 5, config.gap * 5, matchMatrix, d1, d2)
-              })
+              .map { x =>
+              val d1 = x._2.head
+              val d2 = x._2.last
+              PassFun.alignStrings(config.n * 5, config.gap * 5, matchMatrix, d1, d2)
+            }
               .toDF
               .write.format(config.outputFormat)
               .save(config.outputPath + "/align." + config.outputFormat)
