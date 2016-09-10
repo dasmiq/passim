@@ -23,7 +23,8 @@ case class Config(version: String = BuildInfo.version,
   n: Int = 5, maxDF: Int = 100, minRep: Int = 5, minAlg: Int = 20,
   gap: Int = 100, relOver: Double = 0.8, maxRep: Int = 10, history: Int = 7,
   wordLength: Double = 2, sketchWidth: Int = 30000, sketchDepth: Int = 5,
-  pairwise: Boolean = false, docwise: Boolean = false, dedup: Boolean = false,
+  pairwise: Boolean = false, duppairs: Boolean = false,
+  docwise: Boolean = false, dedup: Boolean = false,
   id: String = "id", group: String = "series", text: String = "text",
   inputFormat: String = "json", outputFormat: String = "json",
   inputPaths: String = "", outputPath: String = "") {
@@ -677,6 +678,8 @@ object PassimApp {
         c.copy(maxRep = x) } text("Maximum repeat of one series in a cluster; default=10")
       opt[Unit]('p', "pairwise") action { (_, c) =>
         c.copy(pairwise = true) } text("Output pairwise alignments")
+      opt[Unit]("duplicate-pairwise") action { (_, c) =>
+        c.copy(duppairs = true) } text("Duplicate pairwise alignments")
       opt[Unit]('d', "docwise") action { (_, c) =>
         c.copy(docwise = true) } text("Output docwise alignments")
       opt[Unit]('D', "dedup") action { (_, c) =>
@@ -858,9 +861,11 @@ object PassimApp {
               PassFun.alignEdges(matchMatrix, config.n, config.minAlg, x._1, pass(0), pass(1))
             })
 
-          if ( config.pairwise ) {
+          if ( config.pairwise || config.duppairs ) {
             align.cache()
-            align
+            val meta = corpus.drop("uid", "text", "terms", "termCharBegin", "termCharEnd",
+              "regions", "pages", "locs")
+            val fullalign = align
               .map { case (doc, (span, mid)) => (doc.id, span.begin, span.end, mid) }
               .toDF("uid", "begin", "end", "mid")
               .join(corpus.select('uid, col(config.id), col(config.text),
@@ -880,6 +885,22 @@ object PassimApp {
               PassFun.alignStrings(config.n * 5, config.gap * 5, matchMatrix, d1, d2)
             }
               .toDF
+              .join(meta.toDF(meta.columns.map { _ + "1" }:_*), "id1")
+              .join(meta.toDF(meta.columns.map { _ + "2" }:_*), "id2")
+
+            val cols = fullalign.columns
+
+            (if ( config.duppairs ) {
+              fullalign.cache()
+              fullalign
+                .union(fullalign
+                  .toDF(cols.map { s =>
+                    if ( s endsWith "1" )
+                      s.replaceAll("1$", "2")
+                    else
+                      s.replaceAll("2$", "1") }:_*))
+            } else fullalign)
+              .select((cols.filter(_ endsWith "1") ++ cols.filter(_ endsWith "2")).map(col):_*)
               .write.format(config.outputFormat)
               .save(config.outputPath + "/align." + config.outputFormat)
           }
