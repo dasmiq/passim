@@ -899,8 +899,10 @@ object PassimApp {
                       s.replaceAll("1$", "2")
                     else
                       s.replaceAll("2$", "1") }:_*))
+                .distinct
             } else fullalign)
               .select((cols.filter(_ endsWith "1") ++ cols.filter(_ endsWith "2")).map(col):_*)
+              .sort('id1, 'id2, 'b1, 'b2)
               .write.format(config.outputFormat)
               .save(config.outputPath + "/align." + config.outputFormat)
           }
