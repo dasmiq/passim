@@ -39,6 +39,8 @@ case class imgCoord(val x: Int, val y: Int, val w: Int, val h: Int) {
   def y2 = y + h
 }
 
+case class DocSpan(uid: Long, begin: Int, end: Int)
+
 // Could parameterized on index type instead of Int
 case class Span(val begin: Int, val end: Int) {
   def length = end - begin
@@ -772,21 +774,15 @@ object PassimApp {
                   None
                 else {
                   for ( i <- 0 until p.size; j <- (i+1) until p.size; if p(i).gid != p(j).gid )
-                    yield(if ( p(i).gid < p(j).gid ) (p(i).uid, p(i).gid, p(j).uid, p(j).gid, p(i).post, p(j).post, p.size) else (p(j).uid, p(j).gid, p(i).uid, p(i).gid, p(j).post, p(i).post, p.size))
+                    yield(if ( p(i).gid < p(j).gid ) (p(i).uid, p(j).uid, p(i).post, p(j).post, p.size) else (p(j).uid, p(i).uid,p(j).post, p(i).post, p.size))
                 }
             }
-              .toDF("uid", "gid", "uid2", "gid2", "post", "post2", "df")
-
-            // pairs.write.parquet(config.outputPath + "/rawpairs.parquet")
-            // sys.exit(0)
+              .toDF("uid", "uid2", "post", "post2", "df")
 
             if ( config.dedup ) {
               val docs = corpus.select('uid, col(config.id), col(groupCol), size('terms) as "nterms")
 
-              pairs
-              // sqlContext.read.load(config.outputPath + "/rawpairs.parquet")
-                .select('uid, 'uid2)
-                .groupBy("uid", "uid2").count
+              pairs.groupBy("uid", "uid2").count
                 .filter('count >= config.minRep)
                 .join(docs, "uid")
                 .join(docs.toDF(docs.columns.map { _ + "2" }:_*), "uid2")
@@ -794,25 +790,25 @@ object PassimApp {
               sys.exit(0)
             }
 
-            pairs.select('uid, 'gid, 'uid2, 'gid2, 'post, 'post2, 'df)
-              .rdd
-              .map {
-              case Row(uid: Long, gid: Long, uid2: Long, gid2: Long,
-                post: Int, post2: Int, df: Int) =>
-                ((uid, gid, uid2, gid2), (post, post2, df))
-            }
-              .groupByKey
-              .filter(_._2.size >= config.minRep)
-              .mapValues(PassFun.increasingMatches)
-              .filter(_._2.size >= config.minRep)
-              .flatMapValues(PassFun.gappedMatches(config.n, config.gap, config.minAlg, _))
-            // Unique IDs will serve as edge IDs in connected component graph
-              .zipWithUniqueId
-              .flatMap { case (((uid1, gid1, uid2, gid2), ((s1, e1), (s2, e2))), mid) =>
-                Array((uid1, gid1, s1, e1, mid), (uid2, gid2, s2, e2, mid)) }
-              .toDF("uid", "gid", "begin", "end", "mid")
-            // But we need to cache so IDs don't get reassigned.
-              .write.parquet(pairsFname)
+            val getPassages =
+              udf { (uid: Long, uid2: Long, post: Seq[Int], post2: Seq[Int], df: Seq[Int]) =>
+                val matches = PassFun.increasingMatches((post, post2, df).zipped.toSeq)
+                if ( matches.size >= config.minRep ) {
+                  PassFun.gappedMatches(config.n, config.gap, config.minAlg, matches)
+                    .map { case ((s1, e1), (s2, e2)) =>
+                      Seq(DocSpan(uid, s1, e1), DocSpan(uid2, s2, e2)) }
+                } else Seq()
+              }
+
+            pairs.groupBy("uid", "uid2")
+              .agg(collect_list("post") as "post", collect_list("post2") as "post2",
+                collect_list("df") as "df")
+              .filter(size('post) >= config.minRep)
+              .select(explode(getPassages('uid, 'uid2, 'post, 'post2, 'df)) as "pair",
+                monotonically_increasing_id() as "mid") // Unique IDs serve as edge IDs in connected component graph
+              .select(explode('pair) as "pass", 'mid)
+              .select($"pass.*", 'mid)
+              .write.parquet(pairsFname) // But we need to cache so IDs don't get reassigned.
           }
 
           val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
@@ -846,7 +842,7 @@ object PassimApp {
             .join(termCorpus, "uid")
             .rdd
             .map({
-              case Row(uid: Long, gid: Long, begin: Int, end: Int, mid: Long, gid2: Long, terms: Seq[_]) => {
+              case Row(uid: Long, begin: Int, end: Int, mid: Long, gid: Long, terms: Seq[_]) => {
                 (mid,
                   PassFun.edgeText(config.gap * 2/3, config.n,
                     IdSeries(uid, gid), terms.asInstanceOf[Seq[String]].toArray, Span(begin, end)))
