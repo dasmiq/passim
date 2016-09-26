@@ -17,6 +17,7 @@ import scala.collection.mutable.{ArrayBuffer, ListBuffer}
 
 import java.security.MessageDigest
 import java.nio.ByteBuffer
+import jaligner.Sequence
 
 case class Config(version: String = BuildInfo.version,
   mode: String = "cluster",
@@ -135,11 +136,31 @@ object PassFun {
     res.toList
   }
 
-  def edgeText(extent: Int, n: Int, id: IdSeries, terms: Array[String], span: Span) = {
-    val (start, end) = (span.begin, span.end)
-    (id, span,
-     if (start <= 0) "" else terms.slice(Math.max(0, start - extent), start + n).mkString(" "),
-     if (end >= terms.size) "" else terms.slice(end + 1 - n, Math.min(terms.size, end + 1 + extent)).mkString(" "))
+  def alignEdge(matchMatrix: jaligner.matrix.Matrix,
+    idx1: Int, idx2: Int, text1: String, text2: String, anchor: String) = {
+    val pad = " this should match "
+    val ps = pad count { _ == ' ' }
+    val t1 = if ( anchor == "L" ) (pad + text1) else (text1 + pad)
+    val t2 = if ( anchor == "L" ) (pad + text2) else (text2 + pad)
+    val alg = jaligner.SmithWatermanGotoh.align(new Sequence(t1), new Sequence(t2),
+      matchMatrix, 5, 0.5f)
+    val s1 = alg.getSequence1()
+    val s2 = alg.getSequence2()
+    val len1 = s1.size - s1.count(_ == '-')
+    val len2 = s2.size - s2.count(_ == '-')
+    if ( (len1+2) <= pad.size || (len2+2) <= pad.size ) {
+      (idx1, idx2)
+    } else if ( anchor == "L" ) {
+      if ( alg.getStart1() + len1 >= t1.size && alg.getStart2() + len2 >= t2.size ) {
+        (idx1 + s1.count(_ == ' ') - (if (s1(s1.size - 1) == ' ') 1 else 0) - ps + 1,
+          idx2 + s2.count(_ == ' ') - (if (s2(s2.size - 1) == ' ') 1 else 0) - ps + 1)
+      } else (idx1, idx2)
+    } else {
+      if ( alg.getStart1() == 0 && alg.getStart2() == 0 ) {
+        (idx1 - s1.count(_ == ' ') - (if (s1(0) == ' ') 1 else 0) - ps + 1,
+          idx2 - s2.count(_ == ' ') - (if (s2(0) == ' ') 1 else 0) - ps + 1)
+      } else (idx1, idx2)
+    }
   }
 
   type Passage = (IdSeries, Span, String, String)
@@ -600,7 +621,8 @@ object PassimApp {
 
   val hashId = udf { (id: String) => hashString(id) }
   val termSpan = udf { (begin: Int, end: Int, terms: Seq[String]) =>
-    terms.slice(Math.max(0, begin), Math.min(terms.size, end)).mkString(" ")
+    terms.slice(Math.max(0, Math.min(terms.size, begin)),
+      Math.max(0, Math.min(terms.size, end))).mkString(" ")
   }
   // val getLocs = udf {
   //   (begin: Int, end: Int, termLocs: Seq[String]) =>
@@ -834,33 +856,37 @@ object PassimApp {
               .save(config.outputPath + "/docs." + config.outputFormat)
           }
 
+          val alignEdge = udf {
+            (idx1: Int, idx2: Int, text1: String, text2: String, anchor: String) =>
+            PassFun.alignEdge(matchMatrix, idx1, idx2, text1, text2, anchor)
+          }
+
           val extent: Int = config.gap * 2/3
           val align = sqlContext.read.parquet(pairsFname)
             .join(termCorpus, "uid")
-            .rdd
-            .map({
-              case Row(uid: Long, begin: Int, end: Int, mid: Long, gid: Long, terms: Seq[_]) => {
-                (mid,
-                  PassFun.edgeText(extent, config.n,
-                    IdSeries(uid, gid), terms.asInstanceOf[Seq[String]].toArray, Span(begin, end)))
-              }
-            })
-            .groupByKey
-            .flatMap(x => {
-              val pass = x._2.toArray
-              // The only reason for this array not to have exactly two
-              // elements would be erroneous recomputation of the passage
-              // pairs.  We've left it unchecked to warn us of errors.
-              PassFun.alignEdges(matchMatrix, config.n, config.minAlg, x._1, pass(0), pass(1))
-            })
+            .select('mid, 'uid, 'gid, 'begin, 'end,
+              termSpan('begin - extent, 'begin, 'terms) as "prefix",
+              termSpan('end, 'end + extent, 'terms) as "suffix")
+            .groupBy("mid")
+            .agg(first("uid") as "uid", last("uid") as "uid2",
+              first("gid") as "gid", last("gid") as "gid2",
+              alignEdge(first("begin"), last("begin"),
+                first("prefix"), last("prefix"), lit("R")) as "begin",
+              alignEdge(first("end"), last("end"),
+                first("suffix"), last("suffix"), lit("L")) as "end")
+            .filter { ($"end._1" - $"begin._1") >= config.minAlg &&
+              ($"end._2" - $"begin._2") >= config.minAlg }
+            .select(explode(array(struct('mid, 'uid, 'gid,
+              $"begin._1" as "begin", $"end._1" as "end"),
+              struct('mid, 'uid2 as "uid", 'gid2 as "gid",
+                $"begin._2" as "begin", $"end._2" as "end"))) as "pair")
+            .select($"pair.*")
 
           if ( config.pairwise || config.duppairs ) {
             align.cache()
             val meta = corpus.drop("uid", "text", "terms", "termCharBegin", "termCharEnd",
               "regions", "pages", "locs")
-            val fullalign = align
-              .map { case (doc, (span, mid)) => (doc.id, span.begin, span.end, mid) }
-              .toDF("uid", "begin", "end", "mid")
+            val fullalign = align.drop("gid")
               .join(corpus.select('uid, col(config.id), col(config.text),
                 'termCharBegin, 'termCharEnd), "uid")
               .rdd
@@ -902,18 +928,22 @@ object PassimApp {
 
           val graphParallelism = sc.defaultParallelism
 
+          val mergeSpans = udf { (begins: Seq[Int], ends: Seq[Int], mids: Seq[Long]) =>
+            PassFun.mergeSpans(config.relOver,
+              begins.zip(ends).map { x => Span(x._1, x._2) }.zip(mids))
+          }
+
           // TODO: Bad column segmentation can interleave two texts,
           // which can lead to unrelated clusters getting merged.  One
           // possible solution would be to avoid merging passages that
           // have poor alignments.
-          align
-            .groupByKey(graphParallelism)
-            .flatMapValues(PassFun.mergeSpans(config.relOver, _))
-            .zipWithUniqueId
-          // This was getting recomputed on different partitions, thus reassigning IDs.
-            .map { case ((doc, (span, edges)), id) =>
-              (id, doc.id, doc.series, span.begin, span.end, edges) }
-            .toDF("nid", "uid", "gid", "begin", "end", "edges")
+          align.groupBy("uid", "gid")
+            .agg(mergeSpans(collect_list("begin"), collect_list("end"),
+              collect_list("mid")) as "spans")
+            .select('uid, 'gid, explode('spans) as "span")
+            .coalesce(graphParallelism)
+            .select(monotonically_increasing_id() as "nid", 'uid, 'gid,
+              $"span._1.begin", $"span._1.end", $"span._2" as "edges")
             .write.parquet(passFname)
         }
 
