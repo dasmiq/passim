@@ -54,9 +54,7 @@ case class Span(val begin: Int, val end: Int) {
   }
 }
 
-case class DocTerms(uid: Long, gid: Long, terms: Array[String])
-
-case class Post(feat: Long, uid: Long, gid: Long, tf: Int, post: Int)
+case class Post(feat: Long, tf: Int, post: Int)
 
 case class IdSeries(id: Long, series: Long)
 
@@ -82,15 +80,6 @@ object CorpusFun {
     val x2 = regions.map(_.x2).max
     val y2 = regions.map(_.y2).max
     imgCoord(x1, y1, x2 - x1, y2 - y1)
-  }
-  def crossCounts(sizes: Array[Int]): Int = {
-    var res: Int = 0
-    for ( i <- 0 until sizes.size ) {
-      for ( j <- (i + 1) until sizes.size ) {
-	res += sizes(i) * sizes(j)
-      }
-    }
-    res
   }
 }
 
@@ -609,7 +598,10 @@ object PassimApp {
       .write.format(config.outputFormat).save(config.outputPath)
   }
 
-  val hashId = udf {(id: String) => hashString(id)}
+  val hashId = udf { (id: String) => hashString(id) }
+  val termSpan = udf { (begin: Int, end: Int, terms: Seq[String]) =>
+    terms.slice(Math.max(0, begin), Math.min(terms.size, end)).mkString(" ")
+  }
   // val getLocs = udf {
   //   (begin: Int, end: Int, termLocs: Seq[String]) =>
   //   if ( termLocs.size >= end )
@@ -751,12 +743,12 @@ object PassimApp {
         if ( !hdfsExists(sc, passFname) ) {
           val groupCol = if ( raw.columns.contains(config.group) ) config.group else config.id
 
-          val termCorpus = corpus.select('uid, hashId(col(groupCol)) as "gid", 'terms).as[DocTerms]
+          val termCorpus = corpus.select('uid, hashId(col(groupCol)) as "gid", 'terms)
 
           if ( !hdfsExists(sc, pairsFname) ) {
             val minFeatLen: Double = config.wordLength * config.n
 
-            val pairs = termCorpus.flatMap { case DocTerms(uid, gid, terms) =>
+            val getPostings = udf { (terms: Seq[String]) =>
               terms.sliding(config.n)
                 .zipWithIndex
                 .filter { _._1.map(_.size).sum >= minFeatLen }
@@ -765,18 +757,25 @@ object PassimApp {
                 .groupBy(_._1)
               // Store the count and first posting; could store
               // some other fixed number of postings.
-                .map { case (feat, post) => Post(feat, uid, gid, post.size, post(0)._2) }
+                .map { case (feat, post) => Post(feat, post.size, post(0)._2) }
+                .toSeq
             }
-              .filter { _.tf == 1 }
-              .groupByKey(_.feat).flatMapGroups { (k, v) =>
-                val p = v.toArray
-                if ( p.size < 2 || p.size > config.maxDF )
-                  None
-                else {
-                  for ( i <- 0 until p.size; j <- (i+1) until p.size; if p(i).gid != p(j).gid )
-                    yield(if ( p(i).gid < p(j).gid ) (p(i).uid, p(j).uid, p(i).post, p(j).post, p.size) else (p(j).uid, p(i).uid,p(j).post, p(i).post, p.size))
-                }
+
+            val crossPostings = udf { (uid: Seq[Long], gid: Seq[Long], post: Seq[Int]) =>
+              for ( i <- 0 until uid.size; j <- (i+1) until uid.size; if gid(i) != gid(j) )
+                yield(if ( gid(i) < gid(j) ) (uid(i), uid(j), post(i), post(j), uid.size) else (uid(j), uid(i), post(j), post(i), uid.size))
             }
+
+            val pairs = termCorpus
+              .select('uid, 'gid, explode(getPostings('terms)) as "post")
+              .select('uid, 'gid, $"post.*")
+              .filter { 'tf === 1 }
+              .groupBy("feat")
+              .agg(collect_list("uid") as "uid", collect_list("gid") as "gid",
+                collect_list("post") as "post")
+              .filter { size('uid) >= 2 && size('uid) <= config.maxDF }
+              .select(explode(crossPostings('uid, 'gid, 'post)) as "pair")
+              .select($"pair.*")
               .toDF("uid", "uid2", "post", "post2", "df")
 
             if ( config.dedup ) {
@@ -835,16 +834,14 @@ object PassimApp {
               .save(config.outputPath + "/docs." + config.outputFormat)
           }
 
-          // TODO: Should probably prune document pairs that come from
-          // series pairs with inordinate overlap.  Or perhaps that
-          // should be an ancillary diagnostic program.
+          val extent: Int = config.gap * 2/3
           val align = sqlContext.read.parquet(pairsFname)
             .join(termCorpus, "uid")
             .rdd
             .map({
               case Row(uid: Long, begin: Int, end: Int, mid: Long, gid: Long, terms: Seq[_]) => {
                 (mid,
-                  PassFun.edgeText(config.gap * 2/3, config.n,
+                  PassFun.edgeText(extent, config.n,
                     IdSeries(uid, gid), terms.asInstanceOf[Seq[String]].toArray, Span(begin, end)))
               }
             })
