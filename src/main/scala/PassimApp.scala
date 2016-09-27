@@ -624,6 +624,7 @@ object PassimApp {
     terms.slice(Math.max(0, Math.min(terms.size, begin)),
       Math.max(0, Math.min(terms.size, end))).mkString(" ")
   }
+  val getPassage = udf { (text: String, begin: Int, end: Int) => text.substring(begin, end) }
   // val getLocs = udf {
   //   (begin: Int, end: Int, termLocs: Seq[String]) =>
   //   if ( termLocs.size >= end )
@@ -999,7 +1000,7 @@ object PassimApp {
           .withColumn("begin", 'termCharBegin('begin))
           .withColumn("end", 'termCharEnd('end))
           .drop("termCharBegin", "termCharEnd")
-          .withColumn(config.text, col(config.text).substr('begin, 'end - 'begin))
+          .withColumn(config.text, getPassage(col(config.text), 'begin, 'end))
           .selectRegions("regions", "pages")
           .selectLocs("pages")
           .selectLocs("locs")
