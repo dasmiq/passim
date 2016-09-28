@@ -391,7 +391,7 @@ object BoilerApp {
   }
 
   // TODO: Unescape other character entities to UTF.
-  def cleanXML(s: String): String = {
+  val cleanXML = udf { (s: String) =>
     s.replaceAll("</?[A-Za-z][^>]*>", "")
       .replaceAll("&quot;", "\"")
       .replaceAll("&apos;", "'")
@@ -419,8 +419,8 @@ object BoilerApp {
 
     val raw = sqlContext.read.format(config.inputFormat).load(config.inputPaths)
     val corpus = raw.tokenize(config.text)
-      .select($"id", $"series", datediff($"date", lit("1970-01-01")) as "day",
-        $"issue", indexer($"terms") as "index", $"text")
+      .select('id, 'series, datediff('date, lit("1970-01-01")) as "day",
+        'issue, indexer('terms) as "index", cleanXML('text) as "text")
       .withColumn("daybin", ($"day" / config.history).cast("int"))
 
     val corpus2 = corpus.select($"id" as "pid", $"series" as "pseries",
@@ -440,9 +440,7 @@ object BoilerApp {
       .flatMap((c: Row) => c match {
         case Row(pid: String, pindex: Map[_, _], ptext: String,
           id: String, index: Map[_, _], text: String) => {
-          val cs = cleanXML(text)
           val cm = index.asInstanceOf[Map[String, Int]]
-          val ps = cleanXML(ptext)
           val pm = pindex.asInstanceOf[Map[String, Int]]
           val inc = PassFun.increasingMatches(pm
             .flatMap(z => if (cm.contains(z._1)) Some((z._2, cm(z._1), 1)) else None))
@@ -451,7 +449,7 @@ object BoilerApp {
           if ( inc.size >= config.minRep && gapped.size > 0 ) {
             // TODO: Give high cost to newline mismatches.
             Some(PassFun.alignStrings(config.n * 5, config.gap * 5, matchMatrix,
-              (pid, 0, ps.size, ps.size, ps), (id, 0, cs.size, cs.size, cs)))
+              (pid, 0, ptext.size, ptext.size, ptext), (id, 0, text.size, text.size, text)))
             // Some(PassAlign(pid, id, "", "", 0, 1, 1, 0, 1, 1, 1, -1))
           } else {
             None
