@@ -136,9 +136,13 @@ object PassFun {
     res.toList
   }
 
+  // TODO: The right thing to do is to force the alignment to go
+  // through the right or left corner, but for now we hack it by
+  // padding the left or right edge with duplicate text.
   def alignEdge(matchMatrix: jaligner.matrix.Matrix,
     idx1: Int, idx2: Int, text1: String, text2: String, anchor: String) = {
-    val pad = " this should match "
+    var (res1, res2) = (idx1, idx2)
+    val pad = " this text is long and should match "
     val ps = pad count { _ == ' ' }
     val t1 = if ( anchor == "L" ) (pad + text1) else (text1 + pad)
     val t2 = if ( anchor == "L" ) (pad + text2) else (text2 + pad)
@@ -148,69 +152,21 @@ object PassFun {
     val s2 = alg.getSequence2()
     val len1 = s1.size - s1.count(_ == '-')
     val len2 = s2.size - s2.count(_ == '-')
-    if ( (len1+2) <= pad.size || (len2+2) <= pad.size ) {
-      (idx1, idx2)
-    } else if ( anchor == "L" ) {
-      if ( alg.getStart1() + len1 >= t1.size && alg.getStart2() + len2 >= t2.size ) {
-        (idx1 + s1.count(_ == ' ') - (if (s1(s1.size - 1) == ' ') 1 else 0) - ps + 1,
-          idx2 + s2.count(_ == ' ') - (if (s2(s2.size - 1) == ' ') 1 else 0) - ps + 1)
-      } else (idx1, idx2)
-    } else {
-      if ( alg.getStart1() == 0 && alg.getStart2() == 0 ) {
-        (idx1 - s1.count(_ == ' ') - (if (s1(0) == ' ') 1 else 0) - ps + 1,
-          idx2 - s2.count(_ == ' ') - (if (s2(0) == ' ') 1 else 0) - ps + 1)
-      } else (idx1, idx2)
-    }
-  }
-
-  type Passage = (IdSeries, Span, String, String)
-  def alignEdges(matchMatrix: jaligner.matrix.Matrix, n: Int, minAlg: Int,
-		 pid: Long, pass1: Passage, pass2: Passage) = {
-    val (id1, span1, prefix1, suffix1) = pass1
-    val (id2, span2, prefix2, suffix2) = pass2
-    var (s1, e1) = (span1.begin, span1.end)
-    var (s2, e2) = (span2.begin, span2.end)
-
-    if ( s1 > 0 && s2 > 0 ) {
-      val palg = jaligner.SmithWatermanGotoh.align(new jaligner.Sequence(prefix1),
-						   new jaligner.Sequence(prefix2),
-						   matchMatrix, 5, 0.5f)
-      val ps1 = palg.getSequence1()
-      val ps2 = palg.getSequence2()
-      val plen1 = ps1.size - ps1.count(_ == '-')
-      val plen2 = ps2.size - ps2.count(_ == '-')
-	
-      if ( ps1.size > 0 && ps2.size > 0 && palg.getStart1() + plen1 >= prefix1.size
-	   && palg.getStart2() + plen2 >= prefix2.size ) {
-	val pextra = palg.getIdentity() - prefix1.split(" ").takeRight(n).mkString(" ").size
-	if ( pextra > 2 ) {
-	  s1 -= ps1.count(_ == ' ') - (if (ps1(0) == ' ') 1 else 0) - n + 1
-	  s2 -= ps2.count(_ == ' ') - (if (ps2(0) == ' ') 1 else 0) - n + 1
-	}
+    val extra = alg.getIdentity() - pad.size
+    if ( s1.size > 0 && s2.size > 0 && extra > 2 ) {
+      if ( anchor == "L" ) {
+        if ( alg.getStart1() == 0 && alg.getStart2() == 0 ) {
+          res1 += s1.count(_ == ' ') - (if (s1(s1.size - 1) == ' ') 1 else 0) - ps + 1
+          res2 += s2.count(_ == ' ') - (if (s2(s2.size - 1) == ' ') 1 else 0) - ps + 1
+        }
+      } else if ( anchor == "R" ) {
+        if ( alg.getStart1() + len1 >= t1.size && alg.getStart2() + len2 >= t2.size ) {
+          res1 -= s1.count(_ == ' ') - (if (s1(0) == ' ') 1 else 0) - ps + 1
+          res2 -= s2.count(_ == ' ') - (if (s2(0) == ' ') 1 else 0) - ps + 1
+        }
       }
     }
-
-    if ( suffix1.size > 0 && suffix2.size > 0 ) {
-      val salg = jaligner.SmithWatermanGotoh.align(new jaligner.Sequence(suffix1),
-						   new jaligner.Sequence(suffix2),
-						   matchMatrix, 5, 0.5f)
-      val ss1 = salg.getSequence1()
-      val ss2 = salg.getSequence2()
-	
-      if ( ss1.size > 0 && ss2.size > 0 && salg.getStart1() == 0 && salg.getStart2() == 0 ) {
-	val sextra = salg.getIdentity() - suffix1.split(" ").take(n).mkString(" ").size
-	if ( sextra > 2 ) {
-	  e1 += ss1.count(_ == ' ') - (if (ss1(ss1.size - 1) == ' ') 1 else 0) - n + 1
-	  e2 += ss2.count(_ == ' ') - (if (ss2(ss2.size - 1) == ' ') 1 else 0) - n + 1
-	}
-      }
-    }
-
-    if ( ( e1 - s1 ) >= minAlg && ( e2 - s2 ) >= minAlg )
-      List((id1, (Span(s1, e1), pid)),
-	   (id2, (Span(s2, e2), pid)))
-    else
-      Nil
+    (res1, res2)
   }
 
   // HACK: This is only guaranteed to work when rover == 0.
