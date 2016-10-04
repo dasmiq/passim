@@ -413,7 +413,8 @@ object BoilerApp {
       config.save(configFname, sqlContext)
     }
 
-    val algFname = config.outputPath + "/alg.json"
+    val pairFname = config.outputPath + "/boilerPairs"
+    val algFname = config.outputPath + "/boilerAlg"
 
     val indexer = udf {(terms: Seq[String]) => hapaxIndex(config.n, terms)}
     val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
@@ -422,21 +423,23 @@ object BoilerApp {
       (id: String, issue: String, index: Map[String, Int], text: String,
         pid: Seq[String], pissue: Seq[String],
         pindex: Seq[Map[String, Int]], ptext: Seq[String]) =>
-      val res = new ListBuffer[PassAlign]
+      val res = new ListBuffer[(String, String, String, String)]
       for ( i <- 0 until pid.size; if pissue(i) < issue ) {
         val inc = PassFun.increasingMatches(pindex(i)
           .flatMap { z => if (index.contains(z._1)) Some((z._2, index(z._1), 1)) else None })
         val gapped = PassFun.gappedMatches(config.n, config.gap, config.minAlg, inc)
         // println("# rep: " + (pid, id, inc.size, gapped.size))
         if ( inc.size >= config.minRep && gapped.size > 0 ) {
-          // TODO: Give high cost to newline mismatches.
-          val pt = ptext(i)
-          res += PassFun.alignStrings(config.n * 5, config.gap * 5, matchMatrix,
-            (pid(i), 0, pt.size, pt.size, pt), (id, 0, text.size, text.size, text))
-        // PassAlign(pid, id, "", "", 0, 1, 1, 0, 1, 1, 1, -1)
+          res += ((pid(i), id, ptext(i), text))
         }
       }
       res.toSeq
+    }
+
+    val pairAlign = udf { (id1: String, id2: String, text1: String, text2: String) =>
+      // TODO: Give high cost to newline mismatches.
+      PassFun.alignStrings(config.n * 5, config.gap * 5, matchMatrix,
+        (id1, 0, text1.size, text1.size, text1), (id2, 0, text2.size, text2.size, text2))
     }
 
     val raw = sqlContext.read.format(config.inputFormat).load(config.inputPaths)
@@ -455,9 +458,14 @@ object BoilerApp {
         collect_list("id").over(w), collect_list("issue").over(w),
         collect_list("index").over(w), collect_list("text").over(w)) as "pairs")
       .select(explode('pairs) as "pair")
+      .select($"pair.*").toDF("id1", "id2", "text1", "text2")
+      .repartition()
+      .write.parquet(pairFname)
+
+    sqlContext.read.parquet(pairFname)
+      .select(pairAlign('id1, 'id2, 'text1, 'text2) as "pair")
       .select($"pair.*")
       .write.json(algFname)
-      // .write.parquet(algFname)
   }
 
   def bpSegment(config: Config, sqlContext: SQLContext) = {
