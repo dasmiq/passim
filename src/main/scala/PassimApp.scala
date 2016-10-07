@@ -64,10 +64,6 @@ case class PassAlign(id1: String, id2: String,
   s1: String, s2: String, b1: Int, e1: Int, n1: Int, b2: Int, e2: Int, n2: Int,
   matches: Int, score: Float)
 
-case class BoilerPass(id: String, termCount: Int,
-  passageBegin: Array[Int], passageEnd: Array[Int], passageLastId: Array[String],
-  alignments: Array[PassAlign])
-
 case class NewDoc(newid: String, newtext: String, aligned: Boolean)
 
 case class ClusterParent(id: String, begin: Long, date: String, matchProp: Float, score: Float)
@@ -413,7 +409,8 @@ object BoilerApp {
       config.save(configFname, sqlContext)
     }
 
-    val algFname = config.outputPath + "/alg.json"
+    val algFname = config.outputPath + "/boilerAlign"
+    val passFname = config.outputPath + "/boilerPass"
 
     val indexer = udf {(terms: Seq[String]) => hapaxIndex(config.n, terms)}
     val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
@@ -456,27 +453,53 @@ object BoilerApp {
         collect_list("index").over(w), collect_list("text").over(w)) as "pairs")
       .select(explode('pairs) as "pair")
       .select($"pair.*")
-      .write.json(algFname)
-      // .write.parquet(algFname)
+      .write.parquet(algFname)
+
+    val alignedPassages = udf { (s1: String, s2: String) =>
+      var start = 0
+      val pass = ArrayBuffer[(Double, Double, String, String)]()
+      for ( end <- 1 until s2.size ) {
+        if ( s2(end) == '\n' ) {
+          val alg1 = s1.substring(start, end+1)
+          val alg2 = s2.substring(start, end+1)
+          val t2 = alg2.replaceAll("-", "")
+
+          val matches = alg1.zip(alg2).count(x => x._1 == x._2)
+          pass += ((matches * 1.0 / t2.size, alg2.size * 1.0 / t2.size, alg2, alg1))
+          // pass += ((matches * 1.0 / t2.size, t2, alg1.replaceAll("-", "")))
+          // if ( (matches * 1.0) / t2.size > 0.5 ) {
+          //   pass += t2
+          // } else {
+          //   pass += "-"
+          // }
+          start = end + 1
+        }
+      }
+      pass.toSeq
+    }
+
+    sqlContext.read.parquet(algFname)
+      .select('id1, 'id2, alignedPassages('s1, 's2) as "pass")
+      .write.json(passFname)
   }
 
-  def bpSegment(config: Config, sqlContext: SQLContext) = {
-    import sqlContext.implicits._
+  // def bpSegment(config: Config, sqlContext: SQLContext) = {
+  //   import sqlContext.implicits._
 
-    val fs = FileSystem.get(sqlContext.sparkContext.hadoopConfiguration)
+  //   val fs = FileSystem.get(sqlContext.sparkContext.hadoopConfiguration)
 
-    // sqlContext.read.parquet(algFname)
-    //   .withColumnRenamed("id", "aid").drop("alignments")
-    //   .join(corpus.drop("terms").drop("uid"), 'aid === 'id, "right_outer")
-    //   .explode('id, 'text, 'passageBegin, 'passageEnd, 'termCharEnd)(splitDocs)
-    //   .drop("aid").withColumnRenamed("id", "docid").withColumnRenamed("newid", "id")
-    //   .drop("text").withColumnRenamed("newtext", "text")
-    //   .drop("termCharBegin").drop("termCharEnd")
-    //   .drop("termPages").drop("termRegions").drop("termLocs")
-    //   .drop("passageBegin").drop("passageEnd").drop("passageLastId")
-    //   .write.format(config.outputFormat)
-    //   .save(config.outputPath + "/corpus." + config.outputFormat)
-  }
+  //   sqlContext.read.parquet(algFname)
+  //     .withColumnRenamed("id", "aid").drop("alignments")
+  //     .join(corpus.drop("terms").drop("uid"), 'aid === 'id, "right_outer")
+  //     .explode('id, 'text, 'passageBegin, 'passageEnd, 'termCharEnd)(splitDocs)
+  //     .drop("aid").withColumnRenamed("id", "docid").withColumnRenamed("newid", "id")
+  //     .drop("text").withColumnRenamed("newtext", "text")
+  //     .drop("termCharBegin").drop("termCharEnd")
+  //     .drop("termPages").drop("termRegions").drop("termLocs")
+  //     .drop("passageBegin").drop("passageEnd").drop("passageLastId")
+  //     .write.format(config.outputFormat)
+  //     .save(config.outputPath + "/corpus." + config.outputFormat)
+  // }
 }
 
 case class TokText(terms: Array[String], termCharBegin: Array[Int], termCharEnd: Array[Int])
@@ -619,7 +642,7 @@ object PassimApp {
     val conf = new SparkConf().setAppName("Passim Application")
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
       .registerKryoClasses(Array(classOf[imgCoord], classOf[Span], classOf[Post],
-        classOf[PassAlign], classOf[BoilerPass],
+        classOf[PassAlign],
         classOf[TokText], classOf[IdSeries]))
     val sc = new SparkContext(conf)
     val sqlContext = new SQLContext(sc)
