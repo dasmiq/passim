@@ -506,10 +506,9 @@ case class TokText(terms: Array[String], termCharBegin: Array[Int], termCharEnd:
 
 object PassimApp {
   def hashString(s: String): Long = {
-    nonNegativeMod(ByteBuffer.wrap(
+    ByteBuffer.wrap(
       MessageDigest.getInstance("MD5").digest(s.getBytes("UTF-8"))
-    ).getLong,
-    1L<<62)
+    ).getLong
   }
   implicit class TextTokenizer(df: DataFrame) {
     val tokenizeCol = udf {(text: String) =>
@@ -628,14 +627,6 @@ object PassimApp {
     val fs = hdfsPath.getFileSystem(sc.hadoopConfiguration)
     val qualified = hdfsPath.makeQualified(fs.getUri, fs.getWorkingDirectory)
     fs.exists(qualified)
-  }
-  def nonNegativeMod(x: Int, mod: Int): Int = {
-    val rawMod = x % mod
-    rawMod + (if (rawMod < 0) mod else 0)
-  }
-  def nonNegativeMod(x: Long, mod: Long): Long = {
-    val rawMod = x % mod
-    rawMod + (if (rawMod < 0) mod else 0)
   }
 
   def main(args: Array[String]) {
