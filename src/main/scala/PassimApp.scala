@@ -36,9 +36,21 @@ case class Config(version: String = BuildInfo.version,
   }
 }
 
-case class imgCoord(val x: Int, val y: Int, val w: Int, val h: Int) {
+case class Coords(x: Int, y: Int, w: Int, h: Int, b: Int) {
   def x2 = x + w
   def y2 = y + h
+  def merge(that: Coords): Coords = {
+    val xnew = Math.min(x, that.x)
+    val ynew = Math.min(y, that.y)
+    Coords(xnew, ynew,
+      Math.max(this.x2, that.x2) - xnew,
+      Math.max(this.y2, that.y2) - ynew,
+      Math.max(this.y2, that.y2) - ynew)
+  }
+}
+
+case class Region(start: Int, length: Int, coords: Coords) {
+  def end = start + length
 }
 
 case class DocSpan(uid: Long, begin: Int, end: Int)
@@ -67,19 +79,6 @@ case class PassAlign(id1: String, id2: String,
 case class NewDoc(newid: String, newtext: String, aligned: Boolean)
 
 case class ClusterParent(id: String, begin: Long, date: String, matchProp: Float, score: Float)
-
-object CorpusFun {
-  def boundingBox(regions: Array[imgCoord]): imgCoord = {
-    // The right thing to do here is to give imgCoord a merge
-    // operation usable with reduce so that we can make only one pass
-    // through regions.
-    val x1 = regions.map(_.x).min
-    val y1 = regions.map(_.y).min
-    val x2 = regions.map(_.x2).max
-    val y2 = regions.map(_.y2).max
-    imgCoord(x1, y1, x2 - x1, y2 - y1)
-  }
-}
 
 object PassFun {
   def increasingMatches(matches: Iterable[(Int,Int,Int)]): Array[(Int,Int,Int)] = {
@@ -532,12 +531,19 @@ object PassimApp {
           .drop("_tokens")
       }
     }
+    val boundRegions = udf {(begin: Int, end: Int, regions: Seq[Region]) =>
+      Seq(regions
+        .filter { r => r.start <= end && r.end >= begin }
+        .map { _.coords }
+        .reduce { _.merge(_) })
+    }
     def selectRegions(regionCol: String, pageCol: String): DataFrame = {
       if ( df.columns.contains(regionCol) ) {
         if ( df.columns.contains(pageCol) ) {
+          // First, find the bounds of pages; then, project them to regions.
           df
         } else {
-          df
+          df.withColumn("regions", boundRegions(col("begin"), col("end"), col(regionCol)))
         }
       } else {
         df
@@ -632,7 +638,7 @@ object PassimApp {
   def main(args: Array[String]) {
     val conf = new SparkConf().setAppName("Passim Application")
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-      .registerKryoClasses(Array(classOf[imgCoord], classOf[Span], classOf[Post],
+      .registerKryoClasses(Array(classOf[Coords], classOf[Region], classOf[Span], classOf[Post],
         classOf[PassAlign],
         classOf[TokText], classOf[IdSeries]))
     val sc = new SparkContext(conf)
