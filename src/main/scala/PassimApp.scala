@@ -531,11 +531,21 @@ object PassimApp {
           .drop("_tokens")
       }
     }
-    val boundRegions = udf {(begin: Int, end: Int, regions: Seq[Region]) =>
-      Seq(regions
-        .filter { r => r.start <= end && r.end >= begin }
-        .map { _.coords }
-        .reduce { _.merge(_) })
+    val boundRegions = udf {(begin: Int, end: Int, regions: Seq[Row]) =>
+      if ( regions == null )
+        Seq[Coords]()
+      else {
+        // JSON source sorts field names, changing order
+        Seq(regions
+          .filter { r => r.getAs[Long]("start") <= end &&
+          (r.getAs[Long]("start")+r.getAs[Long]("length")) >= begin }
+          .map { r =>
+          val c = r.getAs[Row]("coords")
+          Coords(c.getAs[Long]("x").toInt, c.getAs[Long]("y").toInt,
+            c.getAs[Long]("w").toInt, c.getAs[Long]("h").toInt, c.getAs[Long]("h").toInt)
+        }
+          .reduce { _.merge(_) })
+      }
     }
     def selectRegions(regionCol: String, pageCol: String): DataFrame = {
       if ( df.columns.contains(regionCol) ) {
