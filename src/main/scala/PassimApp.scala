@@ -15,6 +15,7 @@ import java.sql.Date
 
 import collection.JavaConversions._
 import scala.collection.mutable.{ArrayBuffer, ListBuffer}
+import scala.util.Try
 
 import java.security.MessageDigest
 import java.nio.ByteBuffer
@@ -532,20 +533,15 @@ object PassimApp {
       }
     }
     val boundRegions = udf {(begin: Int, end: Int, regions: Seq[Row]) =>
-      if ( regions == null )
-        Seq[Coords]()
-      else {
-        // JSON source sorts field names, changing order
-        Seq(regions
-          .filter { r => r.getAs[Long]("start") <= end &&
-          (r.getAs[Long]("start")+r.getAs[Long]("length")) >= begin }
-          .map { r =>
-          val c = r.getAs[Row]("coords")
-          Coords(c.getAs[Long]("x").toInt, c.getAs[Long]("y").toInt,
-            c.getAs[Long]("w").toInt, c.getAs[Long]("h").toInt, c.getAs[Long]("h").toInt)
-        }
-          .reduce { _.merge(_) })
-      }
+      Try(Seq(regions
+        .filter { case Row(start: Int, length: Int, coords: Row) =>
+          start <= end && (start + length) >= begin }
+        .map { case Row(start: Int, length: Int, coords: Row) =>
+          coords match {
+            case Row(x: Int, y: Int, w: Int, h: Int, b: Int) => Coords(x, y, w, h, b)
+          } }
+        .reduce { _.merge(_) }))
+        .getOrElse(Seq[Coords]())
     }
     def selectRegions(regionCol: String, pageCol: String): DataFrame = {
       if ( df.columns.contains(regionCol) ) {
@@ -992,5 +988,7 @@ object PassimApp {
 
       out.write.format(config.outputFormat).save(outFname)
     }
+
+    sc.stop()
   }
 }
