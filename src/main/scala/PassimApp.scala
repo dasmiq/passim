@@ -977,7 +977,9 @@ object PassimApp {
         sqlContext.read.parquet(clusterFname)
           .join(corpus.drop("terms"), "uid")
           .withColumn("begin", 'termCharBegin('begin))
-          .withColumn("end", 'termCharEnd('end))
+          .withColumn("end",
+            'termCharEnd(when('end < size('termCharEnd), 'end)
+              .otherwise(size('termCharEnd) - 1)))
           .drop("termCharBegin", "termCharEnd")
           .withColumn(config.text, getPassage(col(config.text), 'begin, 'end))
           .selectRegions("regions", "pages")
