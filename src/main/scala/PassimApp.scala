@@ -827,20 +827,11 @@ object PassimApp {
             sqlContext.read.parquet(pairsFname)
               .select('uid, 'mid)
               .join(corpus.select('uid, col(config.id), col(config.text)), "uid")
-              .rdd
-              .map({
-                case Row(uid: Long, mid: Long, id: String, text: String) => {
-                  (mid, (id, 0, text.size, text.size, text))
-                }
-              })
-              .groupByKey
-              .map(x => {
-                val docs = x._2.toArray
-                PassFun.alignStrings(config.n * 5, config.gap * 5, matchMatrix, docs(0), docs(1))
-              })
-              .toDF
-              .write
-              .format(config.outputFormat)
+              .groupBy("mid")
+              .agg(first("id") as "id1", last("id") as "id2",
+                alignStrings(first(config.text) as "s1", last(config.text) as "s2") as "alg")
+              .select('id1, 'id2, $"alg.*")
+              .write.format(config.outputFormat)
               .save(config.outputPath + "/docs." + config.outputFormat)
           }
 
