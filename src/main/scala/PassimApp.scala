@@ -77,6 +77,8 @@ case class PassAlign(id1: String, id2: String,
   s1: String, s2: String, b1: Int, e1: Int, n1: Int, b2: Int, e2: Int, n2: Int,
   matches: Int, score: Float)
 
+case class AlignedStrings(s1: String, s2: String, matches: Int, score: Float)
+
 case class NewDoc(newid: String, newtext: String, aligned: Boolean)
 
 case class ClusterParent(id: String, begin: Long, date: String, matchProp: Float, score: Float)
@@ -813,6 +815,12 @@ object PassimApp {
           }
 
           val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
+          val alignStrings = udf { (s1: String, s2: String) =>
+            val chunks = PassFun.recursivelyAlignStrings(config.n, config.gap * config.gap,
+              matchMatrix, s1.replaceAll("-", "_"), s2.replaceAll("-", "_"))
+            AlignedStrings(chunks.map(_.s1).mkString, chunks.map(_.s2).mkString,
+              chunks.map(_.matches).sum, chunks.map(_.score).sum)
+          }
 
           // TODO: Should probably be a separate mode.
           if ( config.docwise ) {
@@ -869,21 +877,19 @@ object PassimApp {
             val fullalign = align.drop("gid")
               .join(corpus.select('uid, col(config.id), col(config.text),
                 'termCharBegin, 'termCharEnd), "uid")
-              .rdd
-              .map {
-              case Row(uid: Long, begin: Int, end: Int, mid: Long,
-                id: String, text: String, termCharBegin: Seq[_], termCharEnd: Seq[_]) =>
-                val tcb = termCharBegin.asInstanceOf[Seq[Int]]
-                val tce = termCharEnd.asInstanceOf[Seq[Int]]
-
-                (mid, (id, begin, end, tcb.size, text.substring(tcb(begin), tce(end)))) }
-              .groupByKey
-              .map { x =>
-              val d1 = x._2.head
-              val d2 = x._2.last
-              PassFun.alignStrings(config.n * 5, config.gap * 5, matchMatrix, d1, d2)
-            }
-              .toDF
+              .withColumn("begin", 'termCharBegin('begin))
+              .withColumn("end",
+                'termCharEnd(when('end < size('termCharEnd), 'end)
+                  .otherwise(size('termCharEnd) - 1)))
+              .drop("termCharBegin", "termCharEnd")
+              .withColumn(config.text, getPassage(col(config.text), 'begin, 'end))
+              .groupBy("mid")
+              .agg(first("uid") as "uid1", last("uid") as "uid2",
+                first(config.id) as "id1", last(config.id) as "id2",
+                alignStrings(first(config.text) as "s1", last(config.text) as "s2") as "alg",
+                first("begin") as "b1", first("end") as "e1",
+                last("begin") as "b2", last("end") as "e2")
+              .select('uid1, 'uid2, 'id1, 'id2, $"alg.*", 'b1, 'e1, 'b2, 'e2)
               .join(meta.toDF(meta.columns.map { _ + "1" }:_*), "id1")
               .join(meta.toDF(meta.columns.map { _ + "2" }:_*), "id2")
 
