@@ -1,9 +1,8 @@
 package passim
 
-import org.apache.spark.{SparkConf, SparkContext}
-import org.apache.spark.SparkContext._
+import org.apache.spark.SparkConf
 import org.apache.spark.graphx._
-import org.apache.spark.sql.{SQLContext, DataFrame, Row}
+import org.apache.spark.sql.{SparkSession, DataFrame, Row}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.expressions.Window
 import org.apache.spark.storage.StorageLevel
@@ -31,9 +30,9 @@ case class Config(version: String = BuildInfo.version,
   id: String = "id", group: String = "series", text: String = "text",
   inputFormat: String = "json", outputFormat: String = "json",
   inputPaths: String = "", outputPath: String = "") {
-  def save(fname: String, sqlContext: SQLContext) {
-    import sqlContext.implicits._
-    sqlContext.sparkContext.parallelize(this :: Nil).toDF.coalesce(1).write.json(fname)
+  def save(fname: String, spark: SparkSession) {
+    import spark.implicits._
+    spark.createDataset(this :: Nil).toDF.coalesce(1).write.json(fname)
   }
 }
 
@@ -399,16 +398,16 @@ object BoilerApp {
       .replaceAll("&amp;", "&")
   }
 
-  def matchPages(config: Config, sqlContext: SQLContext) = {
-    import sqlContext.implicits._
+  def matchPages(config: Config, spark: SparkSession) = {
+    import spark.implicits._
     import PassimApp.TextTokenizer
 
-    val fs = FileSystem.get(sqlContext.sparkContext.hadoopConfiguration)
+    val fs = FileSystem.get(spark.sparkContext.hadoopConfiguration)
     val configFname = config.outputPath + "/conf"
     if ( fs.exists(new Path(configFname)) ) {
       // TODO: Read configuration
     } else {
-      config.save(configFname, sqlContext)
+      config.save(configFname, spark)
     }
 
     val algFname = config.outputPath + "/boilerAlign"
@@ -438,7 +437,7 @@ object BoilerApp {
       res.toSeq
     }
 
-    val raw = sqlContext.read.format(config.inputFormat).load(config.inputPaths)
+    val raw = spark.read.format(config.inputFormat).load(config.inputPaths)
     val corpus = raw.tokenize(config.text)
       .select('id, 'series, datediff('date, lit("1970-01-01")) as "day",
         'issue, indexer('terms) as "index", cleanXML('text) as "text")
@@ -480,17 +479,17 @@ object BoilerApp {
       pass.toSeq
     }
 
-    sqlContext.read.parquet(algFname)
+    spark.read.parquet(algFname)
       .select('id1, 'id2, alignedPassages('s1, 's2) as "pass")
       .write.json(passFname)
   }
 
-  // def bpSegment(config: Config, sqlContext: SQLContext) = {
-  //   import sqlContext.implicits._
+  // def bpSegment(config: Config, spark: SparkSession) = {
+  //   import spark.implicits._
 
-  //   val fs = FileSystem.get(sqlContext.sparkContext.hadoopConfiguration)
+  //   val fs = FileSystem.get(spark.sparkContext.hadoopConfiguration)
 
-  //   sqlContext.read.parquet(algFname)
+  //   spark.read.parquet(algFname)
   //     .withColumnRenamed("id", "aid").drop("alignments")
   //     .join(corpus.drop("terms").drop("uid"), 'aid === 'id, "right_outer")
   //     .explode('id, 'text, 'passageBegin, 'passageEnd, 'termCharEnd)(splitDocs)
@@ -566,9 +565,9 @@ object PassimApp {
     }
   }
 
-  def matchParents(config: Config, sqlContext: SQLContext) {
-    import sqlContext.implicits._
-    val raw = sqlContext.read.format(config.inputFormat).load(config.inputPaths)
+  def matchParents(config: Config, spark: SparkSession) {
+    import spark.implicits._
+    val raw = spark.read.format(config.inputFormat).load(config.inputPaths)
     val corpus = raw.tokenize(config.text)
 
     val candidates = corpus.select($"cluster" as "p_cluster",
@@ -636,22 +635,27 @@ object PassimApp {
   //         .map(x => CorpusFun.boundingBox(x._2.map(_._2).toArray)).toArray
   //   }
   // }
-  def hdfsExists(sc: SparkContext, path: String) = {
+  def hdfsExists(spark: SparkSession, path: String) = {
     val hdfsPath = new Path(path)
-    val fs = hdfsPath.getFileSystem(sc.hadoopConfiguration)
+    val fs = hdfsPath.getFileSystem(spark.sparkContext.hadoopConfiguration)
     val qualified = hdfsPath.makeQualified(fs.getUri, fs.getWorkingDirectory)
     fs.exists(qualified)
   }
 
   def main(args: Array[String]) {
-    val conf = new SparkConf().setAppName("Passim Application")
+    val conf = new SparkConf()
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
       .registerKryoClasses(Array(classOf[Coords], classOf[Region], classOf[Span], classOf[Post],
         classOf[PassAlign],
         classOf[TokText], classOf[IdSeries]))
-    val sc = new SparkContext(conf)
-    val sqlContext = new SQLContext(sc)
-    import sqlContext.implicits._
+
+    val spark = SparkSession
+      .builder()
+      .appName("PassimApplication")
+      .config(conf)
+      .getOrCreate()
+
+    import spark.implicits._
 
     val parser = new scopt.OptionParser[Config]("passim") {
       opt[String]('M', "mode") action { (x, c) =>
@@ -716,10 +720,10 @@ object PassimApp {
     }
 
     if ( config.mode == "parents" ) {
-      matchParents(config, sqlContext)
+      matchParents(config, spark)
       sys.exit(0)
     } else if ( config.mode == "boilerplate" ) {
-      BoilerApp.matchPages(config, sqlContext)
+      BoilerApp.matchPages(config, spark)
       sys.exit(0)
     }
 
@@ -730,26 +734,26 @@ object PassimApp {
     val clusterFname = config.outputPath + "/clusters.parquet"
     val outFname = config.outputPath + "/out." + config.outputFormat
 
-    if ( hdfsExists(sc, configFname) ) {
+    if ( hdfsExists(spark, configFname) ) {
       // TODO: Read configuration
     } else {
-      config.save(configFname, sqlContext)
+      config.save(configFname, spark)
     }
 
-    if ( !hdfsExists(sc, outFname) ) {
-      val raw = sqlContext.read.format(config.inputFormat).load(config.inputPaths)
+    if ( !hdfsExists(spark, outFname) ) {
+      val raw = spark.read.format(config.inputFormat).load(config.inputPaths)
 
       val corpus = raw.na.drop(Seq(config.id, config.text))
         .withColumn("uid", hashId(col(config.id)))
         .tokenize(config.text)
 
-      if ( !hdfsExists(sc, clusterFname) ) {
-        if ( !hdfsExists(sc, passFname) ) {
+      if ( !hdfsExists(spark, clusterFname) ) {
+        if ( !hdfsExists(spark, passFname) ) {
           val groupCol = if ( raw.columns.contains(config.group) ) config.group else config.id
 
           val termCorpus = corpus.select('uid, hashId(col(groupCol)) as "gid", 'terms)
 
-          if ( !hdfsExists(sc, pairsFname) ) {
+          if ( !hdfsExists(spark, pairsFname) ) {
             val minFeatLen: Double = config.wordLength * config.n
 
             val getPostings = udf { (terms: Seq[String]) =>
@@ -824,7 +828,7 @@ object PassimApp {
 
           // TODO: Should probably be a separate mode.
           if ( config.docwise ) {
-            sqlContext.read.parquet(pairsFname)
+            spark.read.parquet(pairsFname)
               .select('uid, 'mid)
               .join(corpus.select('uid, col(config.id), col(config.text)), "uid")
               .groupBy("mid")
@@ -841,7 +845,7 @@ object PassimApp {
           }
 
           val extent: Int = config.gap * 2/3
-          val align = sqlContext.read.parquet(pairsFname)
+          val align = spark.read.parquet(pairsFname)
             .join(termCorpus, "uid")
             .select('mid, 'uid, 'gid, 'begin, 'end,
               termSpan('begin - extent, 'begin, 'terms) as "prefix",
@@ -903,7 +907,7 @@ object PassimApp {
               .save(config.outputPath + "/align." + config.outputFormat)
           }
 
-          val graphParallelism = sc.defaultParallelism
+          val graphParallelism = spark.sparkContext.defaultParallelism
 
           val mergeSpans = udf { (begins: Seq[Int], ends: Seq[Int], mids: Seq[Long]) =>
             PassFun.mergeSpans(config.relOver,
@@ -924,7 +928,7 @@ object PassimApp {
             .write.parquet(passFname)
         }
 
-        val pass = sqlContext.read.parquet(passFname).rdd
+        val pass = spark.read.parquet(passFname).rdd
 
         val passNodes = pass.map {
           case Row(nid: Long, uid: Long, gid: Long, begin: Int, end: Int, edges: Seq[_]) =>
@@ -971,7 +975,7 @@ object PassimApp {
       val dateSort = if ( cols.contains("date") ) "date" else config.id
 
       val joint =
-        sqlContext.read.parquet(clusterFname)
+        spark.read.parquet(clusterFname)
           .join(corpus.drop("terms"), "uid")
           .withColumn("begin", 'termCharBegin('begin))
           .withColumn("end",
@@ -988,6 +992,6 @@ object PassimApp {
       out.write.format(config.outputFormat).save(outFname)
     }
 
-    sc.stop()
+    spark.stop()
   }
 }
