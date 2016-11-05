@@ -29,12 +29,7 @@ case class Config(version: String = BuildInfo.version,
   docwise: Boolean = false, dedup: Boolean = false,
   id: String = "id", group: String = "series", text: String = "text",
   inputFormat: String = "json", outputFormat: String = "json",
-  inputPaths: String = "", outputPath: String = "") {
-  def save(fname: String, spark: SparkSession) {
-    import spark.implicits._
-    spark.createDataset(this :: Nil).toDF.coalesce(1).write.json(fname)
-  }
-}
+  inputPaths: String = "", outputPath: String = "")
 
 case class Coords(x: Int, y: Int, w: Int, h: Int, b: Int) {
   def x2 = x + w
@@ -403,12 +398,6 @@ object BoilerApp {
     import PassimApp.TextTokenizer
 
     val fs = FileSystem.get(spark.sparkContext.hadoopConfiguration)
-    val configFname = config.outputPath + "/conf"
-    if ( fs.exists(new Path(configFname)) ) {
-      // TODO: Read configuration
-    } else {
-      config.save(configFname, spark)
-    }
 
     val algFname = config.outputPath + "/boilerAlign"
     val passFname = config.outputPath + "/boilerPass"
@@ -711,12 +700,20 @@ object PassimApp {
         c.copy(outputPath = x) } text("Output path")
     }
 
-    val config = parser.parse(args, Config()) match {
+    val initConfig = parser.parse(args, Config()) match {
       case Some(c) =>
         c
       case None =>
         sys.exit(-1)
         Config()
+    }
+
+    val configFname = initConfig.outputPath + "/conf"
+    val config = if ( hdfsExists(spark, configFname) ) {
+      spark.read.schema(Seq(initConfig).toDF.schema).json(configFname).as[Config].first
+    } else {
+      spark.createDataFrame(initConfig :: Nil).coalesce(1).write.json(configFname)
+      initConfig
     }
 
     if ( config.mode == "parents" ) {
@@ -727,18 +724,11 @@ object PassimApp {
       sys.exit(0)
     }
 
-    val configFname = config.outputPath + "/conf"
     val indexFname = config.outputPath + "/index.parquet"
     val pairsFname = config.outputPath + "/pairs.parquet"
     val passFname = config.outputPath + "/pass.parquet"
     val clusterFname = config.outputPath + "/clusters.parquet"
     val outFname = config.outputPath + "/out." + config.outputFormat
-
-    if ( hdfsExists(spark, configFname) ) {
-      // TODO: Read configuration
-    } else {
-      config.save(configFname, spark)
-    }
 
     if ( !hdfsExists(spark, outFname) ) {
       val raw = spark.read.format(config.inputFormat).load(config.inputPaths)
@@ -901,7 +891,7 @@ object PassimApp {
                       s.replaceAll("2$", "1") }:_*))
                 .distinct
             } else fullalign)
-              .select((cols.filter(_ endsWith "1") ++ cols.filter(_ endsWith "2")).map(col):_*)
+              .select((cols.filter(_ endsWith "1") ++ cols.filter(_ endsWith "2") ++ Seq("matches", "score")).map(col):_*)
               .sort('id1, 'id2, 'b1, 'b2)
               .write.format(config.outputFormat)
               .save(config.outputPath + "/align." + config.outputFormat)
