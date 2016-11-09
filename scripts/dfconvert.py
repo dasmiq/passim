@@ -7,13 +7,13 @@ from pyspark.sql import SQLContext
 
 def guessFormat(path, default="json"):
     if path.endswith(".json"):
-        return "json"
+        return ("json", {'compression': 'gzip'})
     elif path.endswith(".parquet"):
-        return "parquet"
+        return ("parquet", {})
     elif path.endswith(".csv"):
-        return "com.databricks.spark.csv"
+        return ("csv", {'header': 'true', 'compression': 'gzip'})
     else:
-        return default
+        return (default, {})
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
@@ -26,10 +26,10 @@ if __name__ == "__main__":
     outpath = sys.argv[2]
 
     # TODO: Add options to set format explicitly and bypass guessing.
-    inputFormat = guessFormat(inpath, "parquet")
-    outputFormat = guessFormat(outpath, "json")
+    (inputFormat, inputOptions) = guessFormat(inpath, "parquet")
+    (outputFormat, outputOptions) = guessFormat(outpath, "json")
 
     raw = sqlContext.read.format(inputFormat).load(inpath)
-    raw.write.format(outputFormat).save(outpath)
+    raw.write.format(outputFormat).options(**outputOptions).save(outpath)
 
     sc.stop()
