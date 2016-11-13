@@ -11,7 +11,7 @@ def guessFormat(path, default="json"):
     elif path.endswith(".parquet"):
         return ("parquet", {})
     elif path.endswith(".csv"):
-        return ("csv", {'header': 'true', 'compression': 'gzip'})
+        return ("csv", {'header': 'true', 'compression': 'gzip', 'escape': '"'})
     else:
         return (default, {})
 
