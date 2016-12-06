@@ -73,7 +73,7 @@ case class PassAlign(id1: String, id2: String,
 
 case class AlignedStrings(s1: String, s2: String, matches: Int, score: Float)
 
-case class NewDoc(newid: String, newtext: String, aligned: Boolean)
+case class NewDoc(id: String, text: String, aligned: Boolean)
 
 case class ClusterParent(id: String, begin: Long, date: String, matchProp: Float, score: Float)
 
@@ -349,35 +349,29 @@ object BoilerApp {
       .mapValues(_(0))
   }
 
-  def splitDocs(r: Row): Array[NewDoc] = {
-    val id = r.getString(0)
-    val text = r.getString(1)
+  val mergeAligned = udf { (begins: Seq[Int], ends: Seq[Int]) =>
+    val spans = PassFun.mergeSpansLR(0, begins.zip(ends).map(x => Span(x._1, x._2))
+      .zip(Range(0, begins.size).map(_.toLong)))
+      .map(_._1) // merge nearly adjacent?
+    (spans.map(_.begin), spans.map(_.end)) // unzip
+  }
+
+  val splitDoc = udf { (id: String, text: String, begin: Seq[Int], end: Seq[Int]) =>
     val docs = new ArrayBuffer[NewDoc]
-    if ( r.isNullAt(2) ) {
+    if ( begin == null || begin.size <= 0 ) {
       docs += NewDoc(id, text, false)
     } else {
-      val passageBegin = r.getSeq[Int](2).toArray
-      val passageEnd = r.getSeq[Int](3).toArray
-      val termCharEnd = r.getSeq[Int](4).toArray
-      def tcOff(termOff: Int): Int = if ( termOff == 0 ) 0 else termCharEnd(termOff - 1)
-      for ( i <- 0 until passageBegin.size ) {
-        val begin = passageBegin(i)
-        val pBegin = if ( i == 0 ) {
-          if ( begin == 0 ) -1 else 0
-        } else
-          (passageEnd(i - 1) + 1)
-        if ( pBegin >= 0 && pBegin < (begin - 1)) {
-          docs += NewDoc(id + "_" + pBegin,
-            text.substring(tcOff(pBegin), termCharEnd(begin - 1)),
-            false)
+      var start = 0
+      for ( i <- 0 until begin.size ) {
+        if ( (begin(i) - start) >= 2 ) {
+          // Should check that this document is more than just a few whitespace characters
+          docs += NewDoc(id + "_" + start + "_" + begin(i), text.substring(start, begin(i)), false)
         }
-        docs += NewDoc(id + "_" + begin,
-          text.substring(tcOff(begin), termCharEnd(passageEnd(i))),
-          true)
+        docs += NewDoc(id + "_" + begin(i) + "_" + end(i), text.substring(begin(i), end(i)), true)
+        start = end(i)
       }
-      if ( (passageEnd.last + 1) < termCharEnd.size ) {
-        val pBegin = passageEnd.last + 1
-        docs += NewDoc(id + "_" + pBegin, text.substring(tcOff(pBegin)), false)
+      if ( (text.size - end.last) >= 2 ) {
+          docs += NewDoc(id + "_" + end.last + "_" + text.size, text.substring(end.last, text.size), false)
       }
     }
     docs.toArray
@@ -426,70 +420,100 @@ object BoilerApp {
       res.toSeq
     }
 
-    val raw = spark.read.format(config.inputFormat).load(config.inputPaths)
-    val corpus = raw.tokenize(config.text)
-      .select('id, 'series, datediff('date, lit("1970-01-01")) as "day",
-        'issue, indexer('terms) as "index", cleanXML('text) as "text")
-      .na.drop(Seq("day"))
-      .sort('series, 'day)
-
-    // We may need to partition by year or month as well until range
-    // windows before more efficient.
-    val w = Window.partitionBy("series").orderBy("day").rangeBetween(-config.history, 0)
-
-    corpus
-      .select(windowMatches('id, 'issue, 'index, 'text,
-        collect_list("id").over(w), collect_list("issue").over(w),
-        collect_list("index").over(w), collect_list("text").over(w)) as "pairs")
-      .select(explode('pairs) as "pair")
-      .select($"pair.*")
-      .write.parquet(algFname)
-
     val alignedPassages = udf { (s1: String, s2: String) =>
       var start = 0
-      val pass = ArrayBuffer[(Double, Double, String, String)]()
+      var b1 = 0
+      var b2 = 0
+      val buf = ArrayBuffer[(Int, Double, Int, Int)]()
       for ( end <- 1 until s2.size ) {
         if ( s2(end) == '\n' ) {
           val alg1 = s1.substring(start, end+1)
           val alg2 = s2.substring(start, end+1)
+          val t1 = alg1.replaceAll("-", "")
           val t2 = alg2.replaceAll("-", "")
 
           val matches = alg1.zip(alg2).count(x => x._1 == x._2)
-          pass += ((matches * 1.0 / t2.size, alg2.size * 1.0 / t2.size, alg2, alg1))
-          // pass += ((matches * 1.0 / t2.size, t2, alg1.replaceAll("-", "")))
-          // if ( (matches * 1.0) / t2.size > 0.5 ) {
-          //   pass += t2
-          // } else {
-          //   pass += "-"
-          // }
+          buf += ((t2.size - t1.size, matches * 1.0 / t2.size, b1, b2))
           start = end + 1
+          b1 += t1.size
+          b2 += t2.size
         }
+      }
+      val lines = buf.toArray
+
+      val t1 = s1.replaceAll("-", "")
+      val t2 = s2.replaceAll("-", "")
+
+      val minLines = 5
+
+      val pass = ArrayBuffer[(Span, Span)]()
+      var i = 0
+      start = 0
+      while ( i < lines.size ) {
+        if ( lines(i)._1.abs > 20 || lines(i)._2 < 0.1 ) {
+          if ( start < i
+            && (i + 2) < lines.size
+            && lines(i+1)._1.abs <= 20 && lines(i+1)._2 >= 0.1
+            && (lines(i+1)._3 - lines(i)._3) <= 20
+            && (lines(i+1)._4 - lines(i)._4) <= 20 ) {
+            // continue passage
+          } else {
+            if ( (i - start) >= minLines ) {
+              pass += ((Span(lines(start)._3, lines(i)._3),
+                Span(lines(start)._4, lines(i)._4)))
+            }
+            start = i + 1
+          }
+        }
+        i += 1
+      }
+      if ( (i - start) >= minLines ) {
+        pass += ((Span(lines(start)._3, lines(lines.size - 1)._3),
+          Span(lines(start)._4, lines(lines.size - 1)._4)))
       }
       pass.toSeq
     }
 
+    val raw = spark.read.format(config.inputFormat).load(config.inputPaths)
+    val corpus = raw.tokenize(config.text)
+      .select('id, 'series, datediff('date, lit("1970-01-01")) as "day",
+        'issue, indexer('terms) as "index", 'text)
+      .na.drop(Seq("day"))
+      .sort('series, 'day)
+
+    if ( !PassimApp.hdfsExists(spark, algFname) ) {
+      // We may need to partition by year or month as well until range
+      // windows before more efficient.
+      val w = Window.partitionBy("series").orderBy("day").rangeBetween(-config.history, 0)
+
+      corpus
+        .select(windowMatches('id, 'issue, 'index, 'text,
+          collect_list("id").over(w), collect_list("issue").over(w),
+          collect_list("index").over(w), collect_list("text").over(w)) as "pairs")
+        .select(explode('pairs) as "pair")
+        .select($"pair.*")
+        .select('id1, 'id2, explode(alignedPassages('s1, 's2)) as "pass")
+        .select('id1, 'id2,
+          $"pass._1.begin" as "b1", $"pass._1.end" as "e1",
+          $"pass._2.begin" as "b2", $"pass._2.end" as "e2")
+        .write.parquet(algFname)
+    }
+
     spark.read.parquet(algFname)
-      .select('id1, 'id2, alignedPassages('s1, 's2) as "pass")
+      .select('id2 as "id", 'b2 as "begin", 'e2 as "end")
+      .groupBy("id")
+      .agg(mergeAligned(collect_list("begin"), collect_list("end")) as "spans")
+      .select('id, $"spans._1" as "begin", $"spans._2" as "end")
+      .join(raw, Seq("id"), "right_outer")
+      .withColumn("subdoc", explode(splitDoc('id, 'text, 'begin, 'end)))
+      .drop("begin", "end")
+      .withColumnRenamed("id", "docid")
+      .withColumn("id", $"subdoc.id")
+      .withColumn("text", $"subdoc.text")
+      .withColumn("aligned", $"subdoc.aligned")
+      .drop("subdoc")
       .write.json(passFname)
   }
-
-  // def bpSegment(config: Config, spark: SparkSession) = {
-  //   import spark.implicits._
-
-  //   val fs = FileSystem.get(spark.sparkContext.hadoopConfiguration)
-
-  //   spark.read.parquet(algFname)
-  //     .withColumnRenamed("id", "aid").drop("alignments")
-  //     .join(corpus.drop("terms").drop("uid"), 'aid === 'id, "right_outer")
-  //     .explode('id, 'text, 'passageBegin, 'passageEnd, 'termCharEnd)(splitDocs)
-  //     .drop("aid").withColumnRenamed("id", "docid").withColumnRenamed("newid", "id")
-  //     .drop("text").withColumnRenamed("newtext", "text")
-  //     .drop("termCharBegin").drop("termCharEnd")
-  //     .drop("termPages").drop("termRegions").drop("termLocs")
-  //     .drop("passageBegin").drop("passageEnd").drop("passageLastId")
-  //     .write.format(config.outputFormat)
-  //     .save(config.outputPath + "/corpus." + config.outputFormat)
-  // }
 }
 
 case class TokText(terms: Array[String], termCharBegin: Array[Int], termCharEnd: Array[Int])
