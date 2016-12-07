@@ -525,7 +525,7 @@ object BoilerApp {
       .withColumn("regions", $"subdoc.regions")
       .withColumn("aligned", $"subdoc.aligned")
       .drop("subdoc")
-      .write.json(passFname)
+      .write.format(config.outputFormat).save(passFname)
   }
 }
 
