@@ -46,6 +46,7 @@ case class Coords(x: Int, y: Int, w: Int, h: Int, b: Int) {
 
 case class Region(start: Int, length: Int, coords: Coords) {
   def end = start + length
+  def offset(off: Int) = Region(this.start + off, this.length, this.coords)
 }
 
 case class DocSpan(uid: Long, begin: Int, end: Int)
@@ -73,7 +74,7 @@ case class PassAlign(id1: String, id2: String,
 
 case class AlignedStrings(s1: String, s2: String, matches: Int, score: Float)
 
-case class NewDoc(id: String, text: String, aligned: Boolean)
+case class NewDoc(id: String, text: String, regions: Seq[Region], aligned: Boolean)
 
 case class ClusterParent(id: String, begin: Long, date: String, matchProp: Float, score: Float)
 
@@ -352,39 +353,49 @@ object BoilerApp {
   val mergeAligned = udf { (begins: Seq[Int], ends: Seq[Int]) =>
     val spans = PassFun.mergeSpansLR(0, begins.zip(ends).map(x => Span(x._1, x._2))
       .zip(Range(0, begins.size).map(_.toLong)))
-      .map(_._1) // merge nearly adjacent?
+      .map(_._1) // TODO? merge nearly adjacent?
     (spans.map(_.begin), spans.map(_.end)) // unzip
   }
 
-  val splitDoc = udf { (id: String, text: String, begin: Seq[Int], end: Seq[Int]) =>
+  val splitDoc = udf { (id: String, text: String, regions: Seq[Row],
+    begin: Seq[Int], end: Seq[Int]) =>
+    val reg
+      = if ( regions == null ) Array[Region]() // Try doesn't catch nulls
+      else Try(regions.map(PassimApp.rowToRegion).toArray).getOrElse(Array[Region]())
     val docs = new ArrayBuffer[NewDoc]
     if ( begin == null || begin.size <= 0 ) {
-      docs += NewDoc(id, text, false)
+      docs += NewDoc(id, text, reg, false)
     } else {
       var start = 0
+      var breg = 0
+      var ereg = 0
       for ( i <- 0 until begin.size ) {
         if ( (begin(i) - start) >= 2 ) {
           // Should check that this document is more than just a few whitespace characters
-          docs += NewDoc(id + "_" + start + "_" + begin(i), text.substring(start, begin(i)), false)
+          while ( ereg < reg.size && reg(ereg).start < begin(i) ) ereg += 1
+          docs += NewDoc(id + "_" + start + "_" + begin(i),
+            text.substring(start, begin(i)),
+            reg.slice(breg, ereg).map(_.offset(-start)),
+            false)
+          breg = ereg
         }
-        docs += NewDoc(id + "_" + begin(i) + "_" + end(i), text.substring(begin(i), end(i)), true)
+        while ( ereg < reg.size && reg(ereg).start < end(i) ) ereg += 1
+        docs += NewDoc(id + "_" + begin(i) + "_" + end(i),
+          text.substring(begin(i), end(i)),
+          reg.slice(breg, ereg).map(_.offset(-begin(i))),
+          true)
+        breg = ereg
         start = end(i)
       }
       if ( (text.size - end.last) >= 2 ) {
-          docs += NewDoc(id + "_" + end.last + "_" + text.size, text.substring(end.last, text.size), false)
+        if ( ereg < reg.size ) ereg = reg.size
+        docs += NewDoc(id + "_" + end.last + "_" + text.size,
+          text.substring(end.last, text.size),
+          reg.slice(breg, ereg).map(_.offset(-end.last)),
+          false)
       }
     }
     docs.toArray
-  }
-
-  // TODO: Unescape other character entities to UTF.
-  val cleanXML = udf { (s: String) =>
-    s.replaceAll("</?[A-Za-z][^>]*>", "")
-      .replaceAll("&quot;", "\"")
-      .replaceAll("&apos;", "'")
-      .replaceAll("&lt;", "<")
-      .replaceAll("&gt;", ">")
-      .replaceAll("&amp;", "&")
   }
 
   def matchPages(config: Config, spark: SparkSession) = {
@@ -412,6 +423,7 @@ object BoilerApp {
         if ( inc.size >= config.minRep && gapped.size > 0 ) {
           // TODO: Give high cost to newline mismatches.
           val pt = ptext(i)
+          // For character alignment, multiply by average word length.
           res += PassFun.alignStrings(config.n * 5, config.gap * 5, matchMatrix,
             (pid(i), 0, pt.size, pt.size, pt), (id, 0, text.size, text.size, text))
         // PassAlign(pid, id, "", "", 0, 1, 1, 0, 1, 1, 1, -1)
@@ -505,11 +517,12 @@ object BoilerApp {
       .agg(mergeAligned(collect_list("begin"), collect_list("end")) as "spans")
       .select('id, $"spans._1" as "begin", $"spans._2" as "end")
       .join(raw, Seq("id"), "right_outer")
-      .withColumn("subdoc", explode(splitDoc('id, 'text, 'begin, 'end)))
+      .withColumn("subdoc", explode(splitDoc('id, 'text, 'regions, 'begin, 'end)))
       .drop("begin", "end")
       .withColumnRenamed("id", "docid")
       .withColumn("id", $"subdoc.id")
       .withColumn("text", $"subdoc.text")
+      .withColumn("regions", $"subdoc.regions")
       .withColumn("aligned", $"subdoc.aligned")
       .drop("subdoc")
       .write.json(passFname)
@@ -523,6 +536,15 @@ object PassimApp {
     ByteBuffer.wrap(
       MessageDigest.getInstance("MD5").digest(s.getBytes("UTF-8"))
     ).getLong
+  }
+  def rowToRegion(r: Row): Region = {
+    r match {
+      case Row(start: Int, length: Int, coords: Row) =>
+        coords match {
+          case Row(x: Int, y: Int, w: Int, h: Int, b: Int) =>
+            Region(start, length, Coords(x, y, w, h, b))
+        }
+    }
   }
   implicit class TextTokenizer(df: DataFrame) {
     val tokenizeCol = udf {(text: String) =>
@@ -547,13 +569,9 @@ object PassimApp {
       }
     }
     val boundRegions = udf {(begin: Int, end: Int, regions: Seq[Row]) =>
-      Try(Seq(regions
-        .filter { case Row(start: Int, length: Int, coords: Row) =>
-          start <= end && (start + length) >= begin }
-        .map { case Row(start: Int, length: Int, coords: Row) =>
-          coords match {
-            case Row(x: Int, y: Int, w: Int, h: Int, b: Int) => Coords(x, y, w, h, b)
-          } }
+      Try(Seq(regions.map(rowToRegion)
+        .filter { r => r.start <= end && (r.start + r.length) >= begin }
+        .map { _.coords }
         .reduce { _.merge(_) }))
         .getOrElse(Seq[Coords]())
     }
