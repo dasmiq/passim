@@ -484,11 +484,16 @@ object BoilerApp {
           && ('pissue < 'issue) && (('pday + config.history) >= 'day))
         .select('pid, 'ptext, 'id, 'text)
         .flatMap { case Row(pid: String, ptext: String, id: String, text: String) =>
-          val pindex = hapaxIndex(config.n * 5, ptext.toLowerCase)
-          val index = hapaxIndex(config.n * 5, text.toLowerCase)
+          val tok = new passim.TagTokenizer()
+          val pd = new passim.Document("raw", ptext)
+          val d = new passim.Document("raw", text)
+          tok.tokenize(pd)
+          tok.tokenize(d)
+          val pindex = hapaxIndex(config.n, pd.terms.toSeq)
+          val index = hapaxIndex(config.n, d.terms.toSeq)
           val inc = PassFun.increasingMatches(pindex
             .flatMap { z => if (index.contains(z._1)) Some((z._2, index(z._1), 1)) else None })
-          val gapped = PassFun.gappedMatches(config.n*5, config.gap*5, config.minAlg*5, inc)
+          val gapped = PassFun.gappedMatches(config.n, config.gap, config.minAlg, inc)
           // println("# rep: " + (pid, id, inc.size, gapped.size))
           if ( inc.size >= config.minRep && gapped.size > 0 ) {
             // TODO: Give high cost to newline mismatches.
