@@ -473,12 +473,13 @@ object BoilerApp {
 
       val pcorpus = corpus.toDF(corpus.columns.map { "p" + _}:_*)
 
+      val binoffset = udf { (bin: Int) => Seq(bin, bin+1)}
+
       // The predecessor is either in the same history-sized day bin
       // or in the previous one.  The bins are disjoint, so we don't
       // need to dedup the result.
       pcorpus
-        .withColumn("pdaybin", 'pdaybin + 1)
-        .union(pcorpus)
+        .withColumn("pdaybin", explode(binoffset('pdaybin)))
         .join(corpus, ('pseries === 'series) && ('pdaybin === 'daybin)
           && ('pissue < 'issue) && (('pday + config.history) >= 'day))
         .select('pid, 'ptext, 'id, 'text)
