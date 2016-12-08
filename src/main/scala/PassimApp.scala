@@ -407,30 +407,7 @@ object BoilerApp {
     val algFname = config.outputPath + "/boilerAlign"
     val passFname = config.outputPath + "/boilerPass"
 
-    val indexer = udf {(terms: Seq[String]) => hapaxIndex(config.n, terms)}
     val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
-
-    val windowMatches = udf {
-      (id: String, issue: String, index: Map[String, Int], text: String,
-        pid: Seq[String], pissue: Seq[String],
-        pindex: Seq[Map[String, Int]], ptext: Seq[String]) =>
-      val res = new ListBuffer[PassAlign]
-      for ( i <- 0 until pid.size; if pissue(i) < issue ) {
-        val inc = PassFun.increasingMatches(pindex(i)
-          .flatMap { z => if (index.contains(z._1)) Some((z._2, index(z._1), 1)) else None })
-        val gapped = PassFun.gappedMatches(config.n, config.gap, config.minAlg, inc)
-        // println("# rep: " + (pid, id, inc.size, gapped.size))
-        if ( inc.size >= config.minRep && gapped.size > 0 ) {
-          // TODO: Give high cost to newline mismatches.
-          val pt = ptext(i)
-          // For character alignment, multiply by average word length.
-          res += PassFun.alignStrings(config.n * 5, config.gap * 5, matchMatrix,
-            (pid(i), 0, pt.size, pt.size, pt), (id, 0, text.size, text.size, text))
-        // PassAlign(pid, id, "", "", 0, 1, 1, 0, 1, 1, 1, -1)
-        }
-      }
-      res.toSeq
-    }
 
     val alignedPassages = udf { (s1: String, s2: String) =>
       var start = 0
@@ -487,23 +464,40 @@ object BoilerApp {
     }
 
     val raw = spark.read.format(config.inputFormat).load(config.inputPaths)
-    val corpus = raw.tokenize(config.text)
-      .select('id, 'series, datediff('date, lit("1970-01-01")) as "day",
-        'issue, indexer('terms) as "index", 'text)
-      .na.drop(Seq("day"))
-      .sort('series, 'day)
 
     if ( !PassimApp.hdfsExists(spark, algFname) ) {
-      // We may need to partition by year or month as well until range
-      // windows before more efficient.
-      val w = Window.partitionBy("series").orderBy("day").rangeBetween(-config.history, 0)
+      val corpus = raw
+        .select('id, 'series, datediff('date, lit("1970-01-01")) as "day", 'issue, 'text)
+        .na.drop(Seq("day"))
+        .withColumn("daybin", ('day / config.history).cast("int"))
 
-      corpus
-        .select(windowMatches('id, 'issue, 'index, 'text,
-          collect_list("id").over(w), collect_list("issue").over(w),
-          collect_list("index").over(w), collect_list("text").over(w)) as "pairs")
-        .select(explode('pairs) as "pair")
-        .select($"pair.*")
+      val pcorpus = corpus.toDF(corpus.columns.map { "p" + _}:_*)
+
+      // The predecessor is either in the same history-sized day bin
+      // or in the previous one.  The bins are disjoint, so we don't
+      // need to dedup the result.
+      pcorpus
+        .withColumn("pdaybin", 'pdaybin + 1)
+        .union(pcorpus)
+        .join(corpus, ('pseries === 'series) && ('pdaybin === 'daybin)
+          && ('pissue < 'issue) && (('pday + config.history) >= 'day))
+        .select('pid, 'ptext, 'id, 'text)
+        .flatMap { case Row(pid: String, ptext: String, id: String, text: String) =>
+          val pindex = hapaxIndex(config.n * 5, ptext.toLowerCase)
+          val index = hapaxIndex(config.n * 5, text.toLowerCase)
+          val inc = PassFun.increasingMatches(pindex
+            .flatMap { z => if (index.contains(z._1)) Some((z._2, index(z._1), 1)) else None })
+          val gapped = PassFun.gappedMatches(config.n*5, config.gap*5, config.minAlg*5, inc)
+          // println("# rep: " + (pid, id, inc.size, gapped.size))
+          if ( inc.size >= config.minRep && gapped.size > 0 ) {
+            // TODO: Give high cost to newline mismatches.
+            Some(PassFun.alignStrings(config.n * 5, config.gap * 5, matchMatrix,
+              (pid, 0, ptext.size, ptext.size, ptext), (id, 0, text.size, text.size, text)))
+          } else {
+            None
+          }
+      }
+        .toDF
         .select('id1, 'id2, explode(alignedPassages('s1, 's2)) as "pass")
         .select('id1, 'id2,
           $"pass._1.begin" as "b1", $"pass._1.end" as "e1",
