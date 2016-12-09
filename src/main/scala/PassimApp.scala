@@ -330,16 +330,19 @@ object PassFun {
 }
 
 object BoilerApp {
-  def hapaxIndex(n: Int, w: Seq[String]) = {
+  def hapaxIndex(n: Int, wordLength: Double, w: Seq[String]) = {
+    val minFeatLen: Double = wordLength * n + n - 1
     w.sliding(n)
       .map(_.mkString("~"))
       .zipWithIndex
+      .filter { _._1.size >= minFeatLen }
       .toArray
       .groupBy(_._1)
       .mapValues(_.map(_._2))
       .filter(_._2.size == 1)
       .mapValues(_(0))
   }
+  def hapaxIndex(n: Int, w: Seq[String]): Map[String, Int] = hapaxIndex(n, 2, w)
   def hapaxIndex(n: Int, s: String) = {
     s.sliding(n)
       .zipWithIndex
@@ -466,7 +469,7 @@ object BoilerApp {
     val raw = spark.read.format(config.inputFormat).load(config.inputPaths)
 
     if ( !PassimApp.hdfsExists(spark, algFname) ) {
-      val indexer = udf {(terms: Seq[String]) => hapaxIndex(config.n, terms)}
+      val indexer = udf {(terms: Seq[String]) => hapaxIndex(config.n, config.wordLength, terms)}
       val corpus = raw.tokenize(config.text)
         .select('id, 'series, datediff('date, lit("1970-01-01")) as "day", 'issue,
           indexer('terms) as "index", col(config.text) as "text")
