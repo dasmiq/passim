@@ -466,8 +466,10 @@ object BoilerApp {
     val raw = spark.read.format(config.inputFormat).load(config.inputPaths)
 
     if ( !PassimApp.hdfsExists(spark, algFname) ) {
-      val corpus = raw
-        .select('id, 'series, datediff('date, lit("1970-01-01")) as "day", 'issue, 'text)
+      val indexer = udf {(terms: Seq[String]) => hapaxIndex(config.n, terms)}
+      val corpus = raw.tokenize(config.text)
+        .select('id, 'series, datediff('date, lit("1970-01-01")) as "day", 'issue,
+          indexer('terms) as "index", col(config.text) as "text")
         .na.drop(Seq("day"))
         .withColumn("daybin", ('day / config.history).cast("int"))
 
@@ -482,17 +484,13 @@ object BoilerApp {
         .withColumn("pdaybin", explode(binoffset('pdaybin)))
         .join(corpus, ('pseries === 'series) && ('pdaybin === 'daybin)
           && ('pissue < 'issue) && (('pday + config.history) >= 'day))
-        .select('pid, 'ptext, 'id, 'text)
-        .flatMap { case Row(pid: String, ptext: String, id: String, text: String) =>
-          val tok = new passim.TagTokenizer()
-          val pd = new passim.Document("raw", ptext)
-          val d = new passim.Document("raw", text)
-          tok.tokenize(pd)
-          tok.tokenize(d)
-          val pindex = hapaxIndex(config.n, pd.terms.toSeq)
-          val index = hapaxIndex(config.n, d.terms.toSeq)
-          val inc = PassFun.increasingMatches(pindex
-            .flatMap { z => if (index.contains(z._1)) Some((z._2, index(z._1), 1)) else None })
+        .select('pid, 'pindex, 'ptext, 'id, 'index, 'text)
+        .flatMap { case Row(pid: String, pindex: Map[_, _], ptext: String,
+          id: String, index: Map[_, _], text: String) =>
+          val pm = pindex.asInstanceOf[Map[String, Int]]
+          val m = index.asInstanceOf[Map[String, Int]]
+          val inc = PassFun.increasingMatches(pm
+            .flatMap { z => if (m.contains(z._1)) Some((z._2, m(z._1), 1)) else None })
           val gapped = PassFun.gappedMatches(config.n, config.gap, config.minAlg, inc)
           // println("# rep: " + (pid, id, inc.size, gapped.size))
           if ( inc.size >= config.minRep && gapped.size > 0 ) {
