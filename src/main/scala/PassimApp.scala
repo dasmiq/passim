@@ -331,18 +331,18 @@ object PassFun {
 
 object BoilerApp {
   def hapaxIndex(n: Int, wordLength: Double, w: Seq[String]) = {
-    val minFeatLen: Double = wordLength * n + n - 1
+    val minFeatLen: Double = wordLength * n
     w.sliding(n)
-      .map(_.mkString("~"))
       .zipWithIndex
-      .filter { _._1.size >= minFeatLen }
+      .filter { _._1.map(_.size).sum >= minFeatLen }
+      .map { case (s, pos) => (s.mkString("~").##, pos) }
       .toArray
       .groupBy(_._1)
       .mapValues(_.map(_._2))
       .filter(_._2.size == 1)
       .mapValues(_(0))
   }
-  def hapaxIndex(n: Int, w: Seq[String]): Map[String, Int] = hapaxIndex(n, 2, w)
+  def hapaxIndex(n: Int, w: Seq[String]): Map[Int, Int] = hapaxIndex(n, 2, w)
   def hapaxIndex(n: Int, s: String) = {
     s.sliding(n)
       .zipWithIndex
@@ -490,43 +490,45 @@ object BoilerApp {
         .select('pid, 'pindex, 'ptext, 'id, 'index, 'text)
         .flatMap { case Row(pid: String, pindex: Map[_, _], ptext: String,
           id: String, index: Map[_, _], text: String) =>
-          val pm = pindex.asInstanceOf[Map[String, Int]]
-          val m = index.asInstanceOf[Map[String, Int]]
+          val pm = pindex.asInstanceOf[Map[Int, Int]]
+          val m = index.asInstanceOf[Map[Int, Int]]
           val inc = PassFun.increasingMatches(pm
             .flatMap { z => if (m.contains(z._1)) Some((z._2, m(z._1), 1)) else None })
           val gapped = PassFun.gappedMatches(config.n, config.gap, config.minAlg, inc)
           // println("# rep: " + (pid, id, inc.size, gapped.size))
           if ( inc.size >= config.minRep && gapped.size > 0 ) {
             // TODO: Give high cost to newline mismatches.
-            Some(PassFun.alignStrings(config.n * 5, config.gap * 5, matchMatrix,
-              (pid, 0, ptext.size, ptext.size, ptext), (id, 0, text.size, text.size, text)))
+            Some((pid, id))
+            // Some(PassFun.alignStrings(config.n * 5, config.gap * 5, matchMatrix,
+            //   (pid, 0, ptext.size, ptext.size, ptext), (id, 0, text.size, text.size, text)))
           } else {
             None
           }
       }
-        .toDF
-        .select('id1, 'id2, explode(alignedPassages('s1, 's2)) as "pass")
-        .select('id1, 'id2,
-          $"pass._1.begin" as "b1", $"pass._1.end" as "e1",
-          $"pass._2.begin" as "b2", $"pass._2.end" as "e2")
+      .toDF("id1", "id2")
+        // .toDF
+        // .select('id1, 'id2, explode(alignedPassages('s1, 's2)) as "pass")
+        // .select('id1, 'id2,
+        //   $"pass._1.begin" as "b1", $"pass._1.end" as "e1",
+        //   $"pass._2.begin" as "b2", $"pass._2.end" as "e2")
         .write.parquet(algFname)
     }
 
-    spark.read.parquet(algFname)
-      .select('id2 as "id", 'b2 as "begin", 'e2 as "end")
-      .groupBy("id")
-      .agg(mergeAligned(collect_list("begin"), collect_list("end")) as "spans")
-      .select('id, $"spans._1" as "begin", $"spans._2" as "end")
-      .join(raw, Seq("id"), "right_outer")
-      .withColumn("subdoc", explode(splitDoc('id, 'text, 'regions, 'begin, 'end)))
-      .drop("begin", "end")
-      .withColumnRenamed("id", "docid")
-      .withColumn("id", $"subdoc.id")
-      .withColumn("text", $"subdoc.text")
-      .withColumn("regions", $"subdoc.regions")
-      .withColumn("aligned", $"subdoc.aligned")
-      .drop("subdoc")
-      .write.format(config.outputFormat).save(passFname)
+    // spark.read.parquet(algFname)
+    //   .select('id2 as "id", 'b2 as "begin", 'e2 as "end")
+    //   .groupBy("id")
+    //   .agg(mergeAligned(collect_list("begin"), collect_list("end")) as "spans")
+    //   .select('id, $"spans._1" as "begin", $"spans._2" as "end")
+    //   .join(raw, Seq("id"), "right_outer")
+    //   .withColumn("subdoc", explode(splitDoc('id, 'text, 'regions, 'begin, 'end)))
+    //   .drop("begin", "end")
+    //   .withColumnRenamed("id", "docid")
+    //   .withColumn("id", $"subdoc.id")
+    //   .withColumn("text", $"subdoc.text")
+    //   .withColumn("regions", $"subdoc.regions")
+    //   .withColumn("aligned", $"subdoc.aligned")
+    //   .drop("subdoc")
+    //   .write.format(config.outputFormat).save(passFname)
   }
 }
 
