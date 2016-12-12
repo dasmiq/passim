@@ -498,37 +498,35 @@ object BoilerApp {
           // println("# rep: " + (pid, id, inc.size, gapped.size))
           if ( inc.size >= config.minRep && gapped.size > 0 ) {
             // TODO: Give high cost to newline mismatches.
-            Some((pid, id))
-            // Some(PassFun.alignStrings(config.n * 5, config.gap * 5, matchMatrix,
-            //   (pid, 0, ptext.size, ptext.size, ptext), (id, 0, text.size, text.size, text)))
+            Some(PassFun.alignStrings(config.n * 5, config.gap * 5, matchMatrix,
+              (pid, 0, ptext.size, ptext.size, ptext), (id, 0, text.size, text.size, text)))
           } else {
             None
           }
       }
-      .toDF("id1", "id2")
-        // .toDF
-        // .select('id1, 'id2, explode(alignedPassages('s1, 's2)) as "pass")
-        // .select('id1, 'id2,
-        //   $"pass._1.begin" as "b1", $"pass._1.end" as "e1",
-        //   $"pass._2.begin" as "b2", $"pass._2.end" as "e2")
+        .toDF
+        .select('id1, 'id2, explode(alignedPassages('s1, 's2)) as "pass")
+        .select('id1, 'id2,
+          $"pass._1.begin" as "b1", $"pass._1.end" as "e1",
+          $"pass._2.begin" as "b2", $"pass._2.end" as "e2")
         .write.parquet(algFname)
     }
 
-    // spark.read.parquet(algFname)
-    //   .select('id2 as "id", 'b2 as "begin", 'e2 as "end")
-    //   .groupBy("id")
-    //   .agg(mergeAligned(collect_list("begin"), collect_list("end")) as "spans")
-    //   .select('id, $"spans._1" as "begin", $"spans._2" as "end")
-    //   .join(raw, Seq("id"), "right_outer")
-    //   .withColumn("subdoc", explode(splitDoc('id, 'text, 'regions, 'begin, 'end)))
-    //   .drop("begin", "end")
-    //   .withColumnRenamed("id", "docid")
-    //   .withColumn("id", $"subdoc.id")
-    //   .withColumn("text", $"subdoc.text")
-    //   .withColumn("regions", $"subdoc.regions")
-    //   .withColumn("aligned", $"subdoc.aligned")
-    //   .drop("subdoc")
-    //   .write.format(config.outputFormat).save(passFname)
+    spark.read.parquet(algFname)
+      .select('id2 as "id", 'b2 as "begin", 'e2 as "end")
+      .groupBy("id")
+      .agg(mergeAligned(collect_list("begin"), collect_list("end")) as "spans")
+      .select('id, $"spans._1" as "begin", $"spans._2" as "end")
+      .join(raw, Seq("id"), "right_outer")
+      .withColumn("subdoc", explode(splitDoc('id, 'text, 'regions, 'begin, 'end)))
+      .drop("begin", "end")
+      .withColumnRenamed("id", "docid")
+      .withColumn("id", $"subdoc.id")
+      .withColumn("text", $"subdoc.text")
+      .withColumn("regions", $"subdoc.regions")
+      .withColumn("aligned", $"subdoc.aligned")
+      .drop("subdoc")
+      .write.format(config.outputFormat).save(passFname)
   }
 }
 
