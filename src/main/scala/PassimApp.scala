@@ -28,6 +28,7 @@ case class Config(version: String = BuildInfo.version,
   pairwise: Boolean = false, duppairs: Boolean = false,
   docwise: Boolean = false, dedup: Boolean = false,
   id: String = "id", group: String = "series", text: String = "text",
+  time: String = "hour", dayScale: Int = 24,
   inputFormat: String = "json", outputFormat: String = "json",
   inputPaths: String = "", outputPath: String = "")
 
@@ -639,6 +640,34 @@ object PassimApp {
       .write.format(config.outputFormat).save(config.outputPath)
   }
 
+  def makeIndexer(n: Int, wordLength: Double) = {
+    val minFeatLen: Double = wordLength * n
+    udf { (terms: Seq[String]) =>
+      terms.sliding(n)
+        .zipWithIndex
+        .filter { _._1.map(_.size).sum >= minFeatLen }
+        .map { case (s, pos) => (hashString(s.mkString("~")), pos) }
+        .toArray
+        .groupBy(_._1)
+      // Store the count and first posting; could store
+      // some other fixed number of postings.
+        .map { case (feat, post) => Post(feat, post.size, post(0)._2) }
+        .toSeq
+    }
+  }
+  val crossPostings = udf { (uid: Seq[Long], gid: Seq[Long], post: Seq[Int]) =>
+    for ( i <- 0 until uid.size; j <- (i+1) until uid.size; if gid(i) != gid(j) )
+    yield(if ( gid(i) < gid(j) ) (uid(i), uid(j), post(i), post(j), uid.size) else (uid(j), uid(i), post(j), post(i), uid.size))
+  }
+  def makeBoilerPostings(history: Int, dayScale: Int) = {
+    udf { (uid: Seq[Long], gid: Seq[Long], time: Seq[Int], post: Seq[Int]) =>
+      for ( i <- 0 until uid.size; j <- (i+1) until uid.size;
+        if gid(i) == gid(j)
+        && Math.abs(time(i) / dayScale - time(j) / dayScale) <= history // integer division
+        && time(i) != time(j) )
+      yield(if ( time(i) < time(j) ) (uid(i), uid(j), post(i), post(j), uid.size) else (uid(j), uid(i), post(j), post(i), uid.size))
+    }
+  }
   val hashId = udf { (id: String) => hashString(id) }
   val termSpan = udf { (begin: Int, end: Int, terms: Seq[String]) =>
     terms.slice(Math.max(0, Math.min(terms.size, begin)),
@@ -724,6 +753,10 @@ object PassimApp {
         c.copy(text = x) } text("Field for document text; default=text")
       opt[String]('s', "group") action { (x, c) =>
         c.copy(group = x) } text("Field to group documents into series; default=series")
+      opt[String]("time") action { (x, c) =>
+        c.copy(time = x) } text("Field to order documents by time; default=hour")
+      opt[Int]("dayScale") action { (x, c) =>
+        c.copy(dayScale = x) } text("Number of time units in a day; default=24")
       opt[String]("input-format") action { (x, c) =>
         c.copy(inputFormat = x) } text("Input format; default=json")
       opt[String]("output-format") action { (x, c) =>
@@ -762,9 +795,6 @@ object PassimApp {
     if ( config.mode == "parents" ) {
       matchParents(config, spark)
       sys.exit(0)
-    } else if ( config.mode == "boilerplate" ) {
-      BoilerApp.matchPages(config, spark)
-      sys.exit(0)
     }
 
     val indexFname = config.outputPath + "/index.parquet"
@@ -776,46 +806,45 @@ object PassimApp {
     if ( !hdfsExists(spark, outFname) ) {
       val raw = spark.read.format(config.inputFormat).load(config.inputPaths)
 
+      val groupCol = if ( raw.columns.contains(config.group) ) config.group else config.id
+
       val corpus = raw.na.drop(Seq(config.id, config.text))
         .withColumn("uid", hashId(col(config.id)))
+        .withColumn("gid", hashId(col(groupCol)))
         .tokenize(config.text)
 
       if ( !hdfsExists(spark, clusterFname) ) {
         if ( !hdfsExists(spark, passFname) ) {
-          val groupCol = if ( raw.columns.contains(config.group) ) config.group else config.id
-
-          val termCorpus = corpus.select('uid, hashId(col(groupCol)) as "gid", 'terms)
+          val indexFields = ListBuffer("uid", "gid", "terms")
+          if ( config.mode == "boilerplate" ) indexFields += config.time
+          val termCorpus = corpus.select(indexFields.toList.map(col):_*)
 
           if ( !hdfsExists(spark, pairsFname) ) {
-            val minFeatLen: Double = config.wordLength * config.n
+            val getPostings = makeIndexer(config.n, config.wordLength)
 
-            val getPostings = udf { (terms: Seq[String]) =>
-              terms.sliding(config.n)
-                .zipWithIndex
-                .filter { _._1.map(_.size).sum >= minFeatLen }
-                .map { case (s, pos) => (hashString(s.mkString("~")), pos) }
-                .toArray
-                .groupBy(_._1)
-              // Store the count and first posting; could store
-              // some other fixed number of postings.
-                .map { case (feat, post) => Post(feat, post.size, post(0)._2) }
-                .toSeq
-            }
-
-            val crossPostings = udf { (uid: Seq[Long], gid: Seq[Long], post: Seq[Int]) =>
-              for ( i <- 0 until uid.size; j <- (i+1) until uid.size; if gid(i) != gid(j) )
-                yield(if ( gid(i) < gid(j) ) (uid(i), uid(j), post(i), post(j), uid.size) else (uid(j), uid(i), post(j), post(i), uid.size))
-            }
-
-            val pairs = termCorpus
-              .select('uid, 'gid, explode(getPostings('terms)) as "post")
-              .select('uid, 'gid, $"post.*")
+            val postings = termCorpus
+              .withColumn("post", explode(getPostings('terms)))
+              .drop("terms")
+              .withColumn("feat", 'post("feat"))
+              .withColumn("tf", 'post("tf"))
+              .withColumn("post", 'post("post"))
               .filter { 'tf === 1 }
               .groupBy("feat")
-              .agg(collect_list("uid") as "uid", collect_list("gid") as "gid",
-                collect_list("post") as "post")
-              .filter { size('uid) >= 2 && size('uid) <= config.maxDF }
-              .select(explode(crossPostings('uid, 'gid, 'post)) as "pair")
+
+            val pairs = (if ( config.mode == "boilerplate" ) {
+              val boilerPostings = makeBoilerPostings(config.history, config.dayScale)
+              postings
+                .agg(collect_list("uid") as "uid", collect_list("gid") as "gid",
+                  collect_list(config.time) as "time", collect_list("post") as "post")
+                .filter { size('uid) >= 2 && size('uid) <= config.maxDF }
+                .select(explode(boilerPostings('uid, 'gid, 'time, 'post)) as "pair")
+            } else {
+              postings
+                .agg(collect_list("uid") as "uid", collect_list("gid") as "gid",
+                  collect_list("post") as "post")
+                .filter { size('uid) >= 2 && size('uid) <= config.maxDF }
+                .select(explode(crossPostings('uid, 'gid, 'post)) as "pair")
+            })
               .select($"pair.*")
               .toDF("uid", "uid2", "post", "post2", "df")
 
