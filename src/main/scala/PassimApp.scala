@@ -24,7 +24,7 @@ case class Config(version: String = BuildInfo.version,
   mode: String = "cluster",
   n: Int = 5, maxDF: Int = 100, minRep: Int = 5, minAlg: Int = 20,
   gap: Int = 100, relOver: Double = 0.8, maxRep: Int = 10, history: Int = 7,
-  wordLength: Double = 2, sketchWidth: Int = 30000, sketchDepth: Int = 5,
+  wordLength: Double = 2,
   pairwise: Boolean = false, duppairs: Boolean = false,
   docwise: Boolean = false, dedup: Boolean = false,
   id: String = "id", group: String = "series", text: String = "text",
@@ -728,10 +728,6 @@ object PassimApp {
         c.copy(inputFormat = x) } text("Input format; default=json")
       opt[String]("output-format") action { (x, c) =>
         c.copy(outputFormat = x) } text("Output format; default=json")
-      opt[Int]("sketch-width") action { (x, c) =>
-        c.copy(sketchWidth = x) } text("Sketch width; default=20000")
-      opt[Int]("sketch-depth") action { (x, c) =>
-        c.copy(sketchDepth = x) } text("Sketch depth; default=10")
       opt[Double]('w', "word-length") action { (x, c) => c.copy(wordLength = x)
       } validate { x => if ( x >= 1 ) success else failure("average word length must be >= 1")
       } text("Minimum average word length to match; default=2")
