@@ -215,6 +215,6 @@ Humanities. TODO.
 
 ## License
 
-Copyright © 2012-5 David A. Smith
+Copyright © 2012-6 David A. Smith
 
 Distributed under the Eclipse Public License.
