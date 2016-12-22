@@ -21,13 +21,14 @@ import java.nio.ByteBuffer
 import jaligner.Sequence
 
 case class Config(version: String = BuildInfo.version,
-  mode: String = "cluster",
+  boilerplate: Boolean = false,
   n: Int = 5, maxDF: Int = 100, minRep: Int = 5, minAlg: Int = 20,
   gap: Int = 100, relOver: Double = 0.8, maxRep: Int = 10, history: Int = 7,
   wordLength: Double = 2,
   pairwise: Boolean = false, duppairs: Boolean = false,
   docwise: Boolean = false, dedup: Boolean = false,
   id: String = "id", group: String = "series", text: String = "text",
+  time: String = "hour", dayScale: Int = 24,
   inputFormat: String = "json", outputFormat: String = "json",
   inputPaths: String = "", outputPath: String = "")
 
@@ -210,6 +211,30 @@ object PassFun {
     res.toSeq
   }
 
+  def hapaxIndex(n: Int, wordLength: Double, w: Seq[String]) = {
+    val minFeatLen: Double = wordLength * n
+    w.sliding(n)
+      .zipWithIndex
+      .filter { _._1.map(_.size).sum >= minFeatLen }
+      .map { case (s, pos) => (s.mkString("~").##, pos) }
+      .toArray
+      .groupBy(_._1)
+      .mapValues(_.map(_._2))
+      .filter(_._2.size == 1)
+      .mapValues(_(0))
+  }
+  def hapaxIndex(n: Int, w: Seq[String]): Map[Int, Int] = hapaxIndex(n, 2, w)
+  def hapaxIndex(n: Int, s: String) = {
+    s.sliding(n)
+      .zipWithIndex
+      .toArray
+      .groupBy(_._1)
+      .mapValues(_.map(_._2))
+      .filter(_._2.size == 1)
+      .mapValues(_(0))
+  }
+
+
   type DocPassage = (String, Int, Int, Int, String)
   case class AlignedPassage(s1: String, s2: String, b1: Int, b2: Int, matches: Int, score: Float)
   def alignStrings(n: Int, gap: Int, matchMatrix: jaligner.matrix.Matrix,
@@ -226,9 +251,9 @@ object PassFun {
   }
   def recursivelyAlignStrings(n: Int, gap2: Int, matchMatrix: jaligner.matrix.Matrix,
     s1: String, s2: String): Seq[AlignedPassage] = {
-    val m1 = BoilerApp.hapaxIndex(n, s1)
-    val m2 = BoilerApp.hapaxIndex(n, s2)
-    val inc = PassFun.increasingMatches(m1
+    val m1 = hapaxIndex(n, s1)
+    val m2 = hapaxIndex(n, s2)
+    val inc = increasingMatches(m1
       .flatMap(z => if (m2.contains(z._1)) Some((z._2, m2(z._1), 1)) else None))
     val prod = s1.size * s2.size
     if ( inc.size == 0 && (prod >= gap2 || prod < 0) ) {
@@ -287,9 +312,9 @@ object PassFun {
   }
   def recursivelyAlignTerms(n: Int, gap2: Int, matchMatrix: jaligner.matrix.Matrix,
     t1: Array[String], t2: Array[String]): Seq[AlignedPassage] = {
-    val m1 = BoilerApp.hapaxIndex(n, t1)
-    val m2 = BoilerApp.hapaxIndex(n, t2)
-    val inc = PassFun.increasingMatches(m1
+    val m1 = hapaxIndex(n, t1)
+    val m2 = hapaxIndex(n, t2)
+    val inc = increasingMatches(m1
       .flatMap(z => if (m2.contains(z._1)) Some((z._2, m2(z._1), 1)) else None))
     if ( inc.size == 0 && (t1.size * t2.size) > gap2 ) {
       Seq(AlignedPassage("...", "...", 0, 0, 0, -5.0f - 0.5f * t1.size - 0.5f * t2.size))
@@ -330,77 +355,6 @@ object PassFun {
 }
 
 object BoilerApp {
-  def hapaxIndex(n: Int, wordLength: Double, w: Seq[String]) = {
-    val minFeatLen: Double = wordLength * n
-    w.sliding(n)
-      .zipWithIndex
-      .filter { _._1.map(_.size).sum >= minFeatLen }
-      .map { case (s, pos) => (s.mkString("~").##, pos) }
-      .toArray
-      .groupBy(_._1)
-      .mapValues(_.map(_._2))
-      .filter(_._2.size == 1)
-      .mapValues(_(0))
-  }
-  def hapaxIndex(n: Int, w: Seq[String]): Map[Int, Int] = hapaxIndex(n, 2, w)
-  def hapaxIndex(n: Int, s: String) = {
-    s.sliding(n)
-      .zipWithIndex
-      .toArray
-      .groupBy(_._1)
-      .mapValues(_.map(_._2))
-      .filter(_._2.size == 1)
-      .mapValues(_(0))
-  }
-
-  val mergeAligned = udf { (begins: Seq[Int], ends: Seq[Int]) =>
-    val spans = PassFun.mergeSpansLR(0, begins.zip(ends).map(x => Span(x._1, x._2))
-      .zip(Range(0, begins.size).map(_.toLong)))
-      .map(_._1) // TODO? merge nearly adjacent?
-    (spans.map(_.begin), spans.map(_.end)) // unzip
-  }
-
-  val splitDoc = udf { (id: String, text: String, regions: Seq[Row],
-    begin: Seq[Int], end: Seq[Int]) =>
-    val reg
-      = if ( regions == null ) Array[Region]() // Try doesn't catch nulls
-      else Try(regions.map(PassimApp.rowToRegion).toArray).getOrElse(Array[Region]())
-    val docs = new ArrayBuffer[NewDoc]
-    if ( begin == null || begin.size <= 0 ) {
-      docs += NewDoc(id, text, reg, false)
-    } else {
-      var start = 0
-      var breg = 0
-      var ereg = 0
-      for ( i <- 0 until begin.size ) {
-        if ( (begin(i) - start) >= 2 ) {
-          // Should check that this document is more than just a few whitespace characters
-          while ( ereg < reg.size && reg(ereg).start < begin(i) ) ereg += 1
-          docs += NewDoc(id + "_" + start + "_" + begin(i),
-            text.substring(start, begin(i)),
-            reg.slice(breg, ereg).map(_.offset(-start)),
-            false)
-          breg = ereg
-        }
-        while ( ereg < reg.size && reg(ereg).start < end(i) ) ereg += 1
-        docs += NewDoc(id + "_" + begin(i) + "_" + end(i),
-          text.substring(begin(i), end(i)),
-          reg.slice(breg, ereg).map(_.offset(-begin(i))),
-          true)
-        breg = ereg
-        start = end(i)
-      }
-      if ( (text.size - end.last) >= 2 ) {
-        if ( ereg < reg.size ) ereg = reg.size
-        docs += NewDoc(id + "_" + end.last + "_" + text.size,
-          text.substring(end.last, text.size),
-          reg.slice(breg, ereg).map(_.offset(-end.last)),
-          false)
-      }
-    }
-    docs.toArray
-  }
-
   def matchPages(config: Config, spark: SparkSession) = {
     import spark.implicits._
     import PassimApp.TextTokenizer
@@ -412,64 +366,10 @@ object BoilerApp {
 
     val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
 
-    val alignedPassages = udf { (s1: String, s2: String) =>
-      var start = 0
-      var b1 = 0
-      var b2 = 0
-      val buf = ArrayBuffer[(Int, Double, Int, Int)]()
-      for ( end <- 1 until s2.size ) {
-        if ( s2(end) == '\n' ) {
-          val alg1 = s1.substring(start, end+1)
-          val alg2 = s2.substring(start, end+1)
-          val t1 = alg1.replaceAll("-", "")
-          val t2 = alg2.replaceAll("-", "")
-
-          val matches = alg1.zip(alg2).count(x => x._1 == x._2)
-          buf += ((t2.size - t1.size, matches * 1.0 / t2.size, b1, b2))
-          start = end + 1
-          b1 += t1.size
-          b2 += t2.size
-        }
-      }
-      val lines = buf.toArray
-
-      val t1 = s1.replaceAll("-", "")
-      val t2 = s2.replaceAll("-", "")
-
-      val minLines = 5
-
-      val pass = ArrayBuffer[(Span, Span)]()
-      var i = 0
-      start = 0
-      while ( i < lines.size ) {
-        if ( lines(i)._1.abs > 20 || lines(i)._2 < 0.1 ) {
-          if ( start < i
-            && (i + 2) < lines.size
-            && lines(i+1)._1.abs <= 20 && lines(i+1)._2 >= 0.1
-            && (lines(i+1)._3 - lines(i)._3) <= 20
-            && (lines(i+1)._4 - lines(i)._4) <= 20 ) {
-            // continue passage
-          } else {
-            if ( (i - start) >= minLines ) {
-              pass += ((Span(lines(start)._3, lines(i)._3),
-                Span(lines(start)._4, lines(i)._4)))
-            }
-            start = i + 1
-          }
-        }
-        i += 1
-      }
-      if ( (i - start) >= minLines ) {
-        pass += ((Span(lines(start)._3, lines(lines.size - 1)._3),
-          Span(lines(start)._4, lines(lines.size - 1)._4)))
-      }
-      pass.toSeq
-    }
-
     val raw = spark.read.format(config.inputFormat).load(config.inputPaths)
 
     if ( !PassimApp.hdfsExists(spark, algFname) ) {
-      val indexer = udf {(terms: Seq[String]) => hapaxIndex(config.n, config.wordLength, terms)}
+      val indexer = udf {(terms: Seq[String]) => PassFun.hapaxIndex(config.n, config.wordLength, terms)}
       val corpus = raw.tokenize(config.text)
         .select('id, 'series, datediff('date, lit("1970-01-01")) as "day", 'issue,
           indexer('terms) as "index", col(config.text) as "text")
@@ -505,7 +405,7 @@ object BoilerApp {
           }
       }
         .toDF
-        .select('id1, 'id2, explode(alignedPassages('s1, 's2)) as "pass")
+        .select('id1, 'id2, explode(PassimApp.alignedPassages('s1, 's2)) as "pass")
         .select('id1, 'id2,
           $"pass._1.begin" as "b1", $"pass._1.end" as "e1",
           $"pass._2.begin" as "b2", $"pass._2.end" as "e2")
@@ -515,10 +415,10 @@ object BoilerApp {
     spark.read.parquet(algFname)
       .select('id2 as "id", 'b2 as "begin", 'e2 as "end")
       .groupBy("id")
-      .agg(mergeAligned(collect_list("begin"), collect_list("end")) as "spans")
+      .agg(PassimApp.mergeAligned(collect_list("begin"), collect_list("end")) as "spans")
       .select('id, $"spans._1" as "begin", $"spans._2" as "end")
       .join(raw, Seq("id"), "right_outer")
-      .withColumn("subdoc", explode(splitDoc('id, 'text, 'regions, 'begin, 'end)))
+      .withColumn("subdoc", explode(PassimApp.splitDoc('id, 'text, 'regions, 'begin, 'end)))
       .drop("begin", "end")
       .withColumnRenamed("id", "docid")
       .withColumn("id", $"subdoc.id")
@@ -639,6 +539,137 @@ object PassimApp {
       .write.format(config.outputFormat).save(config.outputPath)
   }
 
+  def makeIndexer(n: Int, wordLength: Double) = {
+    val minFeatLen: Double = wordLength * n
+    udf { (terms: Seq[String]) =>
+      terms.sliding(n)
+        .zipWithIndex
+        .filter { _._1.map(_.size).sum >= minFeatLen }
+        .map { case (s, pos) => (hashString(s.mkString("~")), pos) }
+        .toArray
+        .groupBy(_._1)
+      // Store the count and first posting; could store
+      // some other fixed number of postings.
+        .map { case (feat, post) => Post(feat, post.size, post(0)._2) }
+        .toSeq
+    }
+  }
+  val crossPostings = udf { (uid: Seq[Long], gid: Seq[Long], post: Seq[Int]) =>
+    for ( i <- 0 until uid.size; j <- (i+1) until uid.size; if gid(i) != gid(j) )
+    yield(if ( gid(i) < gid(j) ) (uid(i), uid(j), post(i), post(j), uid.size) else (uid(j), uid(i), post(j), post(i), uid.size))
+  }
+  def makeBoilerPostings(history: Int, dayScale: Int) = {
+    udf { (uid: Seq[Long], gid: Seq[Long], time: Seq[Int], post: Seq[Int]) =>
+      for ( i <- 0 until uid.size; j <- (i+1) until uid.size;
+        if gid(i) == gid(j)
+        && Math.abs(time(i) / dayScale - time(j) / dayScale) <= history // integer division
+        && time(i) != time(j) )
+      yield(if ( time(i) < time(j) ) (uid(i), uid(j), post(i), post(j), uid.size) else (uid(j), uid(i), post(j), post(i), uid.size))
+    }
+  }
+
+  val alignedPassages = udf { (s1: String, s2: String) =>
+    var start = 0
+    var b1 = 0
+    var b2 = 0
+    val buf = ArrayBuffer[(Int, Double, Int, Int)]()
+    for ( end <- 1 until s2.size ) {
+      if ( s2(end) == '\n' ) {
+        val alg1 = s1.substring(start, end+1)
+        val alg2 = s2.substring(start, end+1)
+        val t1 = alg1.replaceAll("-", "")
+        val t2 = alg2.replaceAll("-", "")
+
+        val matches = alg1.zip(alg2).count(x => x._1 == x._2)
+        buf += ((t2.size - t1.size, matches * 1.0 / t2.size, b1, b2))
+        start = end + 1
+        b1 += t1.size
+        b2 += t2.size
+      }
+    }
+    val lines = buf.toArray
+
+    val t1 = s1.replaceAll("-", "")
+    val t2 = s2.replaceAll("-", "")
+
+    val minLines = 5
+
+    val pass = ArrayBuffer[(Span, Span)]()
+    var i = 0
+    start = 0
+    while ( i < lines.size ) {
+      if ( lines(i)._1.abs > 20 || lines(i)._2 < 0.1 ) {
+        if ( start < i
+          && (i + 2) < lines.size
+          && lines(i+1)._1.abs <= 20 && lines(i+1)._2 >= 0.1
+          && (lines(i+1)._3 - lines(i)._3) <= 20
+          && (lines(i+1)._4 - lines(i)._4) <= 20 ) {
+          // continue passage
+        } else {
+          if ( (i - start) >= minLines ) {
+            pass += ((Span(lines(start)._3, lines(i)._3),
+              Span(lines(start)._4, lines(i)._4)))
+          }
+          start = i + 1
+        }
+      }
+      i += 1
+    }
+    if ( (i - start) >= minLines ) {
+      pass += ((Span(lines(start)._3, lines(lines.size - 1)._3),
+        Span(lines(start)._4, lines(lines.size - 1)._4)))
+    }
+    pass.toSeq
+  }
+
+  val mergeAligned = udf { (begins: Seq[Int], ends: Seq[Int]) =>
+    val spans = PassFun.mergeSpansLR(0, begins.zip(ends).map(x => Span(x._1, x._2))
+      .zip(Range(0, begins.size).map(_.toLong)))
+      .map(_._1) // TODO? merge nearly adjacent?
+    (spans.map(_.begin), spans.map(_.end)) // unzip
+  }
+
+  val splitDoc = udf { (id: String, text: String, regions: Seq[Row],
+    begin: Seq[Int], end: Seq[Int]) =>
+    val reg
+      = if ( regions == null ) Array[Region]() // Try doesn't catch nulls
+      else Try(regions.map(PassimApp.rowToRegion).toArray).getOrElse(Array[Region]())
+    val docs = new ArrayBuffer[NewDoc]
+    if ( begin == null || begin.size <= 0 ) {
+      docs += NewDoc(id, text, reg, false)
+    } else {
+      var start = 0
+      var breg = 0
+      var ereg = 0
+      for ( i <- 0 until begin.size ) {
+        if ( (begin(i) - start) >= 2 ) {
+          // Should check that this document is more than just a few whitespace characters
+          while ( ereg < reg.size && reg(ereg).start < begin(i) ) ereg += 1
+          docs += NewDoc(id + "_" + start + "_" + begin(i),
+            text.substring(start, begin(i)),
+            reg.slice(breg, ereg).map(_.offset(-start)),
+            false)
+          breg = ereg
+        }
+        while ( ereg < reg.size && reg(ereg).start < end(i) ) ereg += 1
+        docs += NewDoc(id + "_" + begin(i) + "_" + end(i),
+          text.substring(begin(i), end(i)),
+          reg.slice(breg, ereg).map(_.offset(-begin(i))),
+          true)
+        breg = ereg
+        start = end(i)
+      }
+      if ( (text.size - end.last) >= 2 ) {
+        if ( ereg < reg.size ) ereg = reg.size
+        docs += NewDoc(id + "_" + end.last + "_" + text.size,
+          text.substring(end.last, text.size),
+          reg.slice(breg, ereg).map(_.offset(-end.last)),
+          false)
+      }
+    }
+    docs.toArray
+  }
+
   val hashId = udf { (id: String) => hashString(id) }
   val termSpan = udf { (begin: Int, end: Int, terms: Seq[String]) =>
     terms.slice(Math.max(0, Math.min(terms.size, begin)),
@@ -690,8 +721,8 @@ object PassimApp {
     import spark.implicits._
 
     val parser = new scopt.OptionParser[Config]("passim") {
-      opt[String]('M', "mode") action { (x, c) =>
-        c.copy(mode = x) } text("Mode: cluster, boilerplate, parents; default=cluster")
+      opt[Unit]("boilerplate") action { (_, c) =>
+        c.copy(boilerplate = true) } text("Detect boilerplate within groups.")
       opt[Int]('n', "n") action { (x, c) => c.copy(n = x) } validate { x =>
         if ( x > 0 ) success else failure("n-gram order must be > 0")
       } text("index n-gram features; default=5")
@@ -724,6 +755,10 @@ object PassimApp {
         c.copy(text = x) } text("Field for document text; default=text")
       opt[String]('s', "group") action { (x, c) =>
         c.copy(group = x) } text("Field to group documents into series; default=series")
+      opt[String]("time") action { (x, c) =>
+        c.copy(time = x) } text("Field to order documents by time; default=hour")
+      opt[Int]("dayScale") action { (x, c) =>
+        c.copy(dayScale = x) } text("Number of time units in a day; default=24")
       opt[String]("input-format") action { (x, c) =>
         c.copy(inputFormat = x) } text("Input format; default=json")
       opt[String]("output-format") action { (x, c) =>
@@ -755,14 +790,6 @@ object PassimApp {
       initConfig
     }
 
-    if ( config.mode == "parents" ) {
-      matchParents(config, spark)
-      sys.exit(0)
-    } else if ( config.mode == "boilerplate" ) {
-      BoilerApp.matchPages(config, spark)
-      sys.exit(0)
-    }
-
     val indexFname = config.outputPath + "/index.parquet"
     val pairsFname = config.outputPath + "/pairs.parquet"
     val passFname = config.outputPath + "/pass.parquet"
@@ -772,46 +799,45 @@ object PassimApp {
     if ( !hdfsExists(spark, outFname) ) {
       val raw = spark.read.format(config.inputFormat).load(config.inputPaths)
 
+      val groupCol = if ( raw.columns.contains(config.group) ) config.group else config.id
+
       val corpus = raw.na.drop(Seq(config.id, config.text))
         .withColumn("uid", hashId(col(config.id)))
+        .withColumn("gid", hashId(col(groupCol)))
         .tokenize(config.text)
 
-      if ( !hdfsExists(spark, clusterFname) ) {
+      if ( !hdfsExists(spark, clusterFname) || config.boilerplate ) {
         if ( !hdfsExists(spark, passFname) ) {
-          val groupCol = if ( raw.columns.contains(config.group) ) config.group else config.id
-
-          val termCorpus = corpus.select('uid, hashId(col(groupCol)) as "gid", 'terms)
+          val indexFields = ListBuffer("uid", "gid", "terms")
+          if ( config.boilerplate ) indexFields += config.time
+          val termCorpus = corpus.select(indexFields.toList.map(col):_*)
 
           if ( !hdfsExists(spark, pairsFname) ) {
-            val minFeatLen: Double = config.wordLength * config.n
+            val getPostings = makeIndexer(config.n, config.wordLength)
 
-            val getPostings = udf { (terms: Seq[String]) =>
-              terms.sliding(config.n)
-                .zipWithIndex
-                .filter { _._1.map(_.size).sum >= minFeatLen }
-                .map { case (s, pos) => (hashString(s.mkString("~")), pos) }
-                .toArray
-                .groupBy(_._1)
-              // Store the count and first posting; could store
-              // some other fixed number of postings.
-                .map { case (feat, post) => Post(feat, post.size, post(0)._2) }
-                .toSeq
-            }
-
-            val crossPostings = udf { (uid: Seq[Long], gid: Seq[Long], post: Seq[Int]) =>
-              for ( i <- 0 until uid.size; j <- (i+1) until uid.size; if gid(i) != gid(j) )
-                yield(if ( gid(i) < gid(j) ) (uid(i), uid(j), post(i), post(j), uid.size) else (uid(j), uid(i), post(j), post(i), uid.size))
-            }
-
-            val pairs = termCorpus
-              .select('uid, 'gid, explode(getPostings('terms)) as "post")
-              .select('uid, 'gid, $"post.*")
+            val postings = termCorpus
+              .withColumn("post", explode(getPostings('terms)))
+              .drop("terms")
+              .withColumn("feat", 'post("feat"))
+              .withColumn("tf", 'post("tf"))
+              .withColumn("post", 'post("post"))
               .filter { 'tf === 1 }
               .groupBy("feat")
-              .agg(collect_list("uid") as "uid", collect_list("gid") as "gid",
-                collect_list("post") as "post")
-              .filter { size('uid) >= 2 && size('uid) <= config.maxDF }
-              .select(explode(crossPostings('uid, 'gid, 'post)) as "pair")
+
+            val pairs = (if ( config.boilerplate ) {
+              val boilerPostings = makeBoilerPostings(config.history, config.dayScale)
+              postings
+                .agg(collect_list("uid") as "uid", collect_list("gid") as "gid",
+                  collect_list(config.time) as "time", collect_list("post") as "post")
+                .filter { size('uid) >= 2 && size('uid) <= config.maxDF }
+                .select(explode(boilerPostings('uid, 'gid, 'time, 'post)) as "pair")
+            } else {
+              postings
+                .agg(collect_list("uid") as "uid", collect_list("gid") as "gid",
+                  collect_list("post") as "post")
+                .filter { size('uid) >= 2 && size('uid) <= config.maxDF }
+                .select(explode(crossPostings('uid, 'gid, 'post)) as "pair")
+            })
               .select($"pair.*")
               .toDF("uid", "uid2", "post", "post2", "df")
 
@@ -943,82 +969,129 @@ object PassimApp {
               begins.zip(ends).map { x => Span(x._1, x._2) }.zip(mids))
           }
 
-          // TODO: Bad column segmentation can interleave two texts,
-          // which can lead to unrelated clusters getting merged.  One
-          // possible solution would be to avoid merging passages that
-          // have poor alignments.
-          align.groupBy("uid", "gid")
-            .agg(mergeSpans(collect_list("begin"), collect_list("end"),
-              collect_list("mid")) as "spans")
-            .select('uid, 'gid, explode('spans) as "span")
-            .coalesce(graphParallelism)
-            .select(monotonically_increasing_id() as "nid", 'uid, 'gid,
-              $"span._1.begin", $"span._1.end", $"span._2" as "edges")
-            .write.parquet(passFname)
+          if ( config.boilerplate ) {
+            align.drop("gid")
+              .join(corpus.select('uid, col(config.id), col(config.text), col(config.time),
+                'termCharBegin, 'termCharEnd), "uid")
+              .withColumn("begin", 'termCharBegin('begin))
+              .withColumn("end",
+                'termCharEnd(when('end < size('termCharEnd), 'end)
+                  .otherwise(size('termCharEnd) - 1)))
+              .drop("termCharBegin", "termCharEnd")
+              .withColumn(config.text, getPassage(col(config.text), 'begin, 'end))
+              .groupBy("mid")
+              .agg(first(config.id) as "id1", last(config.id) as "id2",
+                alignStrings(first(config.text) as "s1", last(config.text) as "s2") as "alg",
+                first("begin") as "b1", first(config.time) as "t1",
+                last("begin") as "b2", last(config.time) as "t2")
+              .select(when('t1 < 't2, 'id1).otherwise('id2) as "id1",
+                when('t1 < 't2, 'id2).otherwise('id1) as "id2",
+                when('t1 < 't2, 'b1).otherwise('b2) as "b1",
+                when('t1 < 't2, 'b2).otherwise('b1) as "b2",
+                explode(alignedPassages(when('t1 < 't2, $"alg.s1").otherwise($"alg.s2"),
+                  when('t1 < 't2, $"alg.s2").otherwise($"alg.s1"))) as "pass")
+              .select('id1, 'id2,
+                ('b1 + $"pass._1.begin") as "b1", ('b1 + $"pass._1.end") as "e1",
+                ('b2 + $"pass._2.begin") as "b2", ('b2 + $"pass._2.end") as "e2")
+              .write.parquet(passFname)
+          } else {
+            // TODO: Bad column segmentation can interleave two texts,
+            // which can lead to unrelated clusters getting merged.  One
+            // possible solution would be to avoid merging passages that
+            // have poor alignments.
+            align.groupBy("uid", "gid")
+              .agg(mergeSpans(collect_list("begin"), collect_list("end"),
+                collect_list("mid")) as "spans")
+              .select('uid, 'gid, explode('spans) as "span")
+              .coalesce(graphParallelism)
+              .select(monotonically_increasing_id() as "nid", 'uid, 'gid,
+                $"span._1.begin", $"span._1.end", $"span._2" as "edges")
+              .write.parquet(passFname)
+          }
         }
 
-        val pass = spark.read.parquet(passFname).rdd
+        if ( !config.boilerplate ) {
+          val pass = spark.read.parquet(passFname).rdd
 
-        val passNodes = pass.map {
-          case Row(nid: Long, uid: Long, gid: Long, begin: Int, end: Int, edges: Seq[_]) =>
-            (nid, (IdSeries(uid, gid), Span(begin, end))) }
-        val passEdges = pass.flatMap {
-          case Row(nid: Long, uid: Long, gid: Long, begin: Int, end: Int, edges: Seq[_]) =>
-            edges.asInstanceOf[Seq[Long]].map(e => (e, nid)) }
-          .groupByKey
-          .map(e => {
-            val nodes = e._2.toArray.sorted
-            Edge(nodes(0), nodes(1), 1)
-          })
+          val passNodes = pass.map {
+            case Row(nid: Long, uid: Long, gid: Long, begin: Int, end: Int, edges: Seq[_]) =>
+              (nid, (IdSeries(uid, gid), Span(begin, end))) }
+          val passEdges = pass.flatMap {
+            case Row(nid: Long, uid: Long, gid: Long, begin: Int, end: Int, edges: Seq[_]) =>
+              edges.asInstanceOf[Seq[Long]].map(e => (e, nid)) }
+            .groupByKey
+            .map(e => {
+              val nodes = e._2.toArray.sorted
+              Edge(nodes(0), nodes(1), 1)
+            })
 
-        val passGraph = Graph(passNodes, passEdges)
-        passGraph.cache()
+          val passGraph = Graph(passNodes, passEdges)
+          passGraph.cache()
 
-        val cc = passGraph.connectedComponents()
+          val cc = passGraph.connectedComponents()
 
-        val clusters = passGraph.vertices.innerJoin(cc.vertices){
-          (id, pass, cid) => (pass._1, (pass._2, cid.toLong))
+          val clusters = passGraph.vertices.innerJoin(cc.vertices){
+            (id, pass, cid) => (pass._1, (pass._2, cid.toLong))
+          }
+            .values
+            .groupBy(_._2._2)
+            .filter(x => {
+              x._2.groupBy(_._1.id).values.groupBy(_.head._1.series).map(_._2.size).max <= config.maxRep
+            })
+            .flatMap(_._2)
+            .map(x => (x._1.id, x._2))
+            .groupByKey
+            .flatMap(x => x._2.groupBy(_._2).values.flatMap(p => {
+              PassFun.mergeSpansLR(0, p).map(z => (x._1, z._2(0), z._1.begin, z._1.end))
+            }))
+            .groupBy(_._2)
+            .flatMap(x => {
+              val size = x._2.size
+              x._2.map(p => (p._1, p._2, size, p._3, p._4))
+            })
+            .toDF("uid", "cluster", "size", "begin", "end")
+
+          clusters.write.parquet(clusterFname)
         }
-          .values
-          .groupBy(_._2._2)
-          .filter(x => {
-            x._2.groupBy(_._1.id).values.groupBy(_.head._1.series).map(_._2.size).max <= config.maxRep
-          })
-          .flatMap(_._2)
-          .map(x => (x._1.id, x._2))
-          .groupByKey
-          .flatMap(x => x._2.groupBy(_._2).values.flatMap(p => {
-            PassFun.mergeSpansLR(0, p).map(z => (x._1, z._2(0), z._1.begin, z._1.end))
-          }))
-          .groupBy(_._2)
-          .flatMap(x => {
-            val size = x._2.size
-            x._2.map(p => (p._1, p._2, size, p._3, p._4))
-          })
-          .toDF("uid", "cluster", "size", "begin", "end")
-
-        clusters.write.parquet(clusterFname)
       }
 
-      val cols = corpus.columns.toSet
-      val dateSort = if ( cols.contains("date") ) "date" else config.id
+      if ( config.boilerplate ) {
+        spark.read.parquet(passFname)
+          .select('id2 as "id", 'b2 as "begin", 'e2 as "end")
+          .groupBy("id")
+          .agg(mergeAligned(collect_list("begin"), collect_list("end")) as "spans")
+          .select('id, $"spans._1" as "begin", $"spans._2" as "end")
+          .join(raw, Seq("id"), "right_outer")
+          .withColumn("subdoc", explode(splitDoc('id, 'text, 'regions, 'begin, 'end)))
+          .drop("begin", "end")
+          .withColumnRenamed("id", "docid")
+          .withColumn("id", $"subdoc.id")
+          .withColumn("text", $"subdoc.text")
+          .withColumn("regions", $"subdoc.regions")
+          .withColumn("aligned", $"subdoc.aligned")
+          .drop("subdoc")
+          .write.format(config.outputFormat).save(outFname)
+      } else {
+        val cols = corpus.columns.toSet
+        val dateSort = if ( cols.contains("date") ) "date" else config.id
 
-      val joint =
-        spark.read.parquet(clusterFname)
-          .join(corpus.drop("terms"), "uid")
-          .withColumn("begin", 'termCharBegin('begin))
-          .withColumn("end",
-            'termCharEnd(when('end < size('termCharEnd), 'end)
-              .otherwise(size('termCharEnd) - 1)))
-          .drop("termCharBegin", "termCharEnd")
-          .withColumn(config.text, getPassage(col(config.text), 'begin, 'end))
-          .selectRegions("regions", "pages")
-          .selectLocs("pages")
-          .selectLocs("locs")
+        val joint =
+          spark.read.parquet(clusterFname)
+            .join(corpus.drop("terms"), "uid")
+            .withColumn("begin", 'termCharBegin('begin))
+            .withColumn("end",
+              'termCharEnd(when('end < size('termCharEnd), 'end)
+                .otherwise(size('termCharEnd) - 1)))
+            .drop("termCharBegin", "termCharEnd")
+            .withColumn(config.text, getPassage(col(config.text), 'begin, 'end))
+            .selectRegions("regions", "pages")
+            .selectLocs("pages")
+            .selectLocs("locs")
 
-      val out = if ( config.outputFormat == "parquet" ) joint else joint.sort('size.desc, 'cluster, col(dateSort), col(config.id), 'begin)
+        val out = if ( config.outputFormat == "parquet" ) joint else joint.sort('size.desc, 'cluster, col(dateSort), col(config.id), 'begin)
 
-      out.write.format(config.outputFormat).save(outFname)
+        out.write.format(config.outputFormat).save(outFname)
+      }
     }
 
     spark.stop()
