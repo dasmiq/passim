@@ -416,11 +416,28 @@ object PassimApp {
         .distinct.sorted)) // stable
         .getOrElse(Seq[String]())
     }
+    val pageRegions = udf{(begin: Int, end: Int, regions: Seq[Row], pages: Seq[Row]) =>
+      // First, find the bounds of pages; then, project them to regions.
+      // TODO: We might need to handle empty pages lists differently.
+      val pageSpans =
+        Try(pages.map(rowToLocus)
+          .filter { r => r.start <= end && r.end >= begin })
+          .getOrElse(Seq(Locus(begin, end - begin, "")))
+      val regionSpans =
+        Try(regions.map(rowToRegion)
+          .filter { r => r.start <= end && r.end >= begin })
+          .getOrElse(Seq[Region]())
+      Try(pageSpans
+        .map { loc => regionSpans.filter { r => r.start <= loc.end && r.end >= loc.start }
+          .map { _.coords }
+          .reduce { _.merge(_) } })
+        .getOrElse(Seq[Coords]())
+    }
     def selectRegions(regionCol: String, pageCol: String): DataFrame = {
       if ( df.columns.contains(regionCol) ) {
         if ( df.columns.contains(pageCol) ) {
-          // First, find the bounds of pages; then, project them to regions.
-          df
+          df.withColumn(regionCol, pageRegions(col("begin"), col("end"),
+            col(regionCol), col(pageCol)))
         } else {
           df.withColumn(regionCol, boundRegions(col("begin"), col("end"), col(regionCol)))
         }
@@ -616,21 +633,6 @@ object PassimApp {
       Math.max(0, Math.min(terms.size, end))).mkString(" ")
   }
   val getPassage = udf { (text: String, begin: Int, end: Int) => text.substring(begin, end) }
-  // val getRegions = udf {
-  //   (begin: Int, end: Int, termPages: Seq[String], termRegions: Seq[Row]) =>
-  //   if ( termRegions.size < end )
-  //     Array[imgCoord]()
-  //   else {
-  //     val regions = termRegions.toArray.slice(begin, end)
-  //       .map({ case Row(x: Int, y: Int, w: Int, h: Int) => imgCoord(x, y, w, h) })
-  //       .toArray
-  //     if ( termPages.size < end )
-  //       Array(CorpusFun.boundingBox(regions))
-  //     else
-  //       termPages.slice(begin, end).zip(regions).groupBy(_._1).toIndexedSeq.sortBy(_._1)
-  //         .map(x => CorpusFun.boundingBox(x._2.map(_._2).toArray)).toArray
-  //   }
-  // }
   def hdfsExists(spark: SparkSession, path: String) = {
     val hdfsPath = new Path(path)
     val fs = hdfsPath.getFileSystem(spark.sparkContext.hadoopConfiguration)
