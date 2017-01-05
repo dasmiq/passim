@@ -4,7 +4,6 @@ import org.apache.spark.SparkConf
 import org.apache.spark.graphx._
 import org.apache.spark.sql.{SparkSession, DataFrame, Row}
 import org.apache.spark.sql.functions._
-import org.apache.spark.sql.expressions.Window
 import org.apache.spark.storage.StorageLevel
 
 import org.apache.hadoop.fs.{FileSystem,Path}
@@ -351,82 +350,6 @@ object PassFun {
           }
         }).toSeq
     }
-  }
-}
-
-object BoilerApp {
-  def matchPages(config: Config, spark: SparkSession) = {
-    import spark.implicits._
-    import PassimApp.TextTokenizer
-
-    val fs = FileSystem.get(spark.sparkContext.hadoopConfiguration)
-
-    val algFname = config.outputPath + "/boilerAlign"
-    val passFname = config.outputPath + "/boilerPass"
-
-    val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
-
-    val raw = spark.read.format(config.inputFormat).load(config.inputPaths)
-
-    if ( !PassimApp.hdfsExists(spark, algFname) ) {
-      val indexer = udf {(terms: Seq[String]) => PassFun.hapaxIndex(config.n, config.wordLength, terms)}
-      val corpus = raw.tokenize(config.text)
-        .select('id, 'series, datediff('date, lit("1970-01-01")) as "day", 'issue,
-          indexer('terms) as "index", col(config.text) as "text")
-        .na.drop(Seq("day"))
-        .withColumn("daybin", ('day / config.history).cast("int"))
-
-      val pcorpus = corpus.toDF(corpus.columns.map { "p" + _}:_*)
-
-      val binoffset = udf { (bin: Int) => Seq(bin, bin+1)}
-
-      // The predecessor is either in the same history-sized day bin
-      // or in the previous one.  The bins are disjoint, so we don't
-      // need to dedup the result.
-      pcorpus
-        .withColumn("pdaybin", explode(binoffset('pdaybin)))
-        .join(corpus, ('pseries === 'series) && ('pdaybin === 'daybin)
-          && ('pissue < 'issue) && (('pday + config.history) >= 'day))
-        .select('pid, 'pindex, 'ptext, 'id, 'index, 'text)
-        .flatMap { case Row(pid: String, pindex: Map[_, _], ptext: String,
-          id: String, index: Map[_, _], text: String) =>
-          val pm = pindex.asInstanceOf[Map[Int, Int]]
-          val m = index.asInstanceOf[Map[Int, Int]]
-          val inc = PassFun.increasingMatches(pm
-            .flatMap { z => if (m.contains(z._1)) Some((z._2, m(z._1), 1)) else None })
-          val gapped = PassFun.gappedMatches(config.n, config.gap, config.minAlg, inc)
-          // println("# rep: " + (pid, id, inc.size, gapped.size))
-          if ( inc.size >= config.minRep && gapped.size > 0 ) {
-            // TODO: Give high cost to newline mismatches.
-            Some(PassFun.alignStrings(config.n * 5, config.gap * 5, matchMatrix,
-              (pid, 0, ptext.size, ptext.size, ptext), (id, 0, text.size, text.size, text)))
-          } else {
-            None
-          }
-      }
-        .toDF
-        .select('id1, 'id2, explode(PassimApp.alignedPassages('s1, 's2)) as "pass")
-        .select('id1, 'id2,
-          $"pass._1.begin" as "b1", $"pass._1.end" as "e1",
-          $"pass._2.begin" as "b2", $"pass._2.end" as "e2")
-        .write.parquet(algFname)
-    }
-
-    spark.read.parquet(algFname)
-      .select('id2 as "id", 'b2 as "begin", 'e2 as "end")
-      .groupBy("id")
-      .agg(PassimApp.mergeAligned(collect_list("begin"), collect_list("end")) as "spans")
-      .select('id, $"spans._1" as "begin", $"spans._2" as "end")
-      .join(raw, Seq("id"), "right_outer")
-      .withColumn("subdoc", explode(PassimApp.splitDoc('id, 'text, 'regions, 'begin, 'end)))
-      .drop("begin", "end")
-      .withColumnRenamed("id", "docid")
-      .withColumn("id", $"subdoc.id")
-      .withColumn("text", $"subdoc.text")
-      .withColumn("regions", $"subdoc.regions")
-      .withColumn("aligned", $"subdoc.aligned")
-      .drop("subdoc")
-      .write.format(config.outputFormat).save(passFname)
   }
 }
 
