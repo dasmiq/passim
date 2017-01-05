@@ -49,6 +49,11 @@ case class Region(start: Int, length: Int, coords: Coords) {
   def offset(off: Int) = Region(this.start + off, this.length, this.coords)
 }
 
+case class Locus(start: Int, length: Int, loc: String) {
+  def end = start + length
+  def offset(off: Int) = Locus(this.start + off, this.length, this.loc)
+}
+
 case class DocSpan(uid: Long, begin: Int, end: Int)
 
 // Could parameterized on index type instead of Int
@@ -370,6 +375,11 @@ object PassimApp {
         }
     }
   }
+  def rowToLocus(r: Row): Locus = {
+    r match {
+      case Row(start: Int, length: Int, loc: String) => Locus(start, length, loc)
+    }
+  }
   implicit class TextTokenizer(df: DataFrame) {
     val tokenizeCol = udf {(text: String) =>
       val tok = new passim.TagTokenizer()
@@ -394,10 +404,17 @@ object PassimApp {
     }
     val boundRegions = udf {(begin: Int, end: Int, regions: Seq[Row]) =>
       Try(Seq(regions.map(rowToRegion)
-        .filter { r => r.start <= end && (r.start + r.length) >= begin }
+        .filter { r => r.start <= end && r.end >= begin }
         .map { _.coords }
         .reduce { _.merge(_) }))
         .getOrElse(Seq[Coords]())
+    }
+    val boundLoci = udf {(begin: Int, end: Int, loci: Seq[Row]) =>
+      Try(Seq(loci.map(rowToLocus)
+        .filter { r => r.start <= end && r.end >= begin }
+        .map { _.loc }
+        .distinct.sorted)) // stable
+        .getOrElse(Seq[String]())
     }
     def selectRegions(regionCol: String, pageCol: String): DataFrame = {
       if ( df.columns.contains(regionCol) ) {
@@ -405,7 +422,7 @@ object PassimApp {
           // First, find the bounds of pages; then, project them to regions.
           df
         } else {
-          df.withColumn("regions", boundRegions(col("begin"), col("end"), col(regionCol)))
+          df.withColumn(regionCol, boundRegions(col("begin"), col("end"), col(regionCol)))
         }
       } else {
         df
@@ -413,7 +430,7 @@ object PassimApp {
     }
     def selectLocs(colName: String): DataFrame = {
       if ( df.columns.contains(colName) ) {
-        df
+        df.withColumn(colName, boundLoci(col("begin"), col("end"), col(colName)))
       } else {
         df
       }
@@ -599,13 +616,6 @@ object PassimApp {
       Math.max(0, Math.min(terms.size, end))).mkString(" ")
   }
   val getPassage = udf { (text: String, begin: Int, end: Int) => text.substring(begin, end) }
-  // val getLocs = udf {
-  //   (begin: Int, end: Int, termLocs: Seq[String]) =>
-  //   if ( termLocs.size >= end )
-  //     termLocs.toArray.slice(begin, end).distinct.sorted // stable
-  //   else
-  //     Array[String]()
-  // }
   // val getRegions = udf {
   //   (begin: Int, end: Int, termPages: Seq[String], termRegions: Seq[Row]) =>
   //   if ( termRegions.size < end )
