@@ -410,10 +410,10 @@ object PassimApp {
         .getOrElse(Seq[Coords]())
     }
     val boundLoci = udf {(begin: Int, end: Int, loci: Seq[Row]) =>
-      Try(Seq(loci.map(rowToLocus)
+      Try(loci.map(rowToLocus)
         .filter { r => r.start <= end && r.end >= begin }
         .map { _.loc }
-        .distinct.sorted)) // stable
+        .distinct.sorted) // stable
         .getOrElse(Seq[String]())
     }
     val pageRegions = udf{(begin: Int, end: Int, regions: Seq[Row], pages: Seq[Row]) =>
@@ -626,6 +626,109 @@ object PassimApp {
     }
     docs.toArray
   }
+  def boilerSplit(passages: DataFrame, raw: DataFrame): DataFrame = {
+    import passages.sparkSession.implicits._
+    passages
+      .select('id2 as "id", 'b2 as "begin", 'e2 as "end")
+      .groupBy("id")
+      .agg(mergeAligned(collect_list("begin"), collect_list("end")) as "spans")
+      .select('id, $"spans._1" as "begin", $"spans._2" as "end")
+      .join(raw, Seq("id"), "right_outer")
+      .withColumn("subdoc", explode(splitDoc('id, 'text, 'regions, 'begin, 'end)))
+      .drop("begin", "end")
+      .withColumnRenamed("id", "docid")
+      .withColumn("id", $"subdoc.id")
+      .withColumn("text", $"subdoc.text")
+      .withColumn("regions", $"subdoc.regions")
+      .withColumn("aligned", $"subdoc.aligned")
+      .drop("subdoc")
+  }
+  def clusterJoin(config: Config, clusters: DataFrame, corpus: DataFrame): DataFrame = {
+    import clusters.sparkSession.implicits._
+    val cols = corpus.columns.toSet
+    val dateSort = if ( cols.contains("date") ) "date" else config.id
+
+    val joint = clusters
+      .join(corpus.drop("terms"), "uid")
+      .withColumn("begin", 'termCharBegin('begin))
+      .withColumn("end",
+        'termCharEnd(when('end < size('termCharEnd), 'end)
+          .otherwise(size('termCharEnd) - 1)))
+      .drop("termCharBegin", "termCharEnd")
+      .withColumn(config.text, getPassage(col(config.text), 'begin, 'end))
+      .selectRegions("regions", "pages")
+      .selectLocs("pages")
+      .selectLocs("locs")
+
+    if ( config.outputFormat == "parquet" )
+      joint
+    else
+      joint.sort('size.desc, 'cluster, col(dateSort), col(config.id), 'begin)
+  }
+
+  def makeStringAligner(config: Config) = {
+    val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
+    udf { (s1: String, s2: String) =>
+      val chunks = PassFun.recursivelyAlignStrings(config.n, config.gap * config.gap,
+        matchMatrix, s1.replaceAll("-", "_"), s2.replaceAll("-", "_"))
+      AlignedStrings(chunks.map(_.s1).mkString, chunks.map(_.s2).mkString,
+        chunks.map(_.matches).sum, chunks.map(_.score).sum)
+    }
+  }
+
+  def docwiseAlignments(config: Config, pairs: DataFrame, corpus: DataFrame): DataFrame = {
+    import pairs.sparkSession.implicits._
+    val alignStrings = makeStringAligner(config)
+    pairs
+      .select('uid, 'mid)
+      .join(corpus.select('uid, col(config.id), col(config.text)), "uid")
+      .groupBy("mid")
+      .agg(first("id") as "id1", last("id") as "id2",
+        alignStrings(first(config.text) as "s1", last(config.text) as "s2") as "alg")
+      .select('id1, 'id2, $"alg.*")
+  }
+
+  def pairwiseAlignments(config: Config, align: DataFrame, corpus: DataFrame): DataFrame = {
+    import align.sparkSession.implicits._
+    val alignStrings = makeStringAligner(config)
+    align.cache()
+    val meta = corpus.drop("uid", "text", "terms", "termCharBegin", "termCharEnd",
+      "regions", "pages", "locs")
+    val fullalign = align.drop("gid")
+      .join(corpus.select('uid, col(config.id), col(config.text),
+        'termCharBegin, 'termCharEnd), "uid")
+      .withColumn("begin", 'termCharBegin('begin))
+      .withColumn("end",
+        'termCharEnd(when('end < size('termCharEnd), 'end)
+          .otherwise(size('termCharEnd) - 1)))
+      .drop("termCharBegin", "termCharEnd")
+      .withColumn(config.text, getPassage(col(config.text), 'begin, 'end))
+      .groupBy("mid")
+      .agg(first("uid") as "uid1", last("uid") as "uid2",
+        first(config.id) as "id1", last(config.id) as "id2",
+        alignStrings(first(config.text) as "s1", last(config.text) as "s2") as "alg",
+        first("begin") as "b1", first("end") as "e1",
+        last("begin") as "b2", last("end") as "e2")
+      .select('uid1, 'uid2, 'id1, 'id2, $"alg.*", 'b1, 'e1, 'b2, 'e2)
+      .join(meta.toDF(meta.columns.map { _ + "1" }:_*), "id1")
+      .join(meta.toDF(meta.columns.map { _ + "2" }:_*), "id2")
+
+    val cols = fullalign.columns
+
+    (if ( config.duppairs ) {
+      fullalign.cache()
+      fullalign
+        .union(fullalign
+          .toDF(cols.map { s =>
+            if ( s endsWith "1" )
+              s.replaceAll("1$", "2")
+            else
+              s.replaceAll("2$", "1") }:_*))
+        .distinct
+    } else fullalign)
+      .select((cols.filter(_ endsWith "1") ++ cols.filter(_ endsWith "2") ++ Seq("matches", "score")).map(col):_*)
+      .sort('id1, 'id2, 'b1, 'b2)
+  }
 
   val hashId = udf { (id: String) => hashString(id) }
   val termSpan = udf { (begin: Int, end: Int, terms: Seq[String]) =>
@@ -808,27 +911,14 @@ object PassimApp {
               .write.parquet(pairsFname) // But we need to cache so IDs don't get reassigned.
           }
 
-          val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
-          val alignStrings = udf { (s1: String, s2: String) =>
-            val chunks = PassFun.recursivelyAlignStrings(config.n, config.gap * config.gap,
-              matchMatrix, s1.replaceAll("-", "_"), s2.replaceAll("-", "_"))
-            AlignedStrings(chunks.map(_.s1).mkString, chunks.map(_.s2).mkString,
-              chunks.map(_.matches).sum, chunks.map(_.score).sum)
-          }
-
           // TODO: Should probably be a separate mode.
           if ( config.docwise ) {
-            spark.read.parquet(pairsFname)
-              .select('uid, 'mid)
-              .join(corpus.select('uid, col(config.id), col(config.text)), "uid")
-              .groupBy("mid")
-              .agg(first("id") as "id1", last("id") as "id2",
-                alignStrings(first(config.text) as "s1", last(config.text) as "s2") as "alg")
-              .select('id1, 'id2, $"alg.*")
+            docwiseAlignments(config, spark.read.parquet(pairsFname), corpus)
               .write.format(config.outputFormat)
               .save(config.outputPath + "/docs." + config.outputFormat)
           }
 
+          val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
           val alignEdge = udf {
             (idx1: Int, idx2: Int, text1: String, text2: String, anchor: String) =>
             PassFun.alignEdge(matchMatrix, idx1, idx2, text1, text2, anchor)
@@ -856,43 +946,7 @@ object PassimApp {
             .select($"pair.*")
 
           if ( config.pairwise || config.duppairs ) {
-            align.cache()
-            val meta = corpus.drop("uid", "text", "terms", "termCharBegin", "termCharEnd",
-              "regions", "pages", "locs")
-            val fullalign = align.drop("gid")
-              .join(corpus.select('uid, col(config.id), col(config.text),
-                'termCharBegin, 'termCharEnd), "uid")
-              .withColumn("begin", 'termCharBegin('begin))
-              .withColumn("end",
-                'termCharEnd(when('end < size('termCharEnd), 'end)
-                  .otherwise(size('termCharEnd) - 1)))
-              .drop("termCharBegin", "termCharEnd")
-              .withColumn(config.text, getPassage(col(config.text), 'begin, 'end))
-              .groupBy("mid")
-              .agg(first("uid") as "uid1", last("uid") as "uid2",
-                first(config.id) as "id1", last(config.id) as "id2",
-                alignStrings(first(config.text) as "s1", last(config.text) as "s2") as "alg",
-                first("begin") as "b1", first("end") as "e1",
-                last("begin") as "b2", last("end") as "e2")
-              .select('uid1, 'uid2, 'id1, 'id2, $"alg.*", 'b1, 'e1, 'b2, 'e2)
-              .join(meta.toDF(meta.columns.map { _ + "1" }:_*), "id1")
-              .join(meta.toDF(meta.columns.map { _ + "2" }:_*), "id2")
-
-            val cols = fullalign.columns
-
-            (if ( config.duppairs ) {
-              fullalign.cache()
-              fullalign
-                .union(fullalign
-                  .toDF(cols.map { s =>
-                    if ( s endsWith "1" )
-                      s.replaceAll("1$", "2")
-                    else
-                      s.replaceAll("2$", "1") }:_*))
-                .distinct
-            } else fullalign)
-              .select((cols.filter(_ endsWith "1") ++ cols.filter(_ endsWith "2") ++ Seq("matches", "score")).map(col):_*)
-              .sort('id1, 'id2, 'b1, 'b2)
+            pairwiseAlignments(config, align, corpus)
               .write.format(config.outputFormat)
               .save(config.outputPath + "/align." + config.outputFormat)
           }
@@ -905,6 +959,7 @@ object PassimApp {
           }
 
           if ( config.boilerplate ) {
+            val alignStrings = makeStringAligner(config)
             align.drop("gid")
               .join(corpus.select('uid, col(config.id), col(config.text), col(config.time),
                 'termCharBegin, 'termCharEnd), "uid")
@@ -990,43 +1045,13 @@ object PassimApp {
         }
       }
 
-      if ( config.boilerplate ) {
-        spark.read.parquet(passFname)
-          .select('id2 as "id", 'b2 as "begin", 'e2 as "end")
-          .groupBy("id")
-          .agg(mergeAligned(collect_list("begin"), collect_list("end")) as "spans")
-          .select('id, $"spans._1" as "begin", $"spans._2" as "end")
-          .join(raw, Seq("id"), "right_outer")
-          .withColumn("subdoc", explode(splitDoc('id, 'text, 'regions, 'begin, 'end)))
-          .drop("begin", "end")
-          .withColumnRenamed("id", "docid")
-          .withColumn("id", $"subdoc.id")
-          .withColumn("text", $"subdoc.text")
-          .withColumn("regions", $"subdoc.regions")
-          .withColumn("aligned", $"subdoc.aligned")
-          .drop("subdoc")
-          .write.format(config.outputFormat).save(outFname)
+      val out = if ( config.boilerplate ) {
+        boilerSplit(spark.read.parquet(passFname), raw)
       } else {
-        val cols = corpus.columns.toSet
-        val dateSort = if ( cols.contains("date") ) "date" else config.id
-
-        val joint =
-          spark.read.parquet(clusterFname)
-            .join(corpus.drop("terms"), "uid")
-            .withColumn("begin", 'termCharBegin('begin))
-            .withColumn("end",
-              'termCharEnd(when('end < size('termCharEnd), 'end)
-                .otherwise(size('termCharEnd) - 1)))
-            .drop("termCharBegin", "termCharEnd")
-            .withColumn(config.text, getPassage(col(config.text), 'begin, 'end))
-            .selectRegions("regions", "pages")
-            .selectLocs("pages")
-            .selectLocs("locs")
-
-        val out = if ( config.outputFormat == "parquet" ) joint else joint.sort('size.desc, 'cluster, col(dateSort), col(config.id), 'begin)
-
-        out.write.format(config.outputFormat).save(outFname)
+        clusterJoin(config, spark.read.parquet(clusterFname), corpus)
       }
+
+      out.write.format(config.outputFormat).save(outFname)
     }
 
     spark.stop()
