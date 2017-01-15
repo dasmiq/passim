@@ -730,6 +730,57 @@ object PassimApp {
       .sort('id1, 'id2, 'b1, 'b2)
   }
 
+  def boilerPassages(config: Config, align: DataFrame, corpus: DataFrame): DataFrame = {
+    import align.sparkSession.implicits._
+    val alignStrings = makeStringAligner(config)
+    align.drop("gid")
+      .join(corpus.select('uid, col(config.id) as "id", col(config.text) as "text",
+        col(config.time) as "time", 'termCharBegin, 'termCharEnd), "uid")
+      .withColumn("begin", 'termCharBegin('begin))
+      .withColumn("end",
+        'termCharEnd(when('end < size('termCharEnd), 'end)
+          .otherwise(size('termCharEnd) - 1)))
+      .drop("termCharBegin", "termCharEnd")
+      .withColumn("text", getPassage('text, 'begin, 'end))
+      .groupBy("mid")
+      .agg(first("id") as "id1", last("id") as "id2",
+        alignStrings(first('text) as "s1", last('text) as "s2") as "alg",
+        first("begin") as "b1", first("time") as "t1",
+        last("begin") as "b2", last("time") as "t2")
+      .select(when('t1 < 't2, 'id1).otherwise('id2) as "id1",
+        when('t1 < 't2, 'id2).otherwise('id1) as "id2",
+        when('t1 < 't2, 'b1).otherwise('b2) as "b1",
+        when('t1 < 't2, 'b2).otherwise('b1) as "b2",
+        explode(alignedPassages(when('t1 < 't2, $"alg.s1").otherwise($"alg.s2"),
+          when('t1 < 't2, $"alg.s2").otherwise($"alg.s1"))) as "pass")
+      .select('id1, 'id2,
+        ('b1 + $"pass._1.begin") as "b1", ('b1 + $"pass._1.end") as "e1",
+        ('b2 + $"pass._2.begin") as "b2", ('b2 + $"pass._2.end") as "e2")
+  }
+
+  implicit class PassageAlignments(align: DataFrame) {
+    def mergePassages(relOver: Double): DataFrame = {
+      import align.sparkSession.implicits._
+      val graphParallelism = align.sparkSession.sparkContext.defaultParallelism
+
+      val mergeSpans = udf { (begins: Seq[Int], ends: Seq[Int], mids: Seq[Long]) =>
+        PassFun.mergeSpans(relOver, begins.zip(ends).map { x => Span(x._1, x._2) }.zip(mids))
+      }
+
+      // TODO: Bad column segmentation can interleave two texts,
+      // which can lead to unrelated clusters getting merged.  One
+      // possible solution would be to avoid merging passages that
+      // have poor alignments.
+      align.groupBy("uid", "gid")
+        .agg(mergeSpans(collect_list("begin"), collect_list("end"),
+          collect_list("mid")) as "spans")
+        .select('uid, 'gid, explode('spans) as "span")
+        .coalesce(graphParallelism)
+        .select(monotonically_increasing_id() as "nid", 'uid, 'gid,
+          $"span._1.begin", $"span._1.end", $"span._2" as "edges")
+    }
+  }
+
   val hashId = udf { (id: String) => hashString(id) }
   val termSpan = udf { (begin: Int, end: Int, terms: Seq[String]) =>
     terms.slice(Math.max(0, Math.min(terms.size, begin)),
@@ -911,9 +962,10 @@ object PassimApp {
               .write.parquet(pairsFname) // But we need to cache so IDs don't get reassigned.
           }
 
-          // TODO: Should probably be a separate mode.
+          val pairs = spark.read.parquet(pairsFname)
+
           if ( config.docwise ) {
-            docwiseAlignments(config, spark.read.parquet(pairsFname), corpus)
+            docwiseAlignments(config, pairs, corpus)
               .write.format(config.outputFormat)
               .save(config.outputPath + "/docs." + config.outputFormat)
           }
@@ -925,7 +977,7 @@ object PassimApp {
           }
 
           val extent: Int = config.gap * 2/3
-          val align = spark.read.parquet(pairsFname)
+          val align = pairs
             .join(termCorpus, "uid")
             .select('mid, 'uid, 'gid, 'begin, 'end,
               termSpan('begin - extent, 'begin, 'terms) as "prefix",
@@ -951,53 +1003,12 @@ object PassimApp {
               .save(config.outputPath + "/align." + config.outputFormat)
           }
 
-          val graphParallelism = spark.sparkContext.defaultParallelism
-
-          val mergeSpans = udf { (begins: Seq[Int], ends: Seq[Int], mids: Seq[Long]) =>
-            PassFun.mergeSpans(config.relOver,
-              begins.zip(ends).map { x => Span(x._1, x._2) }.zip(mids))
-          }
-
-          if ( config.boilerplate ) {
-            val alignStrings = makeStringAligner(config)
-            align.drop("gid")
-              .join(corpus.select('uid, col(config.id), col(config.text), col(config.time),
-                'termCharBegin, 'termCharEnd), "uid")
-              .withColumn("begin", 'termCharBegin('begin))
-              .withColumn("end",
-                'termCharEnd(when('end < size('termCharEnd), 'end)
-                  .otherwise(size('termCharEnd) - 1)))
-              .drop("termCharBegin", "termCharEnd")
-              .withColumn(config.text, getPassage(col(config.text), 'begin, 'end))
-              .groupBy("mid")
-              .agg(first(config.id) as "id1", last(config.id) as "id2",
-                alignStrings(first(config.text) as "s1", last(config.text) as "s2") as "alg",
-                first("begin") as "b1", first(config.time) as "t1",
-                last("begin") as "b2", last(config.time) as "t2")
-              .select(when('t1 < 't2, 'id1).otherwise('id2) as "id1",
-                when('t1 < 't2, 'id2).otherwise('id1) as "id2",
-                when('t1 < 't2, 'b1).otherwise('b2) as "b1",
-                when('t1 < 't2, 'b2).otherwise('b1) as "b2",
-                explode(alignedPassages(when('t1 < 't2, $"alg.s1").otherwise($"alg.s2"),
-                  when('t1 < 't2, $"alg.s2").otherwise($"alg.s1"))) as "pass")
-              .select('id1, 'id2,
-                ('b1 + $"pass._1.begin") as "b1", ('b1 + $"pass._1.end") as "e1",
-                ('b2 + $"pass._2.begin") as "b2", ('b2 + $"pass._2.end") as "e2")
-              .write.parquet(passFname)
-          } else {
-            // TODO: Bad column segmentation can interleave two texts,
-            // which can lead to unrelated clusters getting merged.  One
-            // possible solution would be to avoid merging passages that
-            // have poor alignments.
-            align.groupBy("uid", "gid")
-              .agg(mergeSpans(collect_list("begin"), collect_list("end"),
-                collect_list("mid")) as "spans")
-              .select('uid, 'gid, explode('spans) as "span")
-              .coalesce(graphParallelism)
-              .select(monotonically_increasing_id() as "nid", 'uid, 'gid,
-                $"span._1.begin", $"span._1.end", $"span._2" as "edges")
-              .write.parquet(passFname)
-          }
+          val pass = if ( config.boilerplate )
+            boilerPassages(config, align, corpus)
+          else
+            align.mergePassages(config.relOver)
+          
+          pass.write.parquet(passFname)
         }
 
         if ( !config.boilerplate ) {
