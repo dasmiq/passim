@@ -681,53 +681,11 @@ object PassimApp {
     val alignStrings = makeStringAligner(config)
     pairs
       .select('uid, 'mid)
-      .join(corpus.select('uid, col(config.id), col(config.text)), "uid")
+      .join(corpus.select('uid, col(config.id) as "id", col(config.text) as "text"), "uid")
       .groupBy("mid")
       .agg(first("id") as "id1", last("id") as "id2",
-        alignStrings(first(config.text) as "s1", last(config.text) as "s2") as "alg")
+        alignStrings(first("text") as "s1", last("text") as "s2") as "alg")
       .select('id1, 'id2, $"alg.*")
-  }
-
-  def pairwiseAlignments(config: Config, align: DataFrame, corpus: DataFrame): DataFrame = {
-    import align.sparkSession.implicits._
-    val alignStrings = makeStringAligner(config)
-    align.cache()
-    val meta = corpus.drop("uid", "text", "terms", "termCharBegin", "termCharEnd",
-      "regions", "pages", "locs")
-    val fullalign = align.drop("gid")
-      .join(corpus.select('uid, col(config.id), col(config.text),
-        'termCharBegin, 'termCharEnd), "uid")
-      .withColumn("begin", 'termCharBegin('begin))
-      .withColumn("end",
-        'termCharEnd(when('end < size('termCharEnd), 'end)
-          .otherwise(size('termCharEnd) - 1)))
-      .drop("termCharBegin", "termCharEnd")
-      .withColumn(config.text, getPassage(col(config.text), 'begin, 'end))
-      .groupBy("mid")
-      .agg(first("uid") as "uid1", last("uid") as "uid2",
-        first(config.id) as "id1", last(config.id) as "id2",
-        alignStrings(first(config.text) as "s1", last(config.text) as "s2") as "alg",
-        first("begin") as "b1", first("end") as "e1",
-        last("begin") as "b2", last("end") as "e2")
-      .select('uid1, 'uid2, 'id1, 'id2, $"alg.*", 'b1, 'e1, 'b2, 'e2)
-      .join(meta.toDF(meta.columns.map { _ + "1" }:_*), "id1")
-      .join(meta.toDF(meta.columns.map { _ + "2" }:_*), "id2")
-
-    val cols = fullalign.columns
-
-    (if ( config.duppairs ) {
-      fullalign.cache()
-      fullalign
-        .union(fullalign
-          .toDF(cols.map { s =>
-            if ( s endsWith "1" )
-              s.replaceAll("1$", "2")
-            else
-              s.replaceAll("2$", "1") }:_*))
-        .distinct
-    } else fullalign)
-      .select((cols.filter(_ endsWith "1") ++ cols.filter(_ endsWith "2") ++ Seq("matches", "score")).map(col):_*)
-      .sort('id1, 'id2, 'b1, 'b2)
   }
 
   def boilerPassages(config: Config, align: DataFrame, corpus: DataFrame): DataFrame = {
@@ -778,6 +736,47 @@ object PassimApp {
         .coalesce(graphParallelism)
         .select(monotonically_increasing_id() as "nid", 'uid, 'gid,
           $"span._1.begin", $"span._1.end", $"span._2" as "edges")
+    }
+    def pairwiseAlignments(config: Config, corpus: DataFrame): DataFrame = {
+      import align.sparkSession.implicits._
+      val alignStrings = makeStringAligner(config)
+      align.cache()
+      val meta = corpus.drop("uid", "text", "terms", "termCharBegin", "termCharEnd",
+        "regions", "pages", "locs")
+      val fullalign = align.drop("gid")
+        .join(corpus.select('uid, col(config.id) as "id", col(config.text) as "text",
+          'termCharBegin, 'termCharEnd), "uid")
+        .withColumn("begin", 'termCharBegin('begin))
+        .withColumn("end",
+          'termCharEnd(when('end < size('termCharEnd), 'end)
+            .otherwise(size('termCharEnd) - 1)))
+        .drop("termCharBegin", "termCharEnd")
+        .withColumn("text", getPassage('text, 'begin, 'end))
+        .groupBy("mid")
+        .agg(first("uid") as "uid1", last("uid") as "uid2",
+          first("id") as "id1", last("id") as "id2",
+          alignStrings(first("text") as "s1", last("text") as "s2") as "alg",
+          first("begin") as "b1", first("end") as "e1",
+          last("begin") as "b2", last("end") as "e2")
+        .select('uid1, 'uid2, 'id1, 'id2, $"alg.*", 'b1, 'e1, 'b2, 'e2)
+        .join(meta.toDF(meta.columns.map { _ + "1" }:_*), "id1")
+        .join(meta.toDF(meta.columns.map { _ + "2" }:_*), "id2")
+
+      val cols = fullalign.columns
+
+      (if ( config.duppairs ) {
+        fullalign.cache()
+        fullalign
+          .union(fullalign
+            .toDF(cols.map { s =>
+              if ( s endsWith "1" )
+                s.replaceAll("1$", "2")
+              else
+                s.replaceAll("2$", "1") }:_*))
+          .distinct
+      } else fullalign)
+        .select((cols.filter(_ endsWith "1") ++ cols.filter(_ endsWith "2") ++ Seq("matches", "score")).map(col):_*)
+        .sort('id1, 'id2, 'b1, 'b2)
     }
   }
 
@@ -998,7 +997,7 @@ object PassimApp {
             .select($"pair.*")
 
           if ( config.pairwise || config.duppairs ) {
-            pairwiseAlignments(config, align, corpus)
+            align.pairwiseAlignments(config, corpus)
               .write.format(config.outputFormat)
               .save(config.outputPath + "/align." + config.outputFormat)
           }
