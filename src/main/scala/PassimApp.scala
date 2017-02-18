@@ -49,6 +49,8 @@ case class Region(start: Int, length: Int, coords: Coords) {
   def offset(off: Int) = Region(this.start + off, this.length, this.coords)
 }
 
+case class Page(id: String, seq: Int, width: Int, height: Int, dpi: Int, regions: Array[Region])
+
 case class Locus(start: Int, length: Int, loc: String) {
   def end = start + length
   def offset(off: Int) = Locus(this.start + off, this.length, this.loc)
@@ -375,6 +377,12 @@ object PassimApp {
         }
     }
   }
+  def rowToPage(r: Row): Page = {
+    r match {
+      case Row(id: String, seq: Int, width: Int, height: Int, dpi: Int, regions: Seq[_]) =>
+        Page(id, seq, width, height, dpi, regions.asInstanceOf[Seq[Row]].map(rowToRegion).toArray)
+    }
+  }
   def rowToLocus(r: Row): Locus = {
     r match {
       case Row(start: Int, length: Int, loc: String) => Locus(start, length, loc)
@@ -402,13 +410,6 @@ object PassimApp {
           .drop("_tokens")
       }
     }
-    val boundRegions = udf {(begin: Int, end: Int, regions: Seq[Row]) =>
-      Try(Seq(regions.map(rowToRegion)
-        .filter { r => r.start <= end && r.end >= begin }
-        .map { _.coords }
-        .reduce { _.merge(_) }))
-        .getOrElse(Seq[Coords]())
-    }
     val boundLoci = udf {(begin: Int, end: Int, loci: Seq[Row]) =>
       Try(loci.map(rowToLocus)
         .filter { r => r.start <= end && r.end >= begin }
@@ -416,31 +417,23 @@ object PassimApp {
         .distinct.sorted) // stable
         .getOrElse(Seq[String]())
     }
-    val pageRegions = udf{(begin: Int, end: Int, regions: Seq[Row], pages: Seq[Row]) =>
-      // First, find the bounds of pages; then, project them to regions.
-      // TODO: We might need to handle empty pages lists differently.
-      val pageSpans =
-        Try(pages.map(rowToLocus)
-          .filter { r => r.start <= end && r.end >= begin })
-          .getOrElse(Seq(Locus(begin, end - begin, "")))
-      val regionSpans =
-        Try(regions.map(rowToRegion)
-          .filter { r => r.start <= end && r.end >= begin })
-          .getOrElse(Seq[Region]())
-      Try(pageSpans
-        .map { loc => regionSpans.filter { r => r.start <= loc.end && r.end >= loc.start }
-          .map { _.coords }
-          .reduce { _.merge(_) } })
-        .getOrElse(Seq[Coords]())
+    val pageRegions = udf{(begin: Int, end: Int, pages: Seq[Row]) =>
+      Try(pages.map(rowToPage)
+        .flatMap { p =>
+        val overlap = p.regions.filter { r => r.start <= end && r.end >= begin }
+        if ( overlap.size > 0 )
+          Some(p.copy(regions = Array(Region(overlap.head.start,
+            overlap.last.end - overlap.head.start,
+            overlap.map(_.coords).reduce(_.merge(_))))))
+        else
+          None
+      }
+      )
+        .getOrElse(Seq[Page]())
     }
-    def selectRegions(regionCol: String, pageCol: String): DataFrame = {
-      if ( df.columns.contains(regionCol) ) {
-        if ( df.columns.contains(pageCol) ) {
-          df.withColumn(regionCol, pageRegions(col("begin"), col("end"),
-            col(regionCol), col(pageCol)))
-        } else {
-          df.withColumn(regionCol, boundRegions(col("begin"), col("end"), col(regionCol)))
-        }
+    def selectRegions(pageCol: String): DataFrame = {
+      if ( df.columns.contains(pageCol) ) {
+        df.withColumn(pageCol, pageRegions(col("begin"), col("end"), col(pageCol)))
       } else {
         df
       }
@@ -656,8 +649,7 @@ object PassimApp {
           .otherwise(size('termCharEnd) - 1)))
       .drop("termCharBegin", "termCharEnd")
       .withColumn(config.text, getPassage(col(config.text), 'begin, 'end))
-      .selectRegions("regions", "pages")
-      .selectLocs("pages")
+      .selectRegions("pages")
       .selectLocs("locs")
 
     if ( config.outputFormat == "parquet" )
