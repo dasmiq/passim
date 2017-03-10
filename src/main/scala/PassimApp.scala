@@ -25,7 +25,7 @@ case class Config(version: String = BuildInfo.version,
   gap: Int = 100, relOver: Double = 0.8, maxRep: Int = 10, history: Int = 7,
   wordLength: Double = 2,
   pairwise: Boolean = false, duppairs: Boolean = false,
-  docwise: Boolean = false, dedup: Boolean = false,
+  docwise: Boolean = false, names: Boolean = false, postings: Boolean = false,
   id: String = "id", group: String = "series", text: String = "text",
   time: String = "hour", dayScale: Int = 24,
   inputFormat: String = "json", outputFormat: String = "json",
@@ -827,8 +827,10 @@ object PassimApp {
         c.copy(duppairs = true) } text("Duplicate pairwise alignments")
       opt[Unit]('d', "docwise") action { (_, c) =>
         c.copy(docwise = true) } text("Output docwise alignments")
-      opt[Unit]('D', "dedup") action { (_, c) =>
-        c.copy(dedup = true) } text("Deduplicate series")
+      opt[Unit]('N', "names") action { (_, c) =>
+        c.copy(names = true) } text("Output names and exit")
+      opt[Unit]('P', "postings") action { (_, c) =>
+        c.copy(postings = true) } text("Output postings and exit")
       opt[String]('i', "id") action { (x, c) =>
         c.copy(id = x) } text("Field for unique document IDs; default=id")
       opt[String]('t', "text") action { (x, c) =>
@@ -886,6 +888,12 @@ object PassimApp {
         .withColumn("gid", hashId(col(groupCol)))
         .tokenize(config.text)
 
+      if ( config.names ) {
+        corpus.select('uid, col(config.id), col(groupCol), size('terms) as "nterms")
+          .write.save(config.outputPath + "/names.parquet")
+        sys.exit(0)
+      }
+
       if ( !hdfsExists(spark, clusterFname) || config.boilerplate ) {
         if ( !hdfsExists(spark, passFname) ) {
           val indexFields = ListBuffer("uid", "gid", "terms")
@@ -894,6 +902,18 @@ object PassimApp {
 
           if ( !hdfsExists(spark, pairsFname) ) {
             val getPostings = makeIndexer(config.n, config.wordLength)
+
+            if ( config.postings ) {
+              val postings = termCorpus
+                .withColumn("post", explode(getPostings('terms)))
+                .drop("terms")
+                .withColumn("feat", 'post("feat"))
+                .withColumn("tf", 'post("tf"))
+                .withColumn("post", 'post("post"))
+                .filter { 'tf === 1 }.drop("tf")
+                .write.save(config.outputPath + "/postings.parquet")
+              sys.exit(0)
+            }
 
             val postings = termCorpus
               .withColumn("post", explode(getPostings('terms)))
@@ -920,17 +940,6 @@ object PassimApp {
             })
               .select($"pair.*")
               .toDF("uid", "uid2", "post", "post2", "df")
-
-            if ( config.dedup ) {
-              val docs = corpus.select('uid, col(config.id), col(groupCol), size('terms) as "nterms")
-
-              pairs.groupBy("uid", "uid2").count
-                .filter('count >= config.minRep)
-                .join(docs, "uid")
-                .join(docs.toDF(docs.columns.map { _ + "2" }:_*), "uid2")
-                .write.save(config.outputPath + "/pairstat.parquet")
-              sys.exit(0)
-            }
 
             val getPassages =
               udf { (uid: Long, uid2: Long, post: Seq[Int], post2: Seq[Int], df: Seq[Int]) =>
