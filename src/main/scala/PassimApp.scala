@@ -22,12 +22,12 @@ import jaligner.Sequence
 case class Config(version: String = BuildInfo.version,
   boilerplate: Boolean = false,
   n: Int = 5, maxDF: Int = 100, minRep: Int = 5, minAlg: Int = 20,
-  gap: Int = 100, relOver: Double = 0.8, maxRep: Int = 10, history: Int = 7,
+  gap: Int = 100, relOver: Double = 0.8, maxRep: Int = 10,
   wordLength: Double = 2,
   pairwise: Boolean = false, duppairs: Boolean = false,
   docwise: Boolean = false, names: Boolean = false, postings: Boolean = false,
   id: String = "id", group: String = "series", text: String = "text",
-  time: String = "hour", dayScale: Int = 24,
+  time: String = "", filterpairs: String = "gid < gid2",
   inputFormat: String = "json", outputFormat: String = "json",
   inputPaths: String = "", outputPath: String = "")
 
@@ -504,19 +504,6 @@ object PassimApp {
         .toSeq
     }
   }
-  val crossPostings = udf { (uid: Seq[Long], gid: Seq[Long], post: Seq[Int]) =>
-    for ( i <- 0 until uid.size; j <- (i+1) until uid.size; if gid(i) != gid(j) )
-    yield(if ( gid(i) < gid(j) ) (uid(i), uid(j), post(i), post(j), uid.size) else (uid(j), uid(i), post(j), post(i), uid.size))
-  }
-  def makeBoilerPostings(history: Int, dayScale: Int) = {
-    udf { (uid: Seq[Long], gid: Seq[Long], time: Seq[Int], post: Seq[Int]) =>
-      for ( i <- 0 until uid.size; j <- (i+1) until uid.size;
-        if gid(i) == gid(j)
-        && Math.abs(time(i) / dayScale - time(j) / dayScale) <= history // integer division
-        && time(i) != time(j) )
-      yield(if ( time(i) < time(j) ) (uid(i), uid(j), post(i), post(j), uid.size) else (uid(j), uid(i), post(j), post(i), uid.size))
-    }
-  }
 
   val alignedPassages = udf { (s1: String, s2: String) =>
     var start = 0
@@ -806,9 +793,6 @@ object PassimApp {
       opt[Int]('n', "n") action { (x, c) => c.copy(n = x) } validate { x =>
         if ( x > 0 ) success else failure("n-gram order must be > 0")
       } text("index n-gram features; default=5")
-      opt[Int]('h', "history") action { (x, c) => c.copy(history = x) } validate { x =>
-        if ( x > 0 ) success else failure("history must be > 0")
-      } text("history in days for self reprinting; default=7")
       opt[Int]('u', "maxDF") action { (x, c) =>
         c.copy(maxDF = x) } text("Upper limit on document frequency; default=100")
       opt[Int]('m', "min-match") action { (x, c) =>
@@ -837,10 +821,10 @@ object PassimApp {
         c.copy(text = x) } text("Field for document text; default=text")
       opt[String]('s', "group") action { (x, c) =>
         c.copy(group = x) } text("Field to group documents into series; default=series")
+      opt[String]('f', "filterpairs") action { (x, c) =>
+        c.copy(group = x) } text("Constraint on posting pairs; default=gid < gid2")
       opt[String]("time") action { (x, c) =>
-        c.copy(time = x) } text("Field to order documents by time; default=hour")
-      opt[Int]("dayScale") action { (x, c) =>
-        c.copy(dayScale = x) } text("Number of time units in a day; default=24")
+        c.copy(time = x) } text("Field to order documents by time")
       opt[String]("input-format") action { (x, c) =>
         c.copy(inputFormat = x) } text("Input format; default=json")
       opt[String]("output-format") action { (x, c) =>
@@ -872,6 +856,7 @@ object PassimApp {
       initConfig
     }
 
+    val dfpostFname = config.outputPath + "/dfpost.parquet"
     val indexFname = config.outputPath + "/index.parquet"
     val pairsFname = config.outputPath + "/pairs.parquet"
     val passFname = config.outputPath + "/pass.parquet"
@@ -897,49 +882,28 @@ object PassimApp {
       if ( !hdfsExists(spark, clusterFname) || config.boilerplate ) {
         if ( !hdfsExists(spark, passFname) ) {
           val indexFields = ListBuffer("uid", "gid", "terms")
-          if ( config.boilerplate ) indexFields += config.time
+          if ( config.time != "" ) indexFields += config.time
           val termCorpus = corpus.select(indexFields.toList.map(col):_*)
 
           if ( !hdfsExists(spark, pairsFname) ) {
-            val getPostings = makeIndexer(config.n, config.wordLength)
+            if ( !hdfsExists(spark, dfpostFname) ) {
+              val getPostings = makeIndexer(config.n, config.wordLength)
 
-            if ( config.postings ) {
               val postings = termCorpus
                 .withColumn("post", explode(getPostings('terms)))
                 .drop("terms")
                 .withColumn("feat", 'post("feat"))
                 .withColumn("tf", 'post("tf"))
                 .withColumn("post", 'post("post"))
-                .filter { 'tf === 1 }.drop("tf")
-                .write.save(config.outputPath + "/postings.parquet")
-              sys.exit(0)
+                .filter { 'tf === 1 }
+                .drop("tf")
+
+              val df = postings.groupBy("feat").count.select('feat, 'count.cast("int") as "df")
+                .filter { 'df >= 2 && 'df <= config.maxDF }
+
+              postings.join(df, "feat").write.save(dfpostFname)
             }
-
-            val postings = termCorpus
-              .withColumn("post", explode(getPostings('terms)))
-              .drop("terms")
-              .withColumn("feat", 'post("feat"))
-              .withColumn("tf", 'post("tf"))
-              .withColumn("post", 'post("post"))
-              .filter { 'tf === 1 }
-              .groupBy("feat")
-
-            val pairs = (if ( config.boilerplate ) {
-              val boilerPostings = makeBoilerPostings(config.history, config.dayScale)
-              postings
-                .agg(collect_list("uid") as "uid", collect_list("gid") as "gid",
-                  collect_list(config.time) as "time", collect_list("post") as "post")
-                .filter { size('uid) >= 2 && size('uid) <= config.maxDF }
-                .select(explode(boilerPostings('uid, 'gid, 'time, 'post)) as "pair")
-            } else {
-              postings
-                .agg(collect_list("uid") as "uid", collect_list("gid") as "gid",
-                  collect_list("post") as "post")
-                .filter { size('uid) >= 2 && size('uid) <= config.maxDF }
-                .select(explode(crossPostings('uid, 'gid, 'post)) as "pair")
-            })
-              .select($"pair.*")
-              .toDF("uid", "uid2", "post", "post2", "df")
+            if ( config.postings ) sys.exit(0)
 
             val getPassages =
               udf { (uid: Long, uid2: Long, post: Seq[Int], post2: Seq[Int], df: Seq[Int]) =>
@@ -951,7 +915,14 @@ object PassimApp {
                 } else Seq()
               }
 
-            pairs.groupBy("uid", "uid2")
+            val dfpost = spark.read.load(dfpostFname)
+
+            dfpost
+              .join(dfpost.toDF(dfpost.columns.map { f => if ( f == "feat" ) f else f + "2" }:_*),
+                "feat")
+              .filter(config.filterpairs)
+              .select("uid", "uid2", "post", "post2", "df")
+              .groupBy("uid", "uid2")
               .agg(collect_list("post") as "post", collect_list("post2") as "post2",
                 collect_list("df") as "df")
               .filter(size('post) >= config.minRep)
