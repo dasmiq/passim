@@ -6,4 +6,4 @@ SPARK_SUBMIT_ARGS="$SPARK_SUBMIT_ARGS"
 
 spark-submit --class passim.PassimApp --packages 'com.github.scopt:scopt_2.11:3.5.0' \
 	     $SPARK_SUBMIT_ARGS \
-	     "$PASSIM_HOME"/target/scala-2.11/passim_2.11-0.2.0.jar $@
+	     "$PASSIM_HOME"/target/scala-2.11/passim_2.11-0.2.0.jar "$@"
