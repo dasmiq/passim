@@ -822,7 +822,7 @@ object PassimApp {
       opt[String]('s', "group") action { (x, c) =>
         c.copy(group = x) } text("Field to group documents into series; default=series")
       opt[String]('f', "filterpairs") action { (x, c) =>
-        c.copy(group = x) } text("Constraint on posting pairs; default=gid < gid2")
+        c.copy(filterpairs = x) } text("Constraint on posting pairs; default=gid < gid2")
       opt[String]("time") action { (x, c) =>
         c.copy(time = x) } text("Field to order documents by time")
       opt[String]("input-format") action { (x, c) =>
