@@ -115,8 +115,8 @@ Field | Description
 ----- | ------------
 `cluster` | unique identifier for each cluster
 `size` | number of passages in each cluster
-`begin` | offset in the document of the token where the reused passage begins
-`end` | offset in the document of the token where the reused passage ends
+`begin` | character offset into the document where the reused passage begins
+`end` | character offset into the document where the reused passage ends
 `uid` | unique internal ID for each document, used for debugging
 
 In addition, `pages`, `regions`, and `locs` include information about
