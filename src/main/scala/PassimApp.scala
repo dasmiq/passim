@@ -509,7 +509,7 @@ object PassimApp {
     var start = 0
     var b1 = 0
     var b2 = 0
-    val buf = ArrayBuffer[(Int, Double, Int, Int)]()
+    val buf = ArrayBuffer[(Int, Double, Int, Int, String, String)]()
     for ( end <- 1 until s2.size ) {
       if ( s2(end) == '\n' ) {
         val alg1 = s1.substring(start, end+1)
@@ -518,7 +518,7 @@ object PassimApp {
         val t2 = alg2.replaceAll("-", "")
 
         val matches = alg1.zip(alg2).count(x => x._1 == x._2)
-        buf += ((t2.size - t1.size, matches * 1.0 / t2.size, b1, b2))
+        buf += ((t2.size - t1.size, matches * 1.0 / t2.size, b1, b2, t1, t2))
         start = end + 1
         b1 += t1.size
         b2 += t2.size
@@ -531,7 +531,8 @@ object PassimApp {
 
     val minLines = 5
 
-    val pass = ArrayBuffer[(Span, Span)]()
+    val pass = ArrayBuffer[(Span, Span, Array[(String, String)])]()
+    val pairs = ArrayBuffer[(String, String)]()
     var i = 0
     start = 0
     while ( i < lines.size ) {
@@ -545,16 +546,20 @@ object PassimApp {
         } else {
           if ( (i - start) >= minLines ) {
             pass += ((Span(lines(start)._3, lines(i)._3),
-              Span(lines(start)._4, lines(i)._4)))
+              Span(lines(start)._4, lines(i)._4),
+              pairs.toArray))
           }
           start = i + 1
+          pairs.clear
         }
       }
+      pairs += ((lines(i)._5, lines(i)._6))
       i += 1
     }
     if ( (i - start) >= minLines ) {
       pass += ((Span(lines(start)._3, lines(lines.size - 1)._3),
-        Span(lines(start)._4, lines(lines.size - 1)._4)))
+        Span(lines(start)._4, lines(lines.size - 1)._4),
+        pairs.toArray))
     }
     pass.toSeq
   }
@@ -691,6 +696,7 @@ object PassimApp {
         explode(alignedPassages(when('t1 < 't2, $"alg.s1").otherwise($"alg.s2"),
           when('t1 < 't2, $"alg.s2").otherwise($"alg.s1"))) as "pass")
       .select('id1, 'id2,
+        $"pass._3" as "pairs",
         ('b1 + $"pass._1.begin") as "b1", ('b1 + $"pass._1.end") as "e1",
         ('b2 + $"pass._2.begin") as "b2", ('b2 + $"pass._2.end") as "e2")
   }
