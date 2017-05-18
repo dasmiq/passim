@@ -282,7 +282,7 @@ object PassFun {
               Seq(AlignedPassage(p1, p2, b1, b2, p1.size, 2.0f * p2.size))
             } else {
               val alg = jaligner.NeedlemanWunschGotoh.align(new jaligner.Sequence(p1),
-                new jaligner.Sequence(p2), matchMatrix, 5, 0.5f)
+                new jaligner.Sequence(p2), matchMatrix, 1, 0.5f)
               // // HACK!! WHY does JAligner swap sequences ?!?!?!?
               val a1 = new String(alg.getSequence2)
               val a2 = new String(alg.getSequence1)
