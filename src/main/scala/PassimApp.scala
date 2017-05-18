@@ -257,6 +257,8 @@ object PassFun {
   }
   def recursivelyAlignStrings(n: Int, gap2: Int, matchMatrix: jaligner.matrix.Matrix,
     s1: String, s2: String): Seq[AlignedPassage] = {
+    val openGap = 1.0f
+    val contGap = 0.5f
     val m1 = hapaxIndex(n, s1)
     val m2 = hapaxIndex(n, s2)
     val inc = increasingMatches(m1
@@ -264,7 +266,7 @@ object PassFun {
     val prod = s1.size * s2.size
     if ( inc.size == 0 && (prod >= gap2 || prod < 0) ) {
       Seq(AlignedPassage(s1 + ("-" * s2.size), ("-" * s1.size) + s2,
-        0, 0, 0, -5.0f - 0.5f * s1.size - 0.5f * s2.size))
+        0, 0, 0, -openGap - contGap * s1.size - contGap * s2.size))
     } else {
       (Array((0, 0, 0)) ++ inc ++ Array((s1.size, s2.size, 0)))
         .sliding(2).flatMap(z => {
@@ -282,7 +284,7 @@ object PassFun {
               Seq(AlignedPassage(p1, p2, b1, b2, p1.size, 2.0f * p2.size))
             } else {
               val alg = jaligner.NeedlemanWunschGotoh.align(new jaligner.Sequence(p1),
-                new jaligner.Sequence(p2), matchMatrix, 1, 0.5f)
+                new jaligner.Sequence(p2), matchMatrix, openGap, contGap)
               // // HACK!! WHY does JAligner swap sequences ?!?!?!?
               val a1 = new String(alg.getSequence2)
               val a2 = new String(alg.getSequence1)
