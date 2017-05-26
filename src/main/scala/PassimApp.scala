@@ -662,18 +662,6 @@ object PassimApp {
     }
   }
 
-  def docwiseAlignments(config: Config, pairs: DataFrame, corpus: DataFrame): DataFrame = {
-    import pairs.sparkSession.implicits._
-    val alignStrings = makeStringAligner(config)
-    pairs
-      .select('uid, 'mid)
-      .join(corpus.select('uid, col(config.id) as "id", col(config.text) as "text"), "uid")
-      .groupBy("mid")
-      .agg(first("id") as "id1", last("id") as "id2",
-        alignStrings(first("text") as "s1", last("text") as "s2") as "alg")
-      .select('id1, 'id2, $"alg.*")
-  }
-
   def boilerPassages(config: Config, align: DataFrame, corpus: DataFrame): DataFrame = {
     import align.sparkSession.implicits._
     val alignStrings = makeStringAligner(config)
@@ -943,12 +931,6 @@ object PassimApp {
 
           val pairs = spark.read.parquet(pairsFname)
 
-          if ( config.docwise ) {
-            docwiseAlignments(config, pairs, corpus)
-              .write.format(config.outputFormat)
-              .save(config.outputPath + "/docs." + config.outputFormat)
-          }
-
           val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
           val alignEdge = udf {
             (idx1: Int, idx2: Int, text1: String, text2: String, anchor: String) =>
@@ -982,12 +964,19 @@ object PassimApp {
               .save(config.outputPath + "/align." + config.outputFormat)
           }
 
-          val pass = if ( config.boilerplate )
+          val pass = if ( config.boilerplate || config.docwise )
             boilerPassages(config, align, corpus)
           else
             align.mergePassages(config.relOver)
-          
-          pass.write.parquet(passFname)
+
+          if ( config.docwise ) {
+            pass.sort('id2, 'b2).write.format(config.outputFormat)
+              .save(config.outputPath + "/pass." + config.outputFormat)
+            sys.exit(0)
+          } else if ( config.boilerplate )
+            pass.drop("pairs").write.parquet(passFname)
+          else
+            pass.write.parquet(passFname)
         }
 
         if ( !config.boilerplate ) {
