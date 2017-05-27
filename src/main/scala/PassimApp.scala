@@ -56,7 +56,7 @@ case class Locus(start: Int, length: Int, loc: String) {
   def offset(off: Int) = Locus(this.start + off, this.length, this.loc)
 }
 
-case class DocSpan(uid: Long, begin: Int, end: Int)
+case class DocSpan(uid: Long, begin: Int, end: Int, first: Boolean)
 
 // Could parameterized on index type instead of Int
 case class Span(val begin: Int, val end: Int) {
@@ -667,7 +667,7 @@ object PassimApp {
     val alignStrings = makeStringAligner(config)
     align.drop("gid")
       .join(corpus.select('uid, col(config.id) as "id", col(config.text) as "text",
-        col(config.time) as "time", 'termCharBegin, 'termCharEnd), "uid")
+        'termCharBegin, 'termCharEnd), "uid")
       .withColumn("begin", 'termCharBegin('begin))
       .withColumn("end",
         'termCharEnd(when('end < size('termCharEnd), 'end)
@@ -675,16 +675,15 @@ object PassimApp {
       .drop("termCharBegin", "termCharEnd")
       .withColumn("text", getPassage('text, 'begin, 'end))
       .groupBy("mid")
-      .agg(first("id") as "id1", last("id") as "id2",
+      .agg(first("id") as "id1", last("id") as "id2", first("first") as "sorted",
         alignStrings(first('text) as "s1", last('text) as "s2") as "alg",
-        first("begin") as "b1", first("time") as "t1",
-        last("begin") as "b2", last("time") as "t2")
-      .select(when('t1 < 't2, 'id1).otherwise('id2) as "id1",
-        when('t1 < 't2, 'id2).otherwise('id1) as "id2",
-        when('t1 < 't2, 'b1).otherwise('b2) as "b1",
-        when('t1 < 't2, 'b2).otherwise('b1) as "b2",
-        explode(alignedPassages(when('t1 < 't2, $"alg.s1").otherwise($"alg.s2"),
-          when('t1 < 't2, $"alg.s2").otherwise($"alg.s1"))) as "pass")
+        first("begin") as "b1", last("begin") as "b2")
+      .select(when('sorted, 'id1).otherwise('id2) as "id1",
+        when('sorted, 'id2).otherwise('id1) as "id2",
+        when('sorted, 'b1).otherwise('b2) as "b1",
+        when('sorted, 'b2).otherwise('b1) as "b2",
+        explode(alignedPassages(when('sorted, $"alg.s1").otherwise($"alg.s2"),
+          when('sorted, $"alg.s2").otherwise($"alg.s1"))) as "pass")
       .select('id1, 'id2,
         $"pass._3" as "pairs",
         ('b1 + $"pass._1.begin") as "b1", ('b1 + $"pass._1.end") as "e1",
@@ -907,7 +906,7 @@ object PassimApp {
                 if ( matches.size >= config.minRep ) {
                   PassFun.gappedMatches(config.n, config.gap, config.minAlg, matches)
                     .map { case ((s1, e1), (s2, e2)) =>
-                      Seq(DocSpan(uid, s1, e1), DocSpan(uid2, s2, e2)) }
+                      Seq(DocSpan(uid, s1, e1, true), DocSpan(uid2, s2, e2, false)) }
                 } else Seq()
               }
 
@@ -940,11 +939,11 @@ object PassimApp {
           val extent: Int = config.gap * 2/3
           val align = pairs
             .join(termCorpus, "uid")
-            .select('mid, 'uid, 'gid, 'begin, 'end,
+            .select('mid, 'uid, 'gid, 'begin, 'end, 'first,
               termSpan('begin - extent, 'begin, 'terms) as "prefix",
               termSpan('end, 'end + extent, 'terms) as "suffix")
             .groupBy("mid")
-            .agg(first("uid") as "uid", last("uid") as "uid2",
+            .agg(first("uid") as "uid", last("uid") as "uid2", first("first") as "sorted",
               first("gid") as "gid", last("gid") as "gid2",
               alignEdge(first("begin"), last("begin"),
                 first("prefix"), last("prefix"), lit("R")) as "begin",
@@ -952,10 +951,12 @@ object PassimApp {
                 first("suffix"), last("suffix"), lit("L")) as "end")
             .filter { ($"end._1" - $"begin._1") >= config.minAlg &&
               ($"end._2" - $"begin._2") >= config.minAlg }
-            .select(explode(array(struct('mid, 'uid, 'gid,
+            .select(array(struct('mid, 'uid, 'gid, 'sorted as "first",
               $"begin._1" as "begin", $"end._1" as "end"),
-              struct('mid, 'uid2 as "uid", 'gid2 as "gid",
-                $"begin._2" as "begin", $"end._2" as "end"))) as "pair")
+              struct('mid, 'uid2 as "uid", 'gid2 as "gid", !'sorted as "first",
+                $"begin._2" as "begin", $"end._2" as "end")) as "pair")
+            .select(explode(when('pair(0)("first"), 'pair)
+              .otherwise(array('pair(1), 'pair(0)))) as "pair")
             .select($"pair.*")
 
           if ( config.pairwise || config.duppairs ) {
