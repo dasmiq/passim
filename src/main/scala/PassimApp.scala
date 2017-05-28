@@ -81,7 +81,7 @@ case class PassAlign(id1: String, id2: String,
 
 case class AlignedStrings(s1: String, s2: String, matches: Int, score: Float)
 
-case class NewDoc(id: String, text: String, regions: Seq[Region], aligned: Boolean)
+case class NewDoc(id: String, text: String, pages: Seq[Page], aligned: Boolean)
 
 case class ClusterParent(id: String, begin: Long, date: String, matchProp: Float, score: Float)
 
@@ -573,14 +573,22 @@ object PassimApp {
     (spans.map(_.begin), spans.map(_.end)) // unzip
   }
 
-  val splitDoc = udf { (id: String, text: String, regions: Seq[Row],
+  def subpage(p: Seq[Page], r: Array[Region]) = {
+    if ( p.size > 0 )
+      Seq(p(0).copy(regions = r))
+    else
+      p
+  }
+
+  val splitDoc = udf { (id: String, text: String, pages: Seq[Row],
     begin: Seq[Int], end: Seq[Int]) =>
-    val reg
-      = if ( regions == null ) Array[Region]() // Try doesn't catch nulls
-      else Try(regions.map(PassimApp.rowToRegion).toArray).getOrElse(Array[Region]())
+    val pp
+      = if ( pages == null ) Array[Page]() // Try doesn't catch nulls
+      else Try(pages.map(PassimApp.rowToPage).toArray).getOrElse(Array[Page]())
+    val reg = if ( pp.size == 0 ) Array[Region]() else pp(0).regions
     val docs = new ArrayBuffer[NewDoc]
     if ( begin == null || begin.size <= 0 ) {
-      docs += NewDoc(id, text, reg, false)
+      docs += NewDoc(id, text, pp, false)
     } else {
       var start = 0
       var breg = 0
@@ -591,14 +599,14 @@ object PassimApp {
           while ( ereg < reg.size && reg(ereg).start < begin(i) ) ereg += 1
           docs += NewDoc(id + "_" + start + "_" + begin(i),
             text.substring(start, begin(i)),
-            reg.slice(breg, ereg).map(_.offset(-start)),
+            subpage(pp, reg.slice(breg, ereg).map(_.offset(-start))),
             false)
           breg = ereg
         }
         while ( ereg < reg.size && reg(ereg).start < end(i) ) ereg += 1
         docs += NewDoc(id + "_" + begin(i) + "_" + end(i),
           text.substring(begin(i), end(i)),
-          reg.slice(breg, ereg).map(_.offset(-begin(i))),
+          subpage(pp, reg.slice(breg, ereg).map(_.offset(-begin(i)))),
           true)
         breg = ereg
         start = end(i)
@@ -607,7 +615,7 @@ object PassimApp {
         if ( ereg < reg.size ) ereg = reg.size
         docs += NewDoc(id + "_" + end.last + "_" + text.size,
           text.substring(end.last, text.size),
-          reg.slice(breg, ereg).map(_.offset(-end.last)),
+          subpage(pp, reg.slice(breg, ereg).map(_.offset(-end.last))),
           false)
       }
     }
@@ -615,18 +623,19 @@ object PassimApp {
   }
   def boilerSplit(passages: DataFrame, raw: DataFrame): DataFrame = {
     import passages.sparkSession.implicits._
+    val pageField = if ( raw.columns.contains("pages") ) "pages" else "null"
     passages
       .select('id2 as "id", 'b2 as "begin", 'e2 as "end")
       .groupBy("id")
       .agg(mergeAligned(collect_list("begin"), collect_list("end")) as "spans")
       .select('id, $"spans._1" as "begin", $"spans._2" as "end")
       .join(raw, Seq("id"), "right_outer")
-      .withColumn("subdoc", explode(splitDoc('id, 'text, 'regions, 'begin, 'end)))
+      .withColumn("subdoc", explode(splitDoc('id, 'text, expr(pageField), 'begin, 'end)))
       .drop("begin", "end")
       .withColumnRenamed("id", "docid")
       .withColumn("id", $"subdoc.id")
       .withColumn("text", $"subdoc.text")
-      .withColumn("regions", $"subdoc.regions")
+      .withColumn("pages", $"subdoc.pages")
       .withColumn("aligned", $"subdoc.aligned")
       .drop("subdoc")
   }
