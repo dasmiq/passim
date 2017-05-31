@@ -308,58 +308,6 @@ object PassFun {
         }).toSeq
     }
   }
-
-  def alignTerms(n: Int, gap: Int, matchMatrix: jaligner.matrix.Matrix,
-    t1: Array[String], t2: Array[String]): AlignedPassage = {
-    val chunks = recursivelyAlignTerms(n, gap * gap, matchMatrix, t1, t2)
-    // Could make only one pass through chunks if we implemented a merger for AlignedPassages.
-    AlignedPassage(chunks.map(_.s1).mkString(" "), chunks.map(_.s2).mkString(" "),
-      0, 0,
-      chunks.map(_.matches).sum + chunks.size - 1,
-      chunks.map(_.score).sum + (chunks.size - 1) * 2.0f)
-  }
-  def recursivelyAlignTerms(n: Int, gap2: Int, matchMatrix: jaligner.matrix.Matrix,
-    t1: Array[String], t2: Array[String]): Seq[AlignedPassage] = {
-    val m1 = hapaxIndex(n, t1)
-    val m2 = hapaxIndex(n, t2)
-    val inc = increasingMatches(m1
-      .flatMap(z => if (m2.contains(z._1)) Some((z._2, m2(z._1), 1)) else None))
-    if ( inc.size == 0 && (t1.size * t2.size) > gap2 ) {
-      Seq(AlignedPassage("...", "...", 0, 0, 0, -5.0f - 0.5f * t1.size - 0.5f * t2.size))
-    } else {
-      (Array((0, 0, 0)) ++ inc ++ Array((t1.size, t2.size, 0)))
-        .sliding(2).flatMap(z => {
-          val (b1, b2, c) = z(0)
-          val (e1, e2, _) = z(1)
-          val n1 = e1 - b1
-          val n2 = e2 - b2
-          if ( c == 0 && e1 == 0 && e2 == 0 ) {
-            Seq()
-          } else if ( (n1 * n2) <= gap2 ) {
-            val s1 = t1.slice(b1, e1).mkString(" ")
-            val s2 = t2.slice(b2, e2).mkString(" ")
-            if ( n1 == n2 && s1 == s2 ) {
-              Seq(AlignedPassage(s1, s2, b1, b2, s1.size, 2.0f * s2.size))
-            } else {
-              val alg = jaligner.NeedlemanWunschGotoh.align(new jaligner.Sequence(s1),
-                new jaligner.Sequence(s2), matchMatrix, 5, 0.5f)
-              Seq(AlignedPassage(new String(alg.getSequence1), new String(alg.getSequence2),
-                b1, b2, alg.getIdentity, alg.getScore))
-            }
-          } else {
-            if ( c > 0 ) {
-              val s1 = t1.slice(b1, b1+n).mkString(" ")
-              val s2 = t2.slice(b2, b2+n).mkString(" ")
-              // Array(AlignedPassage("TOO", "BIG", b1, b2, 0, 0f)) ++
-              Array(AlignedPassage(s1, s2, b1, b2, s1.size, 2.0f * s2.size)) ++
-              recursivelyAlignTerms(n, gap2, matchMatrix, t1.slice(b1+n, e1), t2.slice(b2+n, e2))
-            } else {
-              recursivelyAlignTerms(n, gap2, matchMatrix, t1.slice(b1, e1), t2.slice(b2, e2))
-            }
-          }
-        }).toSeq
-    }
-  }
 }
 
 case class TokText(terms: Array[String], termCharBegin: Array[Int], termCharEnd: Array[Int])
