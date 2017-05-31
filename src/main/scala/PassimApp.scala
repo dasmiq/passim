@@ -882,7 +882,7 @@ object PassimApp {
             align.mergePassages(config.relOver)
 
           if ( config.docwise ) {
-            pass.sort('id2, 'b2).write.format(config.outputFormat)
+            pass.sort('id2, 'b2, 'id1).write.format(config.outputFormat)
               .save(config.outputPath + "/pass." + config.outputFormat)
             sys.exit(0)
           } else if ( config.boilerplate )
