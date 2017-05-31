@@ -159,14 +159,18 @@ table with `tabcluster.sh` and to CSV with `csvcluster.sh`.
 ## <a name="locations"></a> Marking Locations inside Documents
 
 As mentioned above, the `text` field is interpreted as XML.  The
-parser expands character entities and, for the most part, ignores
-tags.
+parser expands character entities and ignores tags.
 
-## Quotations of Reference Texts
+Documents may document their extent on physical pages with the `pages` field.  This field is an array of `Page` regions with the following schema (here written in Scala):
+```
+case class Coords(x: Int, y: Int, w: Int, h: Int, b: Int)
 
-TODO.  For now, including the query texts in the corpus will
-automatically include them in any clustering.  We are working on
-including implementations of more efficient query procedures.
+case class Region(start: Int, length: Int, coords: Coords)
+
+case class Page(id: String, seq: Int, width: Int, height: Int, dpi: Int, regions: Array[Region])
+```
+
+The `start` and `length` fields in the `Region` record indicate character offsets into the document `text` field.x
 
 ## Acknowledgements
 
