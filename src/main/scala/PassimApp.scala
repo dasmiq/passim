@@ -80,8 +80,6 @@ case class AlignedStrings(s1: String, s2: String, matches: Int, score: Float)
 
 case class NewDoc(id: String, text: String, pages: Seq[Page], aligned: Boolean)
 
-case class ClusterParent(id: String, begin: Long, date: String, matchProp: Float, score: Float)
-
 object PassFun {
   def increasingMatches(matches: Iterable[(Int,Int,Int)]): Array[(Int,Int,Int)] = {
     val in = matches.toArray.sorted
