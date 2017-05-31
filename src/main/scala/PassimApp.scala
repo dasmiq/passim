@@ -449,48 +449,6 @@ object PassimApp {
     }
   }
 
-  def matchParents(config: Config, spark: SparkSession) {
-    import spark.implicits._
-    val raw = spark.read.format(config.inputFormat).load(config.inputPaths)
-    val corpus = raw.tokenize(config.text)
-
-    val candidates = corpus.select($"cluster" as "p_cluster",
-      col(config.id) as "p_id", $"begin" as "p_begin",
-      $"terms" as "p_terms", $"date" as "p_date")
-    val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
-
-    // TODO: Pass through all original fields in raw.
-    corpus
-      .join(candidates, ($"cluster" === $"p_cluster") && ($"date" > $"p_date"), "left_outer")
-      .select("cluster", config.id, "begin", "end", "terms", "date",
-        "p_id", "p_begin", "p_terms", "p_date")
-      .rdd
-      .map({
-        case Row(cluster: Long, id: String, begin: Long, end: Long, terms: Seq[_], date:String,
-          p_id: String, p_begin: Long, p_terms: Seq[_], p_date: String) => {
-          val t = terms.asInstanceOf[Seq[String]].toArray
-          val alg = PassFun.alignTerms(config.n, config.gap, matchMatrix,
-            p_terms.asInstanceOf[Seq[String]].toArray, t)
-          val toklen = t.map(_.size).sum + (t.size - 1)
-          ((cluster, id, begin, date),
-            ClusterParent(p_id, p_begin, p_date, (alg.matches*1.0f/toklen), alg.score))
-        }
-        case Row(cluster: Long, id: String, begin: Long, end: Long, terms: Seq[_], date:String,
-          _, _, _, _) => {
-          ((cluster, id, begin, date), ClusterParent("", 0, "", 0f, 0f))
-        }
-      })
-      .groupByKey
-      .map(x => {
-        val ((cluster, id, begin, date), parents) = x
-        (cluster, id, begin, date,
-          parents.filter(_.id != "").toSeq.sortWith(_.score > _.score).toArray)
-      })
-      .toDF("cluster", config.id, "begin", "date", "parents")
-      .orderBy("cluster", "date")
-      .write.format(config.outputFormat).save(config.outputPath)
-  }
-
   def makeIndexer(n: Int, wordLength: Double) = {
     val minFeatLen: Double = wordLength * n
     udf { (terms: Seq[String]) =>
