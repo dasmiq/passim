@@ -8,9 +8,6 @@ import org.apache.spark.storage.StorageLevel
 
 import org.apache.hadoop.fs.{FileSystem,Path}
 
-import org.apache.spark.sql.catalyst.util.DateTimeUtils
-import java.sql.Date
-
 import collection.JavaConversions._
 import scala.collection.mutable.{ArrayBuffer, ListBuffer}
 import scala.util.Try
@@ -27,7 +24,7 @@ case class Config(version: String = BuildInfo.version,
   pairwise: Boolean = false, duppairs: Boolean = false,
   docwise: Boolean = false, names: Boolean = false, postings: Boolean = false,
   id: String = "id", group: String = "series", text: String = "text",
-  time: String = "", filterpairs: String = "gid < gid2",
+  fields: Seq[String] = Seq(),  filterpairs: String = "gid < gid2",
   inputFormat: String = "json", outputFormat: String = "json",
   inputPaths: String = "", outputPath: String = "")
 
@@ -733,8 +730,8 @@ object PassimApp {
         c.copy(group = x) } text("Field to group documents into series; default=series")
       opt[String]('f', "filterpairs") action { (x, c) =>
         c.copy(filterpairs = x) } text("Constraint on posting pairs; default=gid < gid2")
-      opt[String]("time") action { (x, c) =>
-        c.copy(time = x) } text("Field to order documents by time")
+      opt[Seq[String]]("fields") action { (x, c) =>
+        c.copy(fields = x) } text("Comma-delimited list of fields to index")
       opt[String]("input-format") action { (x, c) =>
         c.copy(inputFormat = x) } text("Input format; default=json")
       opt[String]("output-format") action { (x, c) =>
@@ -791,9 +788,8 @@ object PassimApp {
 
       if ( !hdfsExists(spark, clusterFname) || config.boilerplate ) {
         if ( !hdfsExists(spark, passFname) ) {
-          val indexFields = ListBuffer("uid", "gid", "terms")
-          if ( config.time != "" ) indexFields += config.time
-          val termCorpus = corpus.select(indexFields.toList.map(col):_*)
+          val indexFields = ListBuffer("uid", "gid", "terms") ++ config.fields
+          val termCorpus = corpus.select(indexFields.toList.map(expr):_*)
 
           if ( !hdfsExists(spark, pairsFname) ) {
             if ( !hdfsExists(spark, dfpostFname) ) {
