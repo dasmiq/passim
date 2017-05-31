@@ -162,50 +162,11 @@ As mentioned above, the `text` field is interpreted as XML.  The
 parser expands character entities and, for the most part, ignores
 tags.
 
-Three XML elements, however, are recorded when documents are
-tokenized.  Each marks the location of structural features within the
-document:
-* `<pb n="..." />` marks the beginning of a page, with the `n`
-  attribute parsed as a string;
-
-* `<w coords="..." />` marks the beginning of a region on a page
-  image, with the `coords=` attributed parsed as a 4-tuple of
-  integers for upper left, upper right, width, and height; and
-
-* `<loc n="..." />` marks the beginning of a citable passage
-  ("locus") according to some canonical scheme such as the books,
-  chapters, and verses of the Bible; acts, scenes, and Globe lines in
-  Shakespeare; or Stephanus pages in Plato.  We recommend
-  [Canonical Text Servive (CTS) URNs](http://www.homermultitext.org/hmt-doc/cite/index.html)
-  for referring to these locations independently of any particular
-  edition.  Although many canonical citations schemes have a
-  hierarchical structure of books, chapters, etc., passim interprets
-  the `n=` attribute as an atomic string.
-
-These elements are empty so as not to interfere with other tags.  When
-reused passages contain these location markers, the output records
-will store the information in the `pages`, `regions`, and `locs`
-fields.
-
 ## Quotations of Reference Texts
 
 TODO.  For now, including the query texts in the corpus will
 automatically include them in any clustering.  We are working on
 including implementations of more efficient query procedures.
-
-<!-- You can use any galago n-gram index: 4-gram, 5-gram, etc. For several -->
-<!-- tasks, 5-grams seem like a good tradeoff. -->
-
-<!-- For best results, index the reference texts---as trectext or some -->
-<!-- other plaintext format---along with the target document.  This ensures -->
-<!-- that any n-gram in the reference texts occurs at least once in the -->
-<!-- index.  The quotes program will then automatically filter out matches -->
-<!-- of a reference text with itself.  There is one other advantage of -->
-<!-- including the reference texts in the index.  Since you guarantee that -->
-<!-- all n-grams in the reference texts will be seen, you can shard the -->
-<!-- index of the books without having any useful n-grams fall below -->
-<!-- threshold (as long as you add a copy of the reference texts to each -->
-<!-- shard). -->
 
 ## Acknowledgements
 
@@ -215,6 +176,6 @@ Humanities. TODO.
 
 ## License
 
-Copyright © 2012-6 David A. Smith
+Copyright © 2012-7 David A. Smith
 
 Distributed under the Eclipse Public License.
