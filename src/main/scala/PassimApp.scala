@@ -56,7 +56,7 @@ case class Locus(start: Int, length: Int, loc: String) {
   def offset(off: Int) = Locus(this.start + off, this.length, this.loc)
 }
 
-case class DocSpan(uid: Long, begin: Int, end: Int)
+case class DocSpan(uid: Long, begin: Int, end: Int, first: Boolean)
 
 // Could parameterized on index type instead of Int
 case class Span(val begin: Int, val end: Int) {
@@ -81,7 +81,7 @@ case class PassAlign(id1: String, id2: String,
 
 case class AlignedStrings(s1: String, s2: String, matches: Int, score: Float)
 
-case class NewDoc(id: String, text: String, regions: Seq[Region], aligned: Boolean)
+case class NewDoc(id: String, text: String, pages: Seq[Page], aligned: Boolean)
 
 case class ClusterParent(id: String, begin: Long, date: String, matchProp: Float, score: Float)
 
@@ -257,6 +257,8 @@ object PassFun {
   }
   def recursivelyAlignStrings(n: Int, gap2: Int, matchMatrix: jaligner.matrix.Matrix,
     s1: String, s2: String): Seq[AlignedPassage] = {
+    val openGap = 1.0f
+    val contGap = 0.5f
     val m1 = hapaxIndex(n, s1)
     val m2 = hapaxIndex(n, s2)
     val inc = increasingMatches(m1
@@ -264,7 +266,7 @@ object PassFun {
     val prod = s1.size * s2.size
     if ( inc.size == 0 && (prod >= gap2 || prod < 0) ) {
       Seq(AlignedPassage(s1 + ("-" * s2.size), ("-" * s1.size) + s2,
-        0, 0, 0, -5.0f - 0.5f * s1.size - 0.5f * s2.size))
+        0, 0, 0, -openGap - contGap * s1.size - contGap * s2.size))
     } else {
       (Array((0, 0, 0)) ++ inc ++ Array((s1.size, s2.size, 0)))
         .sliding(2).flatMap(z => {
@@ -282,7 +284,7 @@ object PassFun {
               Seq(AlignedPassage(p1, p2, b1, b2, p1.size, 2.0f * p2.size))
             } else {
               val alg = jaligner.NeedlemanWunschGotoh.align(new jaligner.Sequence(p1),
-                new jaligner.Sequence(p2), matchMatrix, 5, 0.5f)
+                new jaligner.Sequence(p2), matchMatrix, openGap, contGap)
               // // HACK!! WHY does JAligner swap sequences ?!?!?!?
               val a1 = new String(alg.getSequence2)
               val a2 = new String(alg.getSequence1)
@@ -509,7 +511,7 @@ object PassimApp {
     var start = 0
     var b1 = 0
     var b2 = 0
-    val buf = ArrayBuffer[(Int, Double, Int, Int)]()
+    val buf = ArrayBuffer[(Int, Double, Int, Int, String, String)]()
     for ( end <- 1 until s2.size ) {
       if ( s2(end) == '\n' ) {
         val alg1 = s1.substring(start, end+1)
@@ -518,7 +520,7 @@ object PassimApp {
         val t2 = alg2.replaceAll("-", "")
 
         val matches = alg1.zip(alg2).count(x => x._1 == x._2)
-        buf += ((t2.size - t1.size, matches * 1.0 / t2.size, b1, b2))
+        buf += ((t2.size - t1.size, matches * 1.0 / t2.size, b1, b2, t1, t2))
         start = end + 1
         b1 += t1.size
         b2 += t2.size
@@ -531,7 +533,8 @@ object PassimApp {
 
     val minLines = 5
 
-    val pass = ArrayBuffer[(Span, Span)]()
+    val pass = ArrayBuffer[(Span, Span, Array[(String, String)])]()
+    val pairs = ArrayBuffer[(String, String)]()
     var i = 0
     start = 0
     while ( i < lines.size ) {
@@ -545,16 +548,20 @@ object PassimApp {
         } else {
           if ( (i - start) >= minLines ) {
             pass += ((Span(lines(start)._3, lines(i)._3),
-              Span(lines(start)._4, lines(i)._4)))
+              Span(lines(start)._4, lines(i)._4),
+              pairs.toArray))
           }
           start = i + 1
+          pairs.clear
         }
       }
+      pairs += ((lines(i)._5, lines(i)._6))
       i += 1
     }
     if ( (i - start) >= minLines ) {
       pass += ((Span(lines(start)._3, lines(lines.size - 1)._3),
-        Span(lines(start)._4, lines(lines.size - 1)._4)))
+        Span(lines(start)._4, lines(lines.size - 1)._4),
+        pairs.toArray))
     }
     pass.toSeq
   }
@@ -566,14 +573,22 @@ object PassimApp {
     (spans.map(_.begin), spans.map(_.end)) // unzip
   }
 
-  val splitDoc = udf { (id: String, text: String, regions: Seq[Row],
+  def subpage(p: Seq[Page], r: Array[Region]) = {
+    if ( p.size > 0 )
+      Seq(p(0).copy(regions = r))
+    else
+      p
+  }
+
+  val splitDoc = udf { (id: String, text: String, pages: Seq[Row],
     begin: Seq[Int], end: Seq[Int]) =>
-    val reg
-      = if ( regions == null ) Array[Region]() // Try doesn't catch nulls
-      else Try(regions.map(PassimApp.rowToRegion).toArray).getOrElse(Array[Region]())
+    val pp
+      = if ( pages == null ) Array[Page]() // Try doesn't catch nulls
+      else Try(pages.map(PassimApp.rowToPage).toArray).getOrElse(Array[Page]())
+    val reg = if ( pp.size == 0 ) Array[Region]() else pp(0).regions
     val docs = new ArrayBuffer[NewDoc]
     if ( begin == null || begin.size <= 0 ) {
-      docs += NewDoc(id, text, reg, false)
+      docs += NewDoc(id, text, pp, false)
     } else {
       var start = 0
       var breg = 0
@@ -584,14 +599,14 @@ object PassimApp {
           while ( ereg < reg.size && reg(ereg).start < begin(i) ) ereg += 1
           docs += NewDoc(id + "_" + start + "_" + begin(i),
             text.substring(start, begin(i)),
-            reg.slice(breg, ereg).map(_.offset(-start)),
+            subpage(pp, reg.slice(breg, ereg).map(_.offset(-start))),
             false)
           breg = ereg
         }
         while ( ereg < reg.size && reg(ereg).start < end(i) ) ereg += 1
         docs += NewDoc(id + "_" + begin(i) + "_" + end(i),
           text.substring(begin(i), end(i)),
-          reg.slice(breg, ereg).map(_.offset(-begin(i))),
+          subpage(pp, reg.slice(breg, ereg).map(_.offset(-begin(i)))),
           true)
         breg = ereg
         start = end(i)
@@ -600,7 +615,7 @@ object PassimApp {
         if ( ereg < reg.size ) ereg = reg.size
         docs += NewDoc(id + "_" + end.last + "_" + text.size,
           text.substring(end.last, text.size),
-          reg.slice(breg, ereg).map(_.offset(-end.last)),
+          subpage(pp, reg.slice(breg, ereg).map(_.offset(-end.last))),
           false)
       }
     }
@@ -608,18 +623,19 @@ object PassimApp {
   }
   def boilerSplit(passages: DataFrame, raw: DataFrame): DataFrame = {
     import passages.sparkSession.implicits._
+    val pageField = if ( raw.columns.contains("pages") ) "pages" else "null"
     passages
       .select('id2 as "id", 'b2 as "begin", 'e2 as "end")
       .groupBy("id")
       .agg(mergeAligned(collect_list("begin"), collect_list("end")) as "spans")
       .select('id, $"spans._1" as "begin", $"spans._2" as "end")
       .join(raw, Seq("id"), "right_outer")
-      .withColumn("subdoc", explode(splitDoc('id, 'text, 'regions, 'begin, 'end)))
+      .withColumn("subdoc", explode(splitDoc('id, 'text, expr(pageField), 'begin, 'end)))
       .drop("begin", "end")
       .withColumnRenamed("id", "docid")
       .withColumn("id", $"subdoc.id")
       .withColumn("text", $"subdoc.text")
-      .withColumn("regions", $"subdoc.regions")
+      .withColumn("pages", $"subdoc.pages")
       .withColumn("aligned", $"subdoc.aligned")
       .drop("subdoc")
   }
@@ -655,24 +671,12 @@ object PassimApp {
     }
   }
 
-  def docwiseAlignments(config: Config, pairs: DataFrame, corpus: DataFrame): DataFrame = {
-    import pairs.sparkSession.implicits._
-    val alignStrings = makeStringAligner(config)
-    pairs
-      .select('uid, 'mid)
-      .join(corpus.select('uid, col(config.id) as "id", col(config.text) as "text"), "uid")
-      .groupBy("mid")
-      .agg(first("id") as "id1", last("id") as "id2",
-        alignStrings(first("text") as "s1", last("text") as "s2") as "alg")
-      .select('id1, 'id2, $"alg.*")
-  }
-
   def boilerPassages(config: Config, align: DataFrame, corpus: DataFrame): DataFrame = {
     import align.sparkSession.implicits._
     val alignStrings = makeStringAligner(config)
     align.drop("gid")
       .join(corpus.select('uid, col(config.id) as "id", col(config.text) as "text",
-        col(config.time) as "time", 'termCharBegin, 'termCharEnd), "uid")
+        'termCharBegin, 'termCharEnd), "uid")
       .withColumn("begin", 'termCharBegin('begin))
       .withColumn("end",
         'termCharEnd(when('end < size('termCharEnd), 'end)
@@ -680,17 +684,17 @@ object PassimApp {
       .drop("termCharBegin", "termCharEnd")
       .withColumn("text", getPassage('text, 'begin, 'end))
       .groupBy("mid")
-      .agg(first("id") as "id1", last("id") as "id2",
+      .agg(first("id") as "id1", last("id") as "id2", first("first") as "sorted",
         alignStrings(first('text) as "s1", last('text) as "s2") as "alg",
-        first("begin") as "b1", first("time") as "t1",
-        last("begin") as "b2", last("time") as "t2")
-      .select(when('t1 < 't2, 'id1).otherwise('id2) as "id1",
-        when('t1 < 't2, 'id2).otherwise('id1) as "id2",
-        when('t1 < 't2, 'b1).otherwise('b2) as "b1",
-        when('t1 < 't2, 'b2).otherwise('b1) as "b2",
-        explode(alignedPassages(when('t1 < 't2, $"alg.s1").otherwise($"alg.s2"),
-          when('t1 < 't2, $"alg.s2").otherwise($"alg.s1"))) as "pass")
+        first("begin") as "b1", last("begin") as "b2")
+      .select(when('sorted, 'id1).otherwise('id2) as "id1",
+        when('sorted, 'id2).otherwise('id1) as "id2",
+        when('sorted, 'b1).otherwise('b2) as "b1",
+        when('sorted, 'b2).otherwise('b1) as "b2",
+        explode(alignedPassages(when('sorted, $"alg.s1").otherwise($"alg.s2"),
+          when('sorted, $"alg.s2").otherwise($"alg.s1"))) as "pass")
       .select('id1, 'id2,
+        $"pass._3" as "pairs",
         ('b1 + $"pass._1.begin") as "b1", ('b1 + $"pass._1.end") as "e1",
         ('b2 + $"pass._2.begin") as "b2", ('b2 + $"pass._2.end") as "e2")
   }
@@ -911,7 +915,7 @@ object PassimApp {
                 if ( matches.size >= config.minRep ) {
                   PassFun.gappedMatches(config.n, config.gap, config.minAlg, matches)
                     .map { case ((s1, e1), (s2, e2)) =>
-                      Seq(DocSpan(uid, s1, e1), DocSpan(uid2, s2, e2)) }
+                      Seq(DocSpan(uid, s1, e1, true), DocSpan(uid2, s2, e2, false)) }
                 } else Seq()
               }
 
@@ -935,12 +939,6 @@ object PassimApp {
 
           val pairs = spark.read.parquet(pairsFname)
 
-          if ( config.docwise ) {
-            docwiseAlignments(config, pairs, corpus)
-              .write.format(config.outputFormat)
-              .save(config.outputPath + "/docs." + config.outputFormat)
-          }
-
           val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
           val alignEdge = udf {
             (idx1: Int, idx2: Int, text1: String, text2: String, anchor: String) =>
@@ -950,11 +948,11 @@ object PassimApp {
           val extent: Int = config.gap * 2/3
           val align = pairs
             .join(termCorpus, "uid")
-            .select('mid, 'uid, 'gid, 'begin, 'end,
+            .select('mid, 'uid, 'gid, 'begin, 'end, 'first,
               termSpan('begin - extent, 'begin, 'terms) as "prefix",
               termSpan('end, 'end + extent, 'terms) as "suffix")
             .groupBy("mid")
-            .agg(first("uid") as "uid", last("uid") as "uid2",
+            .agg(first("uid") as "uid", last("uid") as "uid2", first("first") as "sorted",
               first("gid") as "gid", last("gid") as "gid2",
               alignEdge(first("begin"), last("begin"),
                 first("prefix"), last("prefix"), lit("R")) as "begin",
@@ -962,10 +960,12 @@ object PassimApp {
                 first("suffix"), last("suffix"), lit("L")) as "end")
             .filter { ($"end._1" - $"begin._1") >= config.minAlg &&
               ($"end._2" - $"begin._2") >= config.minAlg }
-            .select(explode(array(struct('mid, 'uid, 'gid,
+            .select(array(struct('mid, 'uid, 'gid, 'sorted as "first",
               $"begin._1" as "begin", $"end._1" as "end"),
-              struct('mid, 'uid2 as "uid", 'gid2 as "gid",
-                $"begin._2" as "begin", $"end._2" as "end"))) as "pair")
+              struct('mid, 'uid2 as "uid", 'gid2 as "gid", !'sorted as "first",
+                $"begin._2" as "begin", $"end._2" as "end")) as "pair")
+            .select(explode(when('pair(0)("first"), 'pair)
+              .otherwise(array('pair(1), 'pair(0)))) as "pair")
             .select($"pair.*")
 
           if ( config.pairwise || config.duppairs ) {
@@ -974,12 +974,19 @@ object PassimApp {
               .save(config.outputPath + "/align." + config.outputFormat)
           }
 
-          val pass = if ( config.boilerplate )
+          val pass = if ( config.boilerplate || config.docwise )
             boilerPassages(config, align, corpus)
           else
             align.mergePassages(config.relOver)
-          
-          pass.write.parquet(passFname)
+
+          if ( config.docwise ) {
+            pass.sort('id2, 'b2).write.format(config.outputFormat)
+              .save(config.outputPath + "/pass." + config.outputFormat)
+            sys.exit(0)
+          } else if ( config.boilerplate )
+            pass.drop("pairs").write.parquet(passFname)
+          else
+            pass.write.parquet(passFname)
         }
 
         if ( !config.boilerplate ) {
