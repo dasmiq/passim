@@ -24,7 +24,7 @@ case class Config(version: String = BuildInfo.version,
   pairwise: Boolean = false, duppairs: Boolean = false,
   docwise: Boolean = false, names: Boolean = false, postings: Boolean = false,
   id: String = "id", group: String = "series", text: String = "text",
-  fields: Seq[String] = Seq(),  filterpairs: String = "gid < gid2",
+  fields: String = "",  filterpairs: String = "gid < gid2",
   inputFormat: String = "json", outputFormat: String = "json",
   inputPaths: String = "", outputPath: String = "")
 
@@ -728,8 +728,8 @@ object PassimApp {
         c.copy(group = x) } text("Field to group documents into series; default=series")
       opt[String]('f', "filterpairs") action { (x, c) =>
         c.copy(filterpairs = x) } text("Constraint on posting pairs; default=gid < gid2")
-      opt[Seq[String]]("fields") action { (x, c) =>
-        c.copy(fields = x) } text("Comma-delimited list of fields to index")
+      opt[String]("fields") action { (x, c) =>
+        c.copy(fields = x) } text("Semicolon-delimited list of fields to index")
       opt[String]("input-format") action { (x, c) =>
         c.copy(inputFormat = x) } text("Input format; default=json")
       opt[String]("output-format") action { (x, c) =>
@@ -786,7 +786,7 @@ object PassimApp {
 
       if ( !hdfsExists(spark, clusterFname) || config.boilerplate ) {
         if ( !hdfsExists(spark, passFname) ) {
-          val indexFields = ListBuffer("uid", "gid", "terms") ++ config.fields
+          val indexFields = ListBuffer("uid", "gid", "terms") ++ config.fields.split(";")
           val termCorpus = corpus.select(indexFields.toList.map(expr):_*)
 
           if ( !hdfsExists(spark, pairsFname) ) {
