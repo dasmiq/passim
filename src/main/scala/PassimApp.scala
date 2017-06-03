@@ -786,7 +786,8 @@ object PassimApp {
 
       if ( !hdfsExists(spark, clusterFname) || config.boilerplate ) {
         if ( !hdfsExists(spark, passFname) ) {
-          val indexFields = ListBuffer("uid", "gid", "terms") ++ config.fields.split(";")
+          val indexFields = ListBuffer("uid", "gid", "terms")
+          if ( config.fields != "" ) indexFields ++= config.fields.split(";")
           val termCorpus = corpus.select(indexFields.toList.map(expr):_*)
 
           if ( !hdfsExists(spark, pairsFname) ) {
