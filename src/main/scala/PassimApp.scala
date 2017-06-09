@@ -932,6 +932,7 @@ object PassimApp {
             .toDF("uid", "cluster", "size", "begin", "end")
 
           clusters.write.parquet(clusterFname)
+          passGraph.unpersist()
         }
       }
 
