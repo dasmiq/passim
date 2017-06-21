@@ -12,8 +12,6 @@ libraryDependencies += "org.apache.spark" %% "spark-sql" % "2.1.0"
 
 resolvers += "Spark Packages Repo" at "http://dl.bintray.com/spark-packages/maven"
 
-libraryDependencies += "graphframes" % "graphframes" % "0.5.0-spark2.1-s_2.11"
-
 libraryDependencies += "com.github.scopt" %% "scopt" % "3.5.0"
 
 resolvers += Resolver.sonatypeRepo("public")
