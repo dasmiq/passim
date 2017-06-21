@@ -143,7 +143,7 @@ object PassFun {
     val t1 = if ( anchor == "L" ) (pad + text1) else (text1 + pad)
     val t2 = if ( anchor == "L" ) (pad + text2) else (text2 + pad)
     val alg = jaligner.SmithWatermanGotoh.align(new Sequence(t1), new Sequence(t2),
-      matchMatrix, 5, 0.5f)
+      matchMatrix, 1.0f, 0.5f)
     val s1 = alg.getSequence1()
     val s2 = alg.getSequence2()
     val len1 = s1.size - s1.count(_ == '-')
