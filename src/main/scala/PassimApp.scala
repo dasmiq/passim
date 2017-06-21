@@ -630,9 +630,11 @@ object PassimApp {
       val fullalign = align.drop("gid")
         .join(corpus.select('uid, col(config.id) as "id", col(config.text) as "text",
           'termCharBegin, 'termCharEnd), "uid")
-        .withColumn("begin", 'termCharBegin('begin))
+        .withColumn("beginWord", 'begin)
+        .withColumn("endWord", 'end)
+        .withColumn("begin", 'termCharBegin('beginWord))
         .withColumn("end",
-          'termCharEnd(when('end < size('termCharEnd), 'end)
+          'termCharEnd(when('endWord < size('termCharEnd), 'endWord)
             .otherwise(size('termCharEnd) - 1)))
         .drop("termCharBegin", "termCharEnd")
         .withColumn("text", getPassage('text, 'begin, 'end))
@@ -640,9 +642,11 @@ object PassimApp {
         .agg(first("uid") as "uid1", last("uid") as "uid2",
           first("id") as "id1", last("id") as "id2",
           alignStrings(first("text") as "s1", last("text") as "s2") as "alg",
+          first("beginWord") as "bw1", first("endWord") as "ew1",
+          last("beginWord") as "bw2", last("endWord") as "ew2",
           first("begin") as "b1", first("end") as "e1",
           last("begin") as "b2", last("end") as "e2")
-        .select('uid1, 'uid2, 'id1, 'id2, $"alg.*", 'b1, 'e1, 'b2, 'e2)
+        .select('uid1, 'uid2, 'id1, 'id2, $"alg.*", 'bw1, 'ew1, 'bw2, 'ew2, 'b1, 'e1, 'b2, 'e2)
         .join(meta.toDF(meta.columns.map { _ + "1" }:_*), "id1")
         .join(meta.toDF(meta.columns.map { _ + "2" }:_*), "id2")
 
