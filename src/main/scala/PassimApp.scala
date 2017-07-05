@@ -446,6 +446,7 @@ object PassimApp {
           && (lines(i+1)._3 - lines(i)._3) <= 20
           && (lines(i+1)._4 - lines(i)._4) <= 20 ) {
           // continue passage
+          pairs += ((lines(i)._5, lines(i)._6))
         } else {
           if ( (i - start) >= minLines ) {
             pass += ((Span(lines(start)._3, lines(i)._3),
@@ -455,8 +456,9 @@ object PassimApp {
           start = i + 1
           pairs.clear
         }
+      } else {
+        pairs += ((lines(i)._5, lines(i)._6))
       }
-      pairs += ((lines(i)._5, lines(i)._6))
       i += 1
     }
     if ( (i - start) >= minLines ) {
