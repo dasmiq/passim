@@ -143,7 +143,7 @@ object PassFun {
     val t1 = if ( anchor == "L" ) (pad + text1) else (text1 + pad)
     val t2 = if ( anchor == "L" ) (pad + text2) else (text2 + pad)
     val alg = jaligner.SmithWatermanGotoh.align(new Sequence(t1), new Sequence(t2),
-      matchMatrix, 1.0f, 0.5f)
+      matchMatrix, 5.0f, 0.5f)
     val s1 = alg.getSequence1()
     val s2 = alg.getSequence2()
     val len1 = s1.size - s1.count(_ == '-')
@@ -235,25 +235,11 @@ object PassFun {
       .mapValues(_(0))
   }
 
-
-  type DocPassage = (String, Int, Int, Int, String)
   case class AlignedPassage(s1: String, s2: String, b1: Int, b2: Int, matches: Int, score: Float)
-  def alignStrings(n: Int, gap: Int, matchMatrix: jaligner.matrix.Matrix,
-    d1: DocPassage, d2: DocPassage): PassAlign = {
-    val (id1, b1, e1, n1, s1) = d1
-    val (id2, b2, e2, n2, s2) = d2
-    val chunks = recursivelyAlignStrings(n, gap * gap, matchMatrix,
-      s1.replaceAll("-", "_"), s2.replaceAll("-", "_"))
-    // Could make only one pass through chunks if we implemented a merger for AlignedPassages.
-    PassAlign(id1, id2, chunks.map(_.s1).mkString, chunks.map(_.s2).mkString,
-      b1, e1, n1, b2, e2, n2,
-      chunks.map(_.matches).sum,
-      chunks.map(_.score).sum)
-  }
-  def recursivelyAlignStrings(n: Int, gap2: Int, matchMatrix: jaligner.matrix.Matrix,
-    s1: String, s2: String): Seq[AlignedPassage] = {
-    val openGap = 1.0f
-    val contGap = 0.5f
+
+  def recursivelyAlignStrings(s1: String, s2: String,
+    n: Int, gap2: Int, matchMatrix: jaligner.matrix.Matrix,
+    openGap: Float, contGap: Float): Seq[AlignedPassage] = {
     val m1 = hapaxIndex(n, s1)
     val m2 = hapaxIndex(n, s2)
     val inc = increasingMatches(m1
@@ -295,9 +281,9 @@ object PassFun {
               val p1 = s1.substring(b1, b1 + len)
               val p2 = s2.substring(b2, b2 + len)
               Array(AlignedPassage(p1, p2, b1, b2, len, 2.0f * len)) ++
-              recursivelyAlignStrings(n, gap2, matchMatrix, s1.substring(b1 + len, e1), s2.substring(b2 + len, e2))
+              recursivelyAlignStrings(s1.substring(b1 + len, e1), s2.substring(b2 + len, e2), n, gap2, matchMatrix, openGap, contGap)
             } else {
-              recursivelyAlignStrings(n, gap2, matchMatrix, s1.substring(b1, e1), s2.substring(b2, e2))
+              recursivelyAlignStrings(s1.substring(b1, e1), s2.substring(b2, e2), n, gap2, matchMatrix, openGap, contGap)
             }
           }
         }).toSeq
@@ -564,11 +550,15 @@ object PassimApp {
       joint.sort('size.desc, 'cluster, col(dateSort), col(config.id), 'begin)
   }
 
-  def makeStringAligner(config: Config) = {
-    val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
+  def makeStringAligner(config: Config,
+    matchScore: Float = 2, mismatchScore: Float = -1,
+    openGap: Float = 5.0f, contGap: Float = 0.5f) = {
+    val matchMatrix = jaligner.matrix.MatrixGenerator.generate(matchScore, mismatchScore)
     udf { (s1: String, s2: String) =>
-      val chunks = PassFun.recursivelyAlignStrings(config.n, config.gap * config.gap,
-        matchMatrix, s1.replaceAll("-", "_"), s2.replaceAll("-", "_"))
+      val chunks = PassFun.recursivelyAlignStrings(s1.replaceAll("-", "_"),
+        s2.replaceAll("-", "_"),
+        config.n, config.gap * config.gap,
+        matchMatrix, openGap, contGap)
       AlignedStrings(chunks.map(_.s1).mkString, chunks.map(_.s2).mkString,
         chunks.map(_.matches).sum, chunks.map(_.score).sum)
     }
@@ -576,7 +566,7 @@ object PassimApp {
 
   def boilerPassages(config: Config, align: DataFrame, corpus: DataFrame): DataFrame = {
     import align.sparkSession.implicits._
-    val alignStrings = makeStringAligner(config)
+    val alignStrings = makeStringAligner(config, openGap = 1)
     align.drop("gid")
       .join(corpus.select('uid, col(config.id) as "id", col(config.text) as "text",
         'termCharBegin, 'termCharEnd), "uid")
