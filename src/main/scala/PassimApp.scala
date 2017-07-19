@@ -18,7 +18,7 @@ import jaligner.Sequence
 
 case class Config(version: String = BuildInfo.version,
   boilerplate: Boolean = false,
-  n: Int = 5, maxDF: Int = 100, minRep: Int = 5, minAlg: Int = 20,
+  n: Int = 5, minDF: Int = 2, maxDF: Int = 100, minRep: Int = 5, minAlg: Int = 20,
   gap: Int = 100, relOver: Double = 0.8, maxRep: Int = 10,
   wordLength: Double = 2,
   pairwise: Boolean = false, duppairs: Boolean = false,
@@ -694,6 +694,8 @@ object PassimApp {
       opt[Int]('n', "n") action { (x, c) => c.copy(n = x) } validate { x =>
         if ( x > 0 ) success else failure("n-gram order must be > 0")
       } text("index n-gram features; default=5")
+      opt[Int]('l', "minDF") action { (x, c) =>
+        c.copy(minDF = x) } text("Lower limit on document frequency; default=2")
       opt[Int]('u', "maxDF") action { (x, c) =>
         c.copy(maxDF = x) } text("Upper limit on document frequency; default=100")
       opt[Int]('m', "min-match") action { (x, c) =>
@@ -800,7 +802,7 @@ object PassimApp {
                 .drop("tf")
 
               val df = postings.groupBy("feat").count.select('feat, 'count.cast("int") as "df")
-                .filter { 'df >= 2 && 'df <= config.maxDF }
+                .filter { 'df >= config.minDF && 'df <= config.maxDF }
 
               postings.join(df, "feat").write.save(dfpostFname)
             }
