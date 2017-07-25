@@ -403,8 +403,8 @@ object PassimApp {
       if ( s2(end) == '\n' ) {
         val alg1 = s1.substring(start, end+1)
         val alg2 = s2.substring(start, end+1)
-        val t1 = alg1.replaceAll("-", "")
-        val t2 = alg2.replaceAll("-", "")
+        val t1 = alg1.replaceAll("-", "").replaceAll("\u2010", "-")
+        val t2 = alg2.replaceAll("-", "").replaceAll("\u2010", "-")
 
         val matches = alg1.zip(alg2).count(x => x._1 == x._2)
         buf += ((t2.size - t1.size, matches * 1.0 / t2.size, b1, b2, t1, t2))
@@ -414,9 +414,6 @@ object PassimApp {
       }
     }
     val lines = buf.toArray
-
-    val t1 = s1.replaceAll("-", "")
-    val t2 = s2.replaceAll("-", "")
 
     val minLines = 5
 
@@ -555,8 +552,8 @@ object PassimApp {
     openGap: Float = 5.0f, contGap: Float = 0.5f) = {
     val matchMatrix = jaligner.matrix.MatrixGenerator.generate(matchScore, mismatchScore)
     udf { (s1: String, s2: String) =>
-      val chunks = PassFun.recursivelyAlignStrings(s1.replaceAll("-", "_"),
-        s2.replaceAll("-", "_"),
+      val chunks = PassFun.recursivelyAlignStrings(s1.replaceAll("-", "\u2010"),
+        s2.replaceAll("-", "\u2010"),
         config.n, config.gap * config.gap,
         matchMatrix, openGap, contGap)
       AlignedStrings(chunks.map(_.s1).mkString, chunks.map(_.s2).mkString,
@@ -879,7 +876,7 @@ object PassimApp {
             align.mergePassages(config.relOver)
 
           if ( config.docwise ) {
-            pass.sort('id2, 'b2, 'id1).write.format(config.outputFormat)
+            pass.write.format(config.outputFormat)
               .save(config.outputPath + "/pass." + config.outputFormat)
             sys.exit(0)
           } else if ( config.boilerplate )
