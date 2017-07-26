@@ -613,29 +613,28 @@ object PassimApp {
     def pairwiseAlignments(config: Config, corpus: DataFrame): DataFrame = {
       import align.sparkSession.implicits._
       val alignStrings = makeStringAligner(config)
-      align.cache()
       val meta = corpus.drop("uid", "text", "terms", "termCharBegin", "termCharEnd",
         "regions", "pages", "locs")
       val fullalign = align.drop("gid")
         .join(corpus.select('uid, col(config.id) as "id", col(config.text) as "text",
           'termCharBegin, 'termCharEnd), "uid")
-        .withColumn("beginWord", 'begin)
-        .withColumn("endWord", 'end)
-        .withColumn("begin", 'termCharBegin('beginWord))
-        .withColumn("end",
-          'termCharEnd(when('endWord < size('termCharEnd), 'endWord)
-            .otherwise(size('termCharEnd) - 1)))
-        .drop("termCharBegin", "termCharEnd")
-        .withColumn("text", getPassage('text, 'begin, 'end))
+        .withColumn("bw", 'begin)
+        .withColumn("ew", 'end)
+        .withColumn("b", 'termCharBegin('bw))
+        .withColumn("e", 'termCharEnd(when('ew < size('termCharEnd), 'ew)
+          .otherwise(size('termCharEnd) - 1)))
+        .select('mid, 'first, struct('uid, 'id, 'bw, 'ew, 'b, 'e,
+          getPassage('text, 'b, 'e) as "text") as "info")
         .groupBy("mid")
-        .agg(first("uid") as "uid1", last("uid") as "uid2",
-          first("id") as "id1", last("id") as "id2",
-          alignStrings(first("text") as "s1", last("text") as "s2") as "alg",
-          first("beginWord") as "bw1", first("endWord") as "ew1",
-          last("beginWord") as "bw2", last("endWord") as "ew2",
-          first("begin") as "b1", first("end") as "e1",
-          last("begin") as "b2", last("end") as "e2")
-        .select('uid1, 'uid2, 'id1, 'id2, $"alg.*", 'bw1, 'ew1, 'bw2, 'ew2, 'b1, 'e1, 'b2, 'e2)
+        .agg(first("first") as "sorted", first("info") as "info1", last("info") as "info2")
+        .select(when('sorted, 'info1).otherwise('info2) as "info1",
+          when('sorted, 'info2).otherwise('info1) as "info2")
+        .withColumn("alg", alignStrings($"info1.text", $"info2.text"))
+        .select($"info1.*", $"info2.*", $"alg.*")
+        .toDF("uid1", "id1", "bw1", "ew1", "b1", "e1", "t1",
+          "uid2", "id2", "bw2", "ew2", "b2", "e2", "t2",
+          "s1", "s2", "matches", "score")
+        .drop("t1", "t2")
         .join(meta.toDF(meta.columns.map { _ + "1" }:_*), "id1")
         .join(meta.toDF(meta.columns.map { _ + "2" }:_*), "id2")
 
