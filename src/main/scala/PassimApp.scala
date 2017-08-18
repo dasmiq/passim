@@ -5,6 +5,9 @@ import org.apache.spark.graphx._
 import org.apache.spark.sql.{SparkSession, DataFrame, Row}
 import org.apache.spark.sql.functions._
 import org.apache.spark.storage.StorageLevel
+import org.apache.spark.ml.{Pipeline, PipelineModel}
+import org.apache.spark.ml.feature.{NGram, HashingTF, MinHashLSH}
+import org.apache.spark.ml.linalg.{SparseVector, Vectors}
 
 import org.apache.hadoop.fs.{FileSystem,Path}
 
@@ -17,7 +20,7 @@ import java.nio.ByteBuffer
 import jaligner.Sequence
 
 case class Config(version: String = BuildInfo.version,
-  boilerplate: Boolean = false,
+  boilerplate: Boolean = false, dochash: Boolean = false,
   n: Int = 5, minDF: Int = 2, maxDF: Int = 100, minRep: Int = 5, minAlg: Int = 20,
   gap: Int = 100, relOver: Double = 0.8, maxRep: Int = 10,
   wordLength: Double = 2,
@@ -668,7 +671,8 @@ object PassimApp {
     val qualified = hdfsPath.makeQualified(fs.getUri, fs.getWorkingDirectory)
     fs.exists(qualified)
   }
-
+  val vlowpass = udf { (v: SparseVector, maxval: Double) => Vectors.sparse(v.size, v.indices.zip(v.values).filter(_._2 <= maxval)) }
+  val vnonzeros = udf { (v: SparseVector) => v.numNonzeros }
   def main(args: Array[String]) {
     val conf = new SparkConf()
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
@@ -687,6 +691,8 @@ object PassimApp {
     val parser = new scopt.OptionParser[Config]("passim") {
       opt[Unit]("boilerplate") action { (_, c) =>
         c.copy(boilerplate = true) } text("Detect boilerplate within groups.")
+      opt[Unit]("dochash") action { (_, c) =>
+        c.copy(dochash = true) } text("Detect very similar documents with LSH.")
       opt[Int]('n', "n") action { (x, c) => c.copy(n = x) } validate { x =>
         if ( x > 0 ) success else failure("n-gram order must be > 0")
       } text("index n-gram features; default=5")
@@ -771,6 +777,9 @@ object PassimApp {
         .withColumn("uid", hashId(col(config.id)))
         .withColumn("gid", hashId(col(groupCol)))
         .tokenize(config.text)
+      val indexFields = ListBuffer("uid", "gid", "terms")
+      if ( config.fields != "" ) indexFields ++= config.fields.split(";")
+      val termCorpus = corpus.select(indexFields.toList.map(expr):_*)
 
       if ( config.names ) {
         corpus.select('uid, col(config.id), col(groupCol), size('terms) as "nterms")
@@ -778,12 +787,33 @@ object PassimApp {
         sys.exit(0)
       }
 
+      if ( config.dochash ) {
+        val pipeline = new Pipeline()
+          .setStages(Array(
+            new NGram().setN(config.n).setInputCol("terms").setOutputCol("ngrams"),
+            new HashingTF().setInputCol("ngrams").setOutputCol("features")))
+
+        val lsh = new MinHashLSH().setInputCol("features").setOutputCol("hashes").setNumHashTables(5)
+        val featurized = pipeline.fit(termCorpus).transform(termCorpus)
+          .filter(size('terms) >= config.minAlg)
+          .drop("ngrams", "terms")
+          // .withColumn("features", vlowpass('features, lit(1)))
+          .filter(vnonzeros('features) > 0)
+        val hasher = lsh.fit(featurized)
+        val sim = hasher.approxSimilarityJoin(featurized,
+          featurized.toDF(featurized.columns.map { f => if ( f == "features" || f == "hashes" ) f else f + "2" }:_*),
+          0.6, "jaccard")
+          .select($"datasetA.*", $"datasetB.*", $"jaccard")
+          .drop("features", "hashes")
+          .filter(config.filterpairs)
+
+        sim.write.format(config.outputFormat)
+          .save(config.outputPath + "/lsh." + config.outputFormat)
+        sys.exit(0)
+      }
+
       if ( !hdfsExists(spark, clusterFname) || config.boilerplate ) {
         if ( !hdfsExists(spark, passFname) ) {
-          val indexFields = ListBuffer("uid", "gid", "terms")
-          if ( config.fields != "" ) indexFields ++= config.fields.split(";")
-          val termCorpus = corpus.select(indexFields.toList.map(expr):_*)
-
           if ( !hdfsExists(spark, pairsFname) ) {
             if ( !hdfsExists(spark, dfpostFname) ) {
               val getPostings = makeIndexer(config.n, config.wordLength)
