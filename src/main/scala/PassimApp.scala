@@ -552,8 +552,9 @@ object PassimApp {
     openGap: Float = 5.0f, contGap: Float = 0.5f) = {
     val matchMatrix = jaligner.matrix.MatrixGenerator.generate(matchScore, mismatchScore)
     udf { (s1: String, s2: String) =>
-      val chunks = PassFun.recursivelyAlignStrings(s1.replaceAll("-", "\u2010"),
-        s2.replaceAll("-", "\u2010"),
+      val chunks = PassFun.recursivelyAlignStrings(
+        (if ( s1 != null ) s1.replaceAll("-", "\u2010") else ""),
+        (if ( s2 != null ) s2.replaceAll("-", "\u2010") else ""),
         config.n, config.gap * config.gap,
         matchMatrix, openGap, contGap)
       AlignedStrings(chunks.map(_.s1).mkString, chunks.map(_.s2).mkString,
