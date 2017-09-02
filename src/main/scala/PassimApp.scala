@@ -625,6 +625,7 @@ object PassimApp {
         .withColumn("e", 'termCharEnd(when('ew < size('termCharEnd), 'ew)
           .otherwise(size('termCharEnd) - 1)))
         .select('mid, 'first, struct('uid, 'id, 'bw, 'ew, 'b, 'e,
+          length('text) as "len", size('termCharBegin) as "tok",
           getPassage('text, 'b, 'e) as "text") as "info")
         .groupBy("mid")
         .agg(first("first") as "sorted", first("info") as "info1", last("info") as "info2")
@@ -632,8 +633,8 @@ object PassimApp {
           when('sorted, 'info2).otherwise('info1) as "info2")
         .withColumn("alg", alignStrings($"info1.text", $"info2.text"))
         .select($"info1.*", $"info2.*", $"alg.*")
-        .toDF("uid1", "id1", "bw1", "ew1", "b1", "e1", "t1",
-          "uid2", "id2", "bw2", "ew2", "b2", "e2", "t2",
+        .toDF("uid1", "id1", "bw1", "ew1", "b1", "e1", "len1", "tok1", "t1",
+          "uid2", "id2", "bw2", "ew2", "b2", "e2", "len2", "tok2", "t2",
           "s1", "s2", "matches", "score")
         .drop("t1", "t2")
         .join(meta.toDF(meta.columns.map { _ + "1" }:_*), "id1")
