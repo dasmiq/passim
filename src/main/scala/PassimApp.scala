@@ -20,6 +20,7 @@ case class Config(version: String = BuildInfo.version,
   boilerplate: Boolean = false,
   n: Int = 5, minDF: Int = 2, maxDF: Int = 100, minRep: Int = 5, minAlg: Int = 20,
   gap: Int = 100, relOver: Double = 0.8, maxRep: Int = 10,
+  context: Int = 0,
   wordLength: Double = 2,
   pairwise: Boolean = false, duppairs: Boolean = false,
   docwise: Boolean = false, names: Boolean = false, postings: Boolean = false,
@@ -590,6 +591,24 @@ object PassimApp {
         ('b2 + $"pass._2.begin") as "b2", ('b2 + $"pass._2.end") as "e2")
   }
 
+  implicit class Passages(pass: DataFrame) {
+    def withContext(config: Config, corpus: DataFrame): DataFrame = {
+      import pass.sparkSession.implicits._
+      pass.drop("gid")
+        .join(corpus, "uid")
+        .withColumn("bw", 'begin)
+        .withColumn("ew", 'end)
+        .withColumn("begin", 'termCharBegin('bw))
+        .withColumn("end", 'termCharEnd(when('ew < size('termCharEnd), 'ew)
+          .otherwise(size('termCharEnd) - 1)))
+        .withColumn("s", getPassage('text, 'begin, 'end))
+        .withColumn("before", getPassage('text, when('bw - config.context <= 0, 0).otherwise('termCharBegin('bw - config.context)), 'begin))
+        .withColumn("after", getPassage('text, 'end, when('ew + config.context >= size('termCharEnd), length('text)).otherwise('termCharEnd('ew + config.context))))
+        .drop("text", "terms", "termCharBegin", "termCharEnd")
+        .withColumnRenamed("s", "text")
+    }
+  }
+
   implicit class PassageAlignments(align: DataFrame) {
     def mergePassages(relOver: Double): DataFrame = {
       import align.sparkSession.implicits._
@@ -702,6 +721,8 @@ object PassimApp {
         c.copy(minAlg = x) } text("Minimum length of alignment; default=20")
       opt[Int]('g', "gap") action { (x, c) =>
         c.copy(gap = x) } text("Minimum size of the gap that separates passages; default=100")
+      opt[Int]('c', "context") action { (x, c) =>
+        c.copy(context = x) } text("Size of context for aligned passages; default=0")
       opt[Double]('o', "relative-overlap") action { (x, c) =>
         c.copy(relOver = x) } text("Minimum relative overlap to merge passages; default=0.8")
       opt[Int]('r', "max-repeat") action { (x, c) =>
@@ -887,12 +908,18 @@ object PassimApp {
         }
 
         if ( !config.boilerplate ) {
-          val pass = spark.read.parquet(passFname).rdd
+          val pass = spark.read.parquet(passFname)
 
-          val passNodes = pass.map {
+          if ( config.context > 0 ) {
+            pass.withContext(config, corpus)
+              .write.format(config.outputFormat)
+              .save(config.outputPath + "/context." + config.outputFormat)
+          }
+
+          val passNodes = pass.rdd.map {
             case Row(nid: Long, uid: Long, gid: Long, begin: Int, end: Int, edges: Seq[_]) =>
               (nid, (IdSeries(uid, gid), Span(begin, end))) }
-          val passEdges = pass.flatMap {
+          val passEdges = pass.rdd.flatMap {
             case Row(nid: Long, uid: Long, gid: Long, begin: Int, end: Int, edges: Seq[_]) =>
               edges.asInstanceOf[Seq[Long]].map(e => (e, nid)) }
             .groupByKey
