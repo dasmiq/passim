@@ -594,8 +594,8 @@ object PassimApp {
   implicit class Passages(pass: DataFrame) {
     def withContext(config: Config, corpus: DataFrame): DataFrame = {
       import pass.sparkSession.implicits._
-      pass.drop("gid")
-        .join(corpus, "uid")
+      pass
+        .join(corpus.drop("gid", "terms", "regions", "pages", "locs"), "uid")
         .withColumn("bw", 'begin)
         .withColumn("ew", 'end)
         .withColumn("begin", 'termCharBegin('bw))
@@ -604,7 +604,7 @@ object PassimApp {
         .withColumn("s", getPassage('text, 'begin, 'end))
         .withColumn("before", getPassage('text, when('bw - config.context <= 0, 0).otherwise('termCharBegin('bw - config.context)), 'begin))
         .withColumn("after", getPassage('text, 'end, when('ew + config.context >= size('termCharEnd), length('text)).otherwise('termCharEnd('ew + config.context))))
-        .drop("text", "terms", "termCharBegin", "termCharEnd")
+        .drop("text", "termCharBegin", "termCharEnd")
         .withColumnRenamed("s", "text")
     }
   }
