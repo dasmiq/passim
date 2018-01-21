@@ -781,6 +781,7 @@ object PassimApp {
     val dfpostFname = config.outputPath + "/dfpost.parquet"
     val indexFname = config.outputPath + "/index.parquet"
     val pairsFname = config.outputPath + "/pairs.parquet"
+    val extentsFname = config.outputPath + "/extents.parquet"
     val passFname = config.outputPath + "/pass.parquet"
     val clusterFname = config.outputPath + "/clusters.parquet"
     val outFname = config.outputPath + "/out." + config.outputFormat
@@ -855,47 +856,57 @@ object PassimApp {
               .write.parquet(pairsFname) // But we need to cache so IDs don't get reassigned.
           }
 
-          val pairs = spark.read.parquet(pairsFname)
+          if ( !hdfsExists(spark, extentsFname) ) {
+            val pairs = spark.read.parquet(pairsFname)
 
-          val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
-          val alignEdge = udf {
-            (idx1: Int, idx2: Int, text1: String, text2: String, anchor: String) =>
-            PassFun.alignEdge(matchMatrix, idx1, idx2, text1, text2, anchor)
+            val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
+            val alignEdge = udf {
+              (idx1: Int, idx2: Int, text1: String, text2: String, anchor: String) =>
+              PassFun.alignEdge(matchMatrix, idx1, idx2, text1, text2, anchor)
+            }
+
+            val extent: Int = config.gap * 2/3
+            pairs.join(termCorpus, "uid")
+              .select('mid, 'uid, 'gid, 'begin, 'end, 'first,
+                termSpan('begin - extent, 'begin, 'terms) as "prefix",
+                termSpan('end, 'end + extent, 'terms) as "suffix")
+              .groupBy("mid")
+              .agg(first("uid") as "uid", last("uid") as "uid2", first("first") as "sorted",
+                first("gid") as "gid", last("gid") as "gid2",
+                alignEdge(first("begin"), last("begin"),
+                  first("prefix"), last("prefix"), lit("R")) as "begin",
+                alignEdge(first("end"), last("end"),
+                  first("suffix"), last("suffix"), lit("L")) as "end")
+              .filter { ($"end._1" - $"begin._1") >= config.minAlg &&
+                ($"end._2" - $"begin._2") >= config.minAlg }
+              .select(array(struct('mid, 'uid, 'gid, 'sorted as "first",
+                $"begin._1" as "begin", $"end._1" as "end"),
+                struct('mid, 'uid2 as "uid", 'gid2 as "gid", !'sorted as "first",
+                  $"begin._2" as "begin", $"end._2" as "end")) as "pair")
+              .select(explode(when('pair(0)("first"), 'pair)
+                .otherwise(array('pair(1), 'pair(0)))) as "pair")
+              .select($"pair.*")
+              .write.parquet(extentsFname)
           }
 
-          val extent: Int = config.gap * 2/3
-          val align = pairs
-            .join(termCorpus, "uid")
-            .select('mid, 'uid, 'gid, 'begin, 'end, 'first,
-              termSpan('begin - extent, 'begin, 'terms) as "prefix",
-              termSpan('end, 'end + extent, 'terms) as "suffix")
-            .groupBy("mid")
-            .agg(first("uid") as "uid", last("uid") as "uid2", first("first") as "sorted",
-              first("gid") as "gid", last("gid") as "gid2",
-              alignEdge(first("begin"), last("begin"),
-                first("prefix"), last("prefix"), lit("R")) as "begin",
-              alignEdge(first("end"), last("end"),
-                first("suffix"), last("suffix"), lit("L")) as "end")
-            .filter { ($"end._1" - $"begin._1") >= config.minAlg &&
-              ($"end._2" - $"begin._2") >= config.minAlg }
-            .select(array(struct('mid, 'uid, 'gid, 'sorted as "first",
-              $"begin._1" as "begin", $"end._1" as "end"),
-              struct('mid, 'uid2 as "uid", 'gid2 as "gid", !'sorted as "first",
-                $"begin._2" as "begin", $"end._2" as "end")) as "pair")
-            .select(explode(when('pair(0)("first"), 'pair)
-              .otherwise(array('pair(1), 'pair(0)))) as "pair")
-            .select($"pair.*")
+          val extents = spark.read.parquet(extentsFname)
+
+          if ( config.context > 0 ) {
+            extents.withContext(config, corpus)
+              .write.format(config.outputFormat)
+              .save(config.outputPath + "/context." + config.outputFormat)
+          }
 
           if ( config.pairwise || config.duppairs ) {
-            align.pairwiseAlignments(config, corpus)
+            extents.pairwiseAlignments(config, corpus)
               .write.format(config.outputFormat)
               .save(config.outputPath + "/align." + config.outputFormat)
           }
 
           val pass = if ( config.boilerplate || config.docwise )
-            boilerPassages(config, align, corpus)
+            boilerPassages(config, extents, corpus)
           else
-            align.mergePassages(config.relOver)
+            extents.mergePassages(config.relOver)
 
           if ( config.docwise ) {
             pass.write.format(config.outputFormat)
@@ -909,12 +920,6 @@ object PassimApp {
 
         if ( !config.boilerplate ) {
           val pass = spark.read.parquet(passFname)
-
-          if ( config.context > 0 ) {
-            pass.withContext(config, corpus)
-              .write.format(config.outputFormat)
-              .save(config.outputPath + "/context." + config.outputFormat)
-          }
 
           val passNodes = pass.rdd.map {
             case Row(nid: Long, uid: Long, gid: Long, begin: Int, end: Int, edges: Seq[_]) =>
