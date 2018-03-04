@@ -1,9 +1,6 @@
 from __future__ import print_function
-
-import os, sys
-
-from pyspark import SparkContext
-from pyspark.sql import SQLContext
+import sys
+from pyspark.sql import SparkSession
 
 def guessFormat(path, default="json"):
     if path.endswith(".json"):
@@ -17,10 +14,9 @@ def guessFormat(path, default="json"):
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
-        print("Usage: pload.py <input> <output>", file=sys.stderr)
+        print("Usage: dfconvert.py <input> <output>", file=sys.stderr)
         exit(-1)
-    sc = SparkContext(appName="DataFrame Parquet Load")
-    sqlContext = SQLContext(sc)
+    spark = SparkSession.builder.appName('Dataframe convert').getOrCreate()
 
     inpath = sys.argv[1]
     outpath = sys.argv[2]
@@ -29,7 +25,7 @@ if __name__ == "__main__":
     (inputFormat, inputOptions) = guessFormat(inpath, "parquet")
     (outputFormat, outputOptions) = guessFormat(outpath, "json")
 
-    raw = sqlContext.read.format(inputFormat).load(inpath)
+    raw = spark.read.format(inputFormat).load(inpath)
     raw.write.format(outputFormat).options(**outputOptions).save(outpath)
 
-    sc.stop()
+    spark.stop()
