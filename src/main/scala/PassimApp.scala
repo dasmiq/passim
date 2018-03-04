@@ -22,7 +22,7 @@ case class Config(version: String = BuildInfo.version,
   gap: Int = 100, relOver: Double = 0.8, maxRep: Int = 10,
   context: Int = 0,
   wordLength: Double = 2,
-  pairwise: Boolean = false, duppairs: Boolean = false,
+  pairwise: Boolean = false,
   docwise: Boolean = false, names: Boolean = false, postings: Boolean = false,
   id: String = "id", group: String = "series", text: String = "text",
   fields: String = "",  filterpairs: String = "gid < gid2",
@@ -661,17 +661,7 @@ object PassimApp {
 
       val cols = fullalign.columns
 
-      (if ( config.duppairs ) {
-        fullalign.cache()
-        fullalign
-          .union(fullalign
-            .toDF(cols.map { s =>
-              if ( s endsWith "1" )
-                s.replaceAll("1$", "2")
-              else
-                s.replaceAll("2$", "1") }:_*))
-          .distinct
-      } else fullalign)
+      fullalign
         .select((cols.filter(_ endsWith "1") ++ cols.filter(_ endsWith "2") ++ Seq("matches", "score")).map(col):_*)
         .sort('id1, 'id2, 'b1, 'b2)
     }
@@ -729,8 +719,6 @@ object PassimApp {
         c.copy(maxRep = x) } text("Maximum repeat of one series in a cluster; default=10")
       opt[Unit]('p', "pairwise") action { (_, c) =>
         c.copy(pairwise = true) } text("Output pairwise alignments")
-      opt[Unit]("duplicate-pairwise") action { (_, c) =>
-        c.copy(duppairs = true) } text("Duplicate pairwise alignments")
       opt[Unit]('d', "docwise") action { (_, c) =>
         c.copy(docwise = true) } text("Output docwise alignments")
       opt[Unit]('N', "names") action { (_, c) =>
@@ -897,7 +885,7 @@ object PassimApp {
               .save(config.outputPath + "/context." + config.outputFormat)
           }
 
-          if ( config.pairwise || config.duppairs ) {
+          if ( config.pairwise ) {
             extents.pairwiseAlignments(config, corpus)
               .write.format(config.outputFormat)
               .save(config.outputPath + "/align." + config.outputFormat)
