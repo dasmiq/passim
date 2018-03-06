@@ -48,8 +48,8 @@ documents into _series_.  Text reuse within series will be ignored.
 We may, for example, be less interested in the masthead and ads that
 appear week after week in the same newspaper and more interested in
 articles that propagate from one city's newspapers to another's.  In
-that case, we would declare all issues of the same newspaper--or all
-articles within those issues--to have the same series.  Similarly, we
+that case, we would declare all issues of the same newspaper&mdash;or all
+articles within those issues&mdash;to have the same series.  Similarly, we
 might define documents to be the pages or chapters of a book and
 series to be whole books.
 
@@ -170,7 +170,7 @@ case class Region(start: Int, length: Int, coords: Coords)
 case class Page(id: String, seq: Int, width: Int, height: Int, dpi: Int, regions: Array[Region])
 ```
 
-The `start` and `length` fields in the `Region` record indicate character offsets into the document `text` field.x
+The `start` and `length` fields in the `Region` record indicate character offsets into the document `text` field.
 
 ## Acknowledgements
 
