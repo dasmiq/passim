@@ -16,6 +16,8 @@ import java.security.MessageDigest
 import java.nio.ByteBuffer
 import jaligner.Sequence
 
+import org.graphframes._
+
 case class Config(version: String = BuildInfo.version,
   boilerplate: Boolean = false,
   n: Int = 5, minDF: Int = 2, maxDF: Int = 100, minRep: Int = 5, minAlg: Int = 20,
@@ -909,46 +911,33 @@ object PassimApp {
         if ( !config.boilerplate ) {
           val pass = spark.read.parquet(passFname)
 
-          val passNodes = pass.rdd.map {
-            case Row(nid: Long, uid: Long, gid: Long, begin: Int, end: Int, edges: Seq[_]) =>
-              (nid, (IdSeries(uid, gid), Span(begin, end))) }
-          val passEdges = pass.rdd.flatMap {
-            case Row(nid: Long, uid: Long, gid: Long, begin: Int, end: Int, edges: Seq[_]) =>
-              edges.asInstanceOf[Seq[Long]].map(e => (e, nid)) }
-            .groupByKey
-            .map(e => {
-              val nodes = e._2.toArray.sorted
-              Edge(nodes(0), nodes(1), 1)
-            })
-
-          val passGraph = Graph(passNodes, passEdges)
+          val passGraph = GraphFrame(
+            pass.select('nid as "id", 'uid, 'gid, 'begin, 'end),
+            pass.select('nid, explode('edges) as "eid")
+              .groupBy("eid").agg(min("nid") as "src", max("nid") as "dst"))
           passGraph.cache()
 
-          val cc = passGraph.connectedComponents()
+          spark.sparkContext.setCheckpointDir(config.outputPath + "/tmp")
+          val cc = passGraph.connectedComponents.run()
 
-          val clusters = passGraph.vertices.innerJoin(cc.vertices){
-            (id, pass, cid) => (pass._1, (pass._2, cid.toLong))
+          val merge_spans = udf { (spans: Seq[Row]) =>
+            PassFun.mergeSpansLR(0, spans.map { s => (Span(s.getInt(0), s.getInt(1)), 0L) })
+              .map { _._1 }
           }
-            .values
-            .groupBy(_._2._2)
-            .filter(x => {
-              x._2.groupBy(_._1.id).values.groupBy(_.head._1.series).map(_._2.size).max <= config.maxRep
-            })
-            .flatMap(_._2)
-            .map(x => (x._1.id, x._2))
-            .groupByKey
-            .flatMap(x => x._2.groupBy(_._2).values.flatMap(p => {
-              PassFun.mergeSpansLR(0, p).map(z => (x._1, z._2(0), z._1.begin, z._1.end))
-            }))
-            .groupBy(_._2)
-            .flatMap(x => {
-              val size = x._2.size
-              x._2.map(p => (p._1, p._2, size, p._3, p._4))
-            })
-            .toDF("uid", "cluster", "size", "begin", "end")
 
-          clusters.write.parquet(clusterFname)
+          val clusters =
+            cc.groupBy("component", "uid")
+              .agg(merge_spans(collect_list(struct("begin", "end"))) as "spans")
+              .select('component as "cluster", 'uid, explode('spans) as "span")
+              .select('cluster, 'uid, $"span.*")
+          clusters.cache()
+
+          clusters.join(clusters.groupBy("cluster").agg(count("uid") as "size"), "cluster")
+            .select('uid, 'cluster, 'size, 'begin, 'end)
+            .write.parquet(clusterFname)
+
           passGraph.unpersist()
+          cc.unpersist()
         }
       }
 
