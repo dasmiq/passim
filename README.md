@@ -153,9 +153,6 @@ See the
 [Spark documentation](https://spark.apache.org/docs/latest/index.html)
 for further configuration options.
 
-If `jq` is installed, you can convert JSON output to a tab-separated
-table with `tabcluster.sh` and to CSV with `csvcluster.sh`.
-
 ## <a name="locations"></a> Marking Locations inside Documents
 
 As mentioned above, the `text` field is interpreted as XML.  The
