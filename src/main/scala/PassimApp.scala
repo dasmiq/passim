@@ -893,19 +893,18 @@ object PassimApp {
               .save(config.outputPath + "/align." + config.outputFormat)
           }
 
-          val pass = if ( config.boilerplate || config.docwise )
-            boilerPassages(config, extents, corpus)
-          else
-            extents.mergePassages(config.relOver)
-
-          if ( config.docwise ) {
-            pass.write.format(config.outputFormat)
-              .save(config.outputPath + "/pass." + config.outputFormat)
-            sys.exit(0)
-          } else if ( config.boilerplate )
-            pass.drop("pairs").write.parquet(passFname)
-          else
-            pass.write.parquet(passFname)
+          if ( config.boilerplate || config.docwise ) {
+            val pass = boilerPassages(config, extents, corpus)
+            if ( config.docwise ) {
+              pass.write.format(config.outputFormat)
+                .save(config.outputPath + "/pass." + config.outputFormat)
+              sys.exit(0)
+            } else {
+              pass.drop("pairs").write.parquet(passFname)
+            }
+          } else {
+            extents.mergePassages(config.relOver).write.parquet(passFname)
+          }
         }
 
         if ( !config.boilerplate ) {
