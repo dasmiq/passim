@@ -83,6 +83,8 @@ case class AlignedStrings(s1: String, s2: String, matches: Int, score: Float)
 
 case class NewDoc(id: String, text: String, pages: Seq[Page], aligned: Boolean)
 
+case class LinkedSpan(span: Span, links: ArrayBuffer[Long])
+
 object PassFun {
   def increasingMatches(matches: Iterable[(Int,Int,Int)]): Array[(Int,Int,Int)] = {
     val in = matches.toArray.sorted
@@ -185,31 +187,6 @@ object PassFun {
         } else {
           res += ((span, cdoc))
         }
-      }
-    }
-    res.toSeq
-  }
-
-  def mergeSpans(rover: Double, init: Iterable[(Span, Long)]): Seq[(Span, ArrayBuffer[Long])] = {
-    val res = ArrayBuffer[(Span, ArrayBuffer[Long])]()
-    val in = init.toArray.sortWith((a, b) => a._1.length < b._1.length)
-    for ( cur <- in ) {
-      val span = cur._1
-      var idx = -1
-      var best = 0.0
-      for ( i <- 0 until res.size ) {
-        val s = res(i)._1
-        val score = 1.0 * span.intersect(s).length / span.union(s).length
-        if ( score > rover && score > best ) {
-          idx = i
-          best = score
-        }
-      }
-      if ( idx < 0 ) {
-        res += ((span, ArrayBuffer(cur._2)))
-      } else {
-        val rec = ((res(idx)._1.union(span), res(idx)._2 ++ ArrayBuffer(cur._2)))
-        res(idx) = rec
       }
     }
     res.toSeq
@@ -616,8 +593,73 @@ object PassimApp {
       import align.sparkSession.implicits._
       val graphParallelism = align.sparkSession.sparkContext.defaultParallelism
 
-      val mergeSpans = udf { (begins: Seq[Int], ends: Seq[Int], mids: Seq[Long]) =>
-        PassFun.mergeSpans(relOver, begins.zip(ends).map { x => Span(x._1, x._2) }.zip(mids))
+      val linkSpans = udf { (spans: Seq[Row]) =>
+        val c = collection.mutable.Map[Int, Int]()
+        for ( span <- spans ) span match { case Row(begin: Int, end: Int, mid: Long) =>
+          for ( i <- begin until end ) {
+            if ( c.contains(i) ) {
+              c(i) += 1
+            } else {
+              c(i) = 1
+            }
+          }
+        }
+
+        // Merge spans with slight differences in their edges
+        val lspans = ArrayBuffer[LinkedSpan]()
+        for ( span <- spans.sortWith((a, b) => (b.getInt(1) - b.getInt(0)) < (a.getInt(1) - a.getInt(0))) ) span match { case Row(begin: Int, end: Int, mid: Long) =>
+          var hit = -1
+          val cur = Span(begin, end)
+          val cdoc = ArrayBuffer[Long](mid)
+          for ( i <- 0 until lspans.size ) {
+            if ( hit < 0 ) {
+              val top = lspans(i)
+              if ( (1.0 * cur.intersect(top.span).length / cur.union(top.span).length > 0.5)
+                && ((cur.union(top.span).length - cur.intersect(top.span).length) < 2 * 20) ) {
+                hit = i
+              }
+            }
+          }
+          if ( hit < 0 ) {
+            lspans += LinkedSpan(cur, cdoc)
+          } else {
+            val top = lspans(hit)
+            val rec = LinkedSpan(cur.union(top.span), top.links ++ cdoc)
+            lspans(hit) = rec
+          }
+        }
+
+        def spanCount(span: Span): Double = Range(span.begin, span.end).map { c(_) }.sum
+        def afreq(span: Span): Double = spanCount(span) / span.length
+
+        // Merge nested spans
+        val res = ArrayBuffer[LinkedSpan]()
+        for ( cur <- lspans.sortWith(_.span.length > _.span.length)) {
+          val inner = afreq(cur.span)
+          var hit = -1
+          for ( i <- 0 until res.size ) {
+            if ( hit < 0 ) {
+              val top = res(i)
+              if ( cur.span.begin >= top.span.begin && cur.span.end <= top.span.end ) { // top contains span
+                val pre = Span(top.span.begin, cur.span.begin)
+                val post = Span(cur.span.end, top.span.end)
+                val outer = ( spanCount(pre) + spanCount(post) ) / ( pre.length + post.length )
+                val total = afreq(top.span)
+
+                val overlap = 1.0 * cur.span.intersect(top.span).length / cur.span.union(top.span).length
+                val prominence = (inner - outer)/total
+
+                if ( overlap > relOver || prominence < 1 ) {
+                  hit = i
+                  val rec = LinkedSpan(top.span, top.links ++ cur.links)
+                  res(i) = rec
+                }
+              }
+            }
+          }
+          if ( hit < 0 ) res += cur
+        }
+        res
       }
 
       // TODO: Bad column segmentation can interleave two texts,
@@ -625,12 +667,11 @@ object PassimApp {
       // possible solution would be to avoid merging passages that
       // have poor alignments.
       align.groupBy("uid", "gid")
-        .agg(mergeSpans(collect_list("begin"), collect_list("end"),
-          collect_list("mid")) as "spans")
+        .agg(linkSpans(collect_list(struct("begin", "end", "mid"))) as "spans")
         .select('uid, 'gid, explode('spans) as "span")
         .coalesce(graphParallelism)
         .select(monotonically_increasing_id() as "nid", 'uid, 'gid,
-          $"span._1.begin", $"span._1.end", $"span._2" as "edges")
+          $"span.span.begin", $"span.span.end", $"span.links" as "edges")
     }
     def pairwiseAlignments(config: Config, corpus: DataFrame): DataFrame = {
       import align.sparkSession.implicits._
