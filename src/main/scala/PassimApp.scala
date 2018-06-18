@@ -649,7 +649,7 @@ object PassimApp {
                 val overlap = 1.0 * cur.span.intersect(top.span).length / cur.span.union(top.span).length
                 val prominence = (inner - outer)/total
 
-                if ( overlap > relOver || prominence < 1 ) {
+                if ( overlap > relOver ) { //|| prominence < 1 ) {
                   hit = i
                   val rec = LinkedSpan(top.span, top.links ++ cur.links)
                   res(i) = rec
@@ -818,7 +818,10 @@ object PassimApp {
     val outFname = config.outputPath + "/out." + config.outputFormat
 
     if ( !hdfsExists(spark, outFname) ) {
-      val raw = spark.read.format(config.inputFormat).load(config.inputPaths)
+      val raw = spark.read
+        .option("mergeSchema", "true")
+        .format(config.inputFormat)
+        .load(config.inputPaths)
 
       val groupCol = if ( raw.columns.contains(config.group) ) config.group else config.id
 
@@ -826,6 +829,8 @@ object PassimApp {
         .withColumn("uid", hashId(col(config.id)))
         .withColumn("gid", hashId(col(groupCol)))
         .tokenize(config.text)
+
+      spark.conf.set("spark.sql.shuffle.partitions", corpus.rdd.getNumPartitions * 3)
 
       if ( config.names ) {
         corpus.select('uid, col(config.id), col(groupCol), size('terms) as "nterms")
@@ -951,6 +956,8 @@ object PassimApp {
         if ( !config.boilerplate ) {
           val pass = spark.read.parquet(passFname)
 
+          spark.conf.set("spark.sql.shuffle.partitions", spark.sparkContext.defaultParallelism)
+
           val passGraph = GraphFrame(
             pass.select('nid as "id", 'uid, 'gid, 'begin, 'end),
             pass.select('nid, explode('edges) as "eid")
@@ -980,6 +987,8 @@ object PassimApp {
           cc.unpersist()
         }
       }
+
+      spark.conf.set("spark.sql.shuffle.partitions", corpus.rdd.getNumPartitions * 3)
 
       val out = if ( config.boilerplate ) {
         boilerSplit(spark.read.parquet(passFname), raw)
