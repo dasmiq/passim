@@ -21,7 +21,7 @@ import org.graphframes._
 case class Config(version: String = BuildInfo.version,
   boilerplate: Boolean = false,
   n: Int = 5, minDF: Int = 2, maxDF: Int = 100, minRep: Int = 5, minAlg: Int = 20,
-  gap: Int = 100, relOver: Double = 0.8, maxRep: Int = 10,
+  gap: Int = 100, relOver: Double = 0.8, mergeDiverge: Double = 0.3, maxRep: Int = 10,
   context: Int = 0,
   wordLength: Double = 2,
   pairwise: Boolean = false,
@@ -589,7 +589,7 @@ object PassimApp {
   }
 
   implicit class PassageAlignments(align: DataFrame) {
-    def mergePassages(relOver: Double): DataFrame = {
+    def mergePassages(config: Config): DataFrame = {
       import align.sparkSession.implicits._
       val graphParallelism = align.sparkSession.sparkContext.defaultParallelism
 
@@ -607,25 +607,34 @@ object PassimApp {
 
         // Merge spans with slight differences in their edges
         val lspans = ArrayBuffer[LinkedSpan]()
+        val bads = ArrayBuffer[LinkedSpan]()
         for ( span <- spans.sortWith((a, b) => (b.getInt(1) - b.getInt(0)) < (a.getInt(1) - a.getInt(0))) ) span match { case Row(begin: Int, end: Int, olen: Int, mid: Long) =>
           var hit = -1
           val cur = Span(begin, end)
           val cdoc = ArrayBuffer[Long](mid)
-          for ( i <- 0 until lspans.size ) {
-            if ( hit < 0 ) {
-              val top = lspans(i)
-              if ( (1.0 * cur.intersect(top.span).length / cur.union(top.span).length > 0.5)
-                && ((cur.union(top.span).length - cur.intersect(top.span).length) < 2 * 20) ) {
-                hit = i
+          // Bad column segmentation, among other alignment errors,
+          // can interleave two texts, which can lead to unrelated
+          // clusters getting merged.  Don't merge passages that have
+          // poor alignments.
+          if ( (cur.length > olen) && (((cur.length - olen) / cur.length) >= config.mergeDiverge) ) {
+            bads += LinkedSpan(cur, cdoc)
+          } else {
+            for ( i <- 0 until lspans.size ) {
+              if ( hit < 0 ) {
+                val top = lspans(i)
+                if ( (1.0 * cur.intersect(top.span).length / cur.union(top.span).length > 0.5)
+                  && ((cur.union(top.span).length - cur.intersect(top.span).length) < 2 * 20) ) {
+                  hit = i
+                }
               }
             }
-          }
-          if ( hit < 0 ) {
-            lspans += LinkedSpan(cur, cdoc)
-          } else {
-            val top = lspans(hit)
-            val rec = LinkedSpan(cur.union(top.span), top.links ++ cdoc)
-            lspans(hit) = rec
+            if ( hit < 0 ) {
+              lspans += LinkedSpan(cur, cdoc)
+            } else {
+              val top = lspans(hit)
+              val rec = LinkedSpan(cur.union(top.span), top.links ++ cdoc)
+              lspans(hit) = rec
+            }
           }
         }
 
@@ -649,7 +658,7 @@ object PassimApp {
                 val overlap = 1.0 * cur.span.intersect(top.span).length / cur.span.union(top.span).length
                 val prominence = (inner - outer)/total
 
-                if ( overlap > relOver ) { //|| prominence < 1 ) {
+                if ( overlap > config.relOver ) { //|| prominence < 1 ) {
                   hit = i
                   val rec = LinkedSpan(top.span, top.links ++ cur.links)
                   res(i) = rec
@@ -659,13 +668,10 @@ object PassimApp {
           }
           if ( hit < 0 ) res += cur
         }
+        res ++= bads
         res
       }
 
-      // TODO: Bad column segmentation can interleave two texts,
-      // which can lead to unrelated clusters getting merged.  One
-      // possible solution would be to avoid merging passages that
-      // have poor alignments.
       align.groupBy("uid", "gid")
         .agg(linkSpans(collect_list(struct("begin", "end", "olen", "mid"))) as "spans")
         .select('uid, 'gid, explode('spans) as "span")
@@ -758,6 +764,8 @@ object PassimApp {
         c.copy(context = x) } text("Size of context for aligned passages; default=0")
       opt[Double]('o', "relative-overlap") action { (x, c) =>
         c.copy(relOver = x) } text("Minimum relative overlap to merge passages; default=0.8")
+      opt[Double]('M', "merge-diverge") action { (x, c) =>
+        c.copy(mergeDiverge = x) } text("Maximum length divergence for merging extents; default=0.3")
       opt[Int]('r', "max-repeat") action { (x, c) =>
         c.copy(maxRep = x) } text("Maximum repeat of one series in a cluster; default=10")
       opt[Unit]('p', "pairwise") action { (_, c) =>
@@ -953,7 +961,7 @@ object PassimApp {
               pass.drop("pairs").write.parquet(passFname)
             }
           } else {
-            extents.mergePassages(config.relOver).write.parquet(passFname)
+            extents.mergePassages(config).write.parquet(passFname)
           }
         }
 
