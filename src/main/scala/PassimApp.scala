@@ -595,7 +595,7 @@ object PassimApp {
 
       val linkSpans = udf { (spans: Seq[Row]) =>
         val c = collection.mutable.Map[Int, Int]()
-        for ( span <- spans ) span match { case Row(begin: Int, end: Int, mid: Long) =>
+        for ( span <- spans ) span match { case Row(begin: Int, end: Int, olen: Int, mid: Long) =>
           for ( i <- begin until end ) {
             if ( c.contains(i) ) {
               c(i) += 1
@@ -607,7 +607,7 @@ object PassimApp {
 
         // Merge spans with slight differences in their edges
         val lspans = ArrayBuffer[LinkedSpan]()
-        for ( span <- spans.sortWith((a, b) => (b.getInt(1) - b.getInt(0)) < (a.getInt(1) - a.getInt(0))) ) span match { case Row(begin: Int, end: Int, mid: Long) =>
+        for ( span <- spans.sortWith((a, b) => (b.getInt(1) - b.getInt(0)) < (a.getInt(1) - a.getInt(0))) ) span match { case Row(begin: Int, end: Int, olen: Int, mid: Long) =>
           var hit = -1
           val cur = Span(begin, end)
           val cdoc = ArrayBuffer[Long](mid)
@@ -667,7 +667,7 @@ object PassimApp {
       // possible solution would be to avoid merging passages that
       // have poor alignments.
       align.groupBy("uid", "gid")
-        .agg(linkSpans(collect_list(struct("begin", "end", "mid", "olen"))) as "spans")
+        .agg(linkSpans(collect_list(struct("begin", "end", "olen", "mid"))) as "spans")
         .select('uid, 'gid, explode('spans) as "span")
         .coalesce(graphParallelism)
         .select(monotonically_increasing_id() as "nid", 'uid, 'gid,
