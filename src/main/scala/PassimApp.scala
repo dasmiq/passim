@@ -667,7 +667,7 @@ object PassimApp {
       // possible solution would be to avoid merging passages that
       // have poor alignments.
       align.groupBy("uid", "gid")
-        .agg(linkSpans(collect_list(struct("begin", "end", "mid"))) as "spans")
+        .agg(linkSpans(collect_list(struct("begin", "end", "mid", "olen"))) as "spans")
         .select('uid, 'gid, explode('spans) as "span")
         .coalesce(graphParallelism)
         .select(monotonically_increasing_id() as "nid", 'uid, 'gid,
@@ -904,20 +904,24 @@ object PassimApp {
             val extent: Int = config.gap * 2/3
             pairs.join(termCorpus, "uid")
               .select('mid, 'uid, 'gid, 'begin, 'end, 'first,
+                size('terms) as "tok",
                 termSpan('begin - extent, 'begin, 'terms) as "prefix",
                 termSpan('end, 'end + extent, 'terms) as "suffix")
               .groupBy("mid")
               .agg(first("uid") as "uid", last("uid") as "uid2", first("first") as "sorted",
                 first("gid") as "gid", last("gid") as "gid2",
+                first("tok") as "tok", last("tok") as "tok2",
                 alignEdge(first("begin"), last("begin"),
                   first("prefix"), last("prefix"), lit("R")) as "begin",
                 alignEdge(first("end"), last("end"),
                   first("suffix"), last("suffix"), lit("L")) as "end")
               .filter { ($"end._1" - $"begin._1") >= config.minAlg &&
                 ($"end._2" - $"begin._2") >= config.minAlg }
-              .select(array(struct('mid, 'uid, 'gid, 'sorted as "first",
+              .select(array(struct('mid, 'uid, 'gid, 'tok, 'sorted as "first",
+                ($"end._2" - $"begin._2") as "olen",
                 $"begin._1" as "begin", $"end._1" as "end"),
-                struct('mid, 'uid2 as "uid", 'gid2 as "gid", !'sorted as "first",
+                struct('mid, 'uid2 as "uid", 'gid2 as "gid", 'tok2 as "tok", !'sorted as "first",
+                  ($"end._1" - $"begin._1") as "olen",
                   $"begin._2" as "begin", $"end._2" as "end")) as "pair")
               .select(explode(when('pair(0)("first"), 'pair)
                 .otherwise(array('pair(1), 'pair(0)))) as "pair")
