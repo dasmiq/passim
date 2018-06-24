@@ -616,7 +616,8 @@ object PassimApp {
           // can interleave two texts, which can lead to unrelated
           // clusters getting merged.  Don't merge passages that have
           // poor alignments.
-          if ( (cur.length > olen) && (((cur.length - olen) / cur.length) >= config.mergeDiverge) ) {
+          // if ( ((cur.length - olen).abs / Math.max(cur.length, olen)) >= config.mergeDiverge ) {
+          if ( (cur.length > olen) && (((cur.length - olen).toDouble / cur.length) >= config.mergeDiverge) ) {
             bads += LinkedSpan(cur, cdoc)
           } else {
             for ( i <- 0 until lspans.size ) {
