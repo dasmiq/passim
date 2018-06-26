@@ -910,30 +910,28 @@ object PassimApp {
               PassFun.alignEdge(matchMatrix, idx1, idx2, text1, text2, anchor)
             }
 
+            val extentFields = ListBuffer("uid", "gid", "first", "size(terms) as tok")
+
             val extent: Int = config.gap * 2/3
             pairs.join(termCorpus, "uid")
-              .select('mid, 'uid, 'gid, 'begin, 'end, 'first,
-                size('terms) as "tok",
+              .select('mid, 'begin, 'end,
+                struct(extentFields.toList.map(expr):_*) as "info",
                 termSpan('begin - extent, 'begin, 'terms) as "prefix",
                 termSpan('end, 'end + extent, 'terms) as "suffix")
               .groupBy("mid")
-              .agg(first("uid") as "uid", last("uid") as "uid2", first("first") as "sorted",
-                first("gid") as "gid", last("gid") as "gid2",
-                first("tok") as "tok", last("tok") as "tok2",
+              .agg(first("info") as "info", last("info") as "info2",
                 alignEdge(first("begin"), last("begin"),
                   first("prefix"), last("prefix"), lit("R")) as "begin",
                 alignEdge(first("end"), last("end"),
                   first("suffix"), last("suffix"), lit("L")) as "end")
               .filter { ($"end._1" - $"begin._1") >= config.minAlg &&
                 ($"end._2" - $"begin._2") >= config.minAlg }
-              .select(array(struct('mid, 'uid, 'gid, 'tok, 'sorted as "first",
+              .select(explode(array(struct('mid, $"info.*",
                 ($"end._2" - $"begin._2") as "olen",
                 $"begin._1" as "begin", $"end._1" as "end"),
-                struct('mid, 'uid2 as "uid", 'gid2 as "gid", 'tok2 as "tok", !'sorted as "first",
+                struct('mid, $"info2.*",
                   ($"end._1" - $"begin._1") as "olen",
-                  $"begin._2" as "begin", $"end._2" as "end")) as "pair")
-              .select(explode(when('pair(0)("first"), 'pair)
-                .otherwise(array('pair(1), 'pair(0)))) as "pair")
+                  $"begin._2" as "begin", $"end._2" as "end"))) as "pair")
               .select($"pair.*")
               .write.parquet(extentsFname)
           }
