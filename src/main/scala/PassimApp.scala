@@ -593,7 +593,7 @@ object PassimApp {
       import align.sparkSession.implicits._
       val graphParallelism = align.sparkSession.sparkContext.defaultParallelism
 
-      val linkSpans = udf { (spans: Seq[Row]) =>
+      val linkSpans = udf { (ref: Int, spans: Seq[Row]) =>
         val c = collection.mutable.Map[Int, Int]()
         for ( span <- spans ) span match { case Row(begin: Int, end: Int, olen: Int, mid: Long) =>
           for ( i <- begin until end ) {
@@ -617,7 +617,7 @@ object PassimApp {
           // clusters getting merged.  Don't merge passages that have
           // poor alignments.
           // if ( ((cur.length - olen).abs / Math.max(cur.length, olen)) >= config.mergeDiverge ) {
-          if ( (cur.length > olen) && (((cur.length - olen).toDouble / cur.length) >= config.mergeDiverge) ) {
+          if ( (ref == 0) && (cur.length > olen) && (((cur.length - olen).toDouble / cur.length) >= config.mergeDiverge) ) {
             bads += LinkedSpan(cur, cdoc)
           } else {
             for ( i <- 0 until lspans.size ) {
@@ -659,7 +659,7 @@ object PassimApp {
                 val overlap = 1.0 * cur.span.intersect(top.span).length / cur.span.union(top.span).length
                 val prominence = (inner - outer)/total
 
-                if ( overlap > config.relOver ) { //|| prominence < 1 ) {
+                if ( (overlap > config.relOver) || (ref != 0) ) { //|| prominence < 1 ) {
                   hit = i
                   val rec = LinkedSpan(top.span, top.links ++ cur.links)
                   res(i) = rec
@@ -674,7 +674,7 @@ object PassimApp {
       }
 
       align.groupBy("uid", "gid")
-        .agg(linkSpans(collect_list(struct("begin", "end", "olen", "mid"))) as "spans")
+        .agg(linkSpans(first("ref"), collect_list(struct("begin", "end", "olen", "mid"))) as "spans")
         .select('uid, 'gid, explode('spans) as "span")
         .coalesce(graphParallelism)
         .select(monotonically_increasing_id() as "nid", 'uid, 'gid,
@@ -911,6 +911,7 @@ object PassimApp {
             }
 
             val extentFields = ListBuffer("uid", "gid", "first", "size(terms) as tok")
+            extentFields += (if ( termCorpus.columns.contains("ref") ) "ref" else "0 as ref")
 
             val extent: Int = config.gap * 2/3
             pairs.join(termCorpus, "uid")
