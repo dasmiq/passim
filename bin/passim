@@ -5,6 +5,6 @@ PASSIM_HOME="$(cd "`dirname "$0"`"/..; pwd)"
 SPARK_SUBMIT_ARGS="$SPARK_SUBMIT_ARGS"
 
 spark-submit --class passim.PassimApp \
-	     --packages 'com.github.scopt:scopt_2.11:3.5.0,graphframes:graphframes:0.5.0-spark2.1-s_2.11' \
+	     --packages 'com.github.scopt:scopt_2.11:3.5.0,graphframes:graphframes:0.6.0-spark2.3-s_2.11' \
 	     $SPARK_SUBMIT_ARGS \
 	     "$PASSIM_HOME"/target/scala-2.11/passim_2.11-0.2.0.jar "$@"
