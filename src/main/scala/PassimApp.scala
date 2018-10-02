@@ -593,17 +593,6 @@ object PassimApp {
       val graphParallelism = align.sparkSession.sparkContext.defaultParallelism
 
       val linkSpans = udf { (ref: Int, spans: Seq[Row]) =>
-        val c = collection.mutable.Map[Int, Int]()
-        for ( span <- spans ) span match { case Row(begin: Int, end: Int, olen: Int, mid: Long) =>
-          for ( i <- begin until end ) {
-            if ( c.contains(i) ) {
-              c(i) += 1
-            } else {
-              c(i) = 1
-            }
-          }
-        }
-
         // Merge spans with slight differences in their edges
         val lspans = ArrayBuffer[LinkedSpan]()
         val bads = ArrayBuffer[LinkedSpan]()
@@ -638,27 +627,16 @@ object PassimApp {
           }
         }
 
-        def spanCount(span: Span): Double = Range(span.begin, span.end).map { c(_) }.sum
-        def afreq(span: Span): Double = spanCount(span) / span.length
-
         // Merge nested spans
         val res = ArrayBuffer[LinkedSpan]()
         for ( cur <- lspans.sortWith(_.span.length > _.span.length)) {
-          val inner = afreq(cur.span)
           var hit = -1
           for ( i <- 0 until res.size ) {
             if ( hit < 0 ) {
               val top = res(i)
               if ( cur.span.begin >= top.span.begin && cur.span.end <= top.span.end ) { // top contains span
-                val pre = Span(top.span.begin, cur.span.begin)
-                val post = Span(cur.span.end, top.span.end)
-                val outer = ( spanCount(pre) + spanCount(post) ) / ( pre.length + post.length )
-                val total = afreq(top.span)
-
                 val overlap = 1.0 * cur.span.intersect(top.span).length / cur.span.union(top.span).length
-                val prominence = (inner - outer)/total
-
-                if ( (overlap > config.relOver) || (ref != 0) ) { //|| prominence < 1 ) {
+                if ( (overlap > config.relOver) || (ref != 0) ) {
                   hit = i
                   val rec = LinkedSpan(top.span, top.links ++ cur.links)
                   res(i) = rec
