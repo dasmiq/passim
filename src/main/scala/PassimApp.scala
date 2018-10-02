@@ -514,8 +514,7 @@ object PassimApp {
       .join(corpus.drop("terms"), "uid")
       .withColumn("begin", 'termCharBegin('begin))
       .withColumn("end",
-        'termCharEnd(when('end < size('termCharEnd), 'end)
-          .otherwise(size('termCharEnd) - 1)))
+        'termCharEnd(when('end < size('termCharEnd), 'end).otherwise(size('termCharEnd)) - 1))
       .drop("termCharBegin", "termCharEnd")
       .withColumn(config.text, getPassage(col(config.text), 'begin, 'end))
       .selectRegions("pages")
