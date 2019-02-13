@@ -137,7 +137,7 @@ Some useful parameters are:
 Parameter | Default value | Description
 --------- | ------------- | -----------
 `--n` | 5 | N-gram order for text-reuse detection
-`---max-series` | 100 | Maximum document frequency of n-grams used.
+`--max-series` | 100 | Maximum document frequency of n-grams used.
 `--min-match` | 5 | Minimum number of matching n-grams between two documents.
 `--relative-overlap` | 0.5 | Proportion that two different aligned passages from the same document must overlap to be clustered together, as measured on the longer passage.
 
