@@ -4,6 +4,7 @@ import org.apache.spark.SparkConf
 import org.apache.spark.graphx._
 import org.apache.spark.sql.{SparkSession, DataFrame, Row}
 import org.apache.spark.sql.functions._
+import org.apache.spark.sql.types.{DataType, StructType}
 import org.apache.spark.storage.StorageLevel
 
 import org.apache.hadoop.fs.{FileSystem,Path}
@@ -29,6 +30,7 @@ case class Config(version: String = BuildInfo.version,
   id: String = "id", group: String = "series", text: String = "text",
   fields: String = "",  filterpairs: String = "gid < gid2",
   inputFormat: String = "json", outputFormat: String = "json",
+  schemaPath: String = "",
   inputPaths: String = "", outputPath: String = "")
 
 case class Coords(x: Int, y: Int, w: Int, h: Int, b: Int) {
@@ -766,6 +768,8 @@ object PassimApp {
         c.copy(fields = x) } text("Semicolon-delimited list of fields to index")
       opt[String]("input-format") action { (x, c) =>
         c.copy(inputFormat = x) } text("Input format; default=json")
+      opt[String]("schema-path") action { (x, c) =>
+        c.copy(schemaPath = x) } text("Input schema path in json format")
       opt[String]("output-format") action { (x, c) =>
         c.copy(outputFormat = x) } text("Output format; default=json")
       opt[Double]('w', "word-length") action { (x, c) => c.copy(wordLength = x)
@@ -804,9 +808,12 @@ object PassimApp {
     val outFname = config.outputPath + "/out." + config.outputFormat
 
     if ( !hdfsExists(spark, outFname) ) {
-      val raw = spark.read
-        .option("mergeSchema", "true")
-        .format(config.inputFormat)
+      val raw = (if ( config.schemaPath == "" || !hdfsExists(spark, config.schemaPath) ) {
+        spark.read.option("mergeSchema", "true")
+      } else {
+        val jsonSchema = spark.read.text(config.schemaPath).collect()(0).getString(0)
+        spark.read.schema(DataType.fromJson(jsonSchema).asInstanceOf[StructType])
+      }).format(config.inputFormat)
         .load(config.inputPaths)
 
       val groupCol = if ( raw.columns.contains(config.group) ) config.group else config.id
