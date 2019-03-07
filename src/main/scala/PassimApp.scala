@@ -768,6 +768,8 @@ object PassimApp {
         c.copy(inputFormat = x) } text("Input format; default=json")
       opt[String]("output-format") action { (x, c) =>
         c.copy(outputFormat = x) } text("Output format; default=json")
+      opt[Unit]("aggregate") action { (_, c) =>
+        c.copy(aggregate = true) } text("Output aggregate alignments of consecutive seqs")
       opt[Double]('w', "word-length") action { (x, c) => c.copy(wordLength = x)
       } validate { x => if ( x >= 1 ) success else failure("average word length must be >= 1")
       } text("Minimum average word length to match; default=2")
@@ -926,6 +928,12 @@ object PassimApp {
             extents.pairwiseAlignments(config, corpus)
               .write.format(config.outputFormat)
               .save(config.outputPath + "/align." + config.outputFormat)
+          }
+
+          if ( config.aggregate ) {
+            extents.aggregateAlignments(config, corpus)
+              .write.format(config.outputFormat)
+              .save(config.outputPath + "/aggregate." + config.outputFormat)
           }
 
           if ( config.boilerplate || config.docwise ) {
