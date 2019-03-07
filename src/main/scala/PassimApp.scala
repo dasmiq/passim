@@ -25,6 +25,7 @@ case class Config(version: String = BuildInfo.version,
   context: Int = 0,
   wordLength: Double = 2,
   pairwise: Boolean = false,
+  aggregate: Boolean = false,
   docwise: Boolean = false, names: Boolean = false, postings: Boolean = false,
   id: String = "id", group: String = "series", text: String = "text",
   fields: String = "",  filterpairs: String = "gid < gid2",
@@ -692,6 +693,11 @@ object PassimApp {
         .select((cols.filter(_ endsWith "1") ++ cols.filter(_ endsWith "2") ++ Seq("matches", "score")).map(col):_*)
         .sort('id1, 'id2, 'b1, 'b2)
     }
+
+    def aggregateAlignments(config: Config, corpus: DataFrame): DataFrame = {
+      corpus.select("uid", "seq", config.id)
+      
+    }
   }
 
   val hashId = udf { (id: String) => hashString(id) }
@@ -830,6 +836,8 @@ object PassimApp {
         if ( !hdfsExists(spark, passFname) ) {
           val indexFields = ListBuffer("uid", "gid", "terms")
           if ( config.fields != "" ) indexFields ++= config.fields.split(";")
+          if ( config.aggregate && !indexFields.contains("seq")) indexFields ++= ListBuffer("seq")
+          if ( config.aggregate && !indexFields.contains(config.id)) indexFields ++= ListBuffer(config.id)
           val termCorpus = corpus.select(indexFields.toList.map(expr):_*)
 
           if ( !hdfsExists(spark, pairsFname) ) {
