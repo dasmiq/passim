@@ -4,6 +4,7 @@ import org.apache.spark.SparkConf
 import org.apache.spark.graphx._
 import org.apache.spark.sql.{SparkSession, DataFrame, Row}
 import org.apache.spark.sql.functions._
+import org.apache.spark.sql.types.IntegerType
 import org.apache.spark.storage.StorageLevel
 
 import org.apache.hadoop.fs.{FileSystem,Path}
@@ -85,6 +86,8 @@ case class AlignedStrings(s1: String, s2: String, matches: Int, score: Float)
 case class NewDoc(id: String, text: String, pages: Seq[Page], aligned: Boolean)
 
 case class LinkedSpan(span: Span, links: ArrayBuffer[Long])
+
+case class ExtentPair(seq1: Int, seq2: Int, begin1: Int, begin2: Int, end1: Int, end2: Int)
 
 object PassFun {
   def increasingMatches(matches: Iterable[(Int,Int,Int)]): Array[(Int,Int,Int)] = {
@@ -287,6 +290,12 @@ object PassimApp {
           case Row(x: Int, y: Int, w: Int, h: Int, b: Int) =>
             Region(start, length, Coords(x, y, w, h, b))
         }
+    }
+  }
+  def rowToExtentPair(r: Row): ExtentPair = {
+    r match {
+      case Row(seq1: Int, seq2: Int, begin1: Int, begin2: Int, end1: Int, end2: Int) =>
+        ExtentPair(seq1,seq2,begin1,begin2,end1,end2)
     }
   }
   def rowToPage(r: Row): Page = {
@@ -694,12 +703,105 @@ object PassimApp {
         .sort('id1, 'id2, 'b1, 'b2)
     }
 
-    def aggregateAlignments(config: Config, corpus: DataFrame): DataFrame = {
-      corpus.select("uid", "seq", config.id)
-      
+    def aggregateAlignments(config: Config, corpus: DataFrame, extents: DataFrame): DataFrame = {
+      import align.sparkSession.implicits._
+      val neededCols = corpus.select("uid", "seq", config.id, config.group)
+
+      val pairs = extents.join(neededCols,"uid")
+             .orderBy("mid",config.id,"seq")
+
+      pairs.groupBy("mid")
+        .agg(first("first") as "sorted", first(config.id) as "id1", last(config.id) as "id2",
+        first(config.group) as "series1", last(config.group) as "series2",
+        first("begin") as "begin1", last("begin") as "begin2",
+        first("end") as "end1", last("end") as "end2",
+        first("seq") as "seq1", last("seq") as "seq2")
+        //might not need begin and end fields
+        .select(when('sorted, 'id1).otherwise('id2) as "id1",
+          when('sorted, 'id2).otherwise('id1) as "id2",
+          when('sorted, 'series1).otherwise('series2) as "series1",
+          when('sorted, 'series2).otherwise('series1) as "series2",
+          when('sorted, 'begin1).otherwise('begin2) as "begin1",
+          when('sorted, 'begin2).otherwise('begin1) as "begin2",
+          when('sorted, 'end1).otherwise('end2) as "end1",
+          when('sorted, 'end2).otherwise('end1) as "end2",
+          when('sorted, 'seq1).otherwise('seq2) as "seq1",
+          when('sorted, 'seq2).otherwise('seq1) as "seq2")
+        //somehow this creates bigints not ints
+        .select(col("id1"),col("id2"),col("series1"),col("series2"),col("begin1").cast(IntegerType) as "begin1",
+          col("begin2").cast(IntegerType) as "begin2",
+          col("end1").cast(IntegerType) as "end1" ,
+          col("end2").cast(IntegerType) as "end2",
+          col("seq1").cast(IntegerType) as "seq1" ,
+          col("seq2").cast(IntegerType) as "seq2")
+        .withColumn("span",struct("seq1","seq2","begin1","begin2","end1","end2"))
+        .drop("id1","id2","begin1","begin2","end1","end2","seq1","seq2")
+        .groupBy("series1","series2")
+        .agg(collect_list("span") as "spans")
+        //this sort may not order the spans as required
+        //it seems ok, judging by the examples I looked at.
+        .withColumn("spans",sort_array(col("spans")))
+        //now we actually create the aggregate spans
+        .withColumn("aggregatedSpans",aggregateSpans(col("spans")))
     }
   }
 
+  val aggregateSpans = udf { (spans: Seq[Row]) => 
+
+    var castSpans = spans.map(PassimApp.rowToExtentPair)
+    //now we will aggregate the seq pairs into spans of adjacent extents
+    //
+    // outermost list
+    //   one entry per group of consecutive chunks between the pair of texts
+    var aggregatedPairs = Array[Array[ExtentPair]]()
+    var usedInAggregate = Array[Int]()
+    //for each pair in the set of extent pairs...
+    for (i <- castSpans.indices) {
+        //only try to start a pair here if we haven't already used it in another aggregated sequence
+        if (!(usedInAggregate contains i)) {
+            //get the seq values of the pair we're currently looking at
+            var firstSpan = castSpans(i)
+            var pos1 = firstSpan.seq1
+            var pos2 = firstSpan.seq2
+
+            //start looking for more pairs to add to the consecutive set
+            var aggregate = Array(firstSpan)
+
+            var finished = false
+            var j = i+1
+            while (!finished && (j < spans.length)) {
+                //get the position of the next pair
+                var nextSpan = castSpans(j)
+                var nextPos1 = nextSpan.seq1
+                var nextPos2 = nextSpan.seq2
+
+                //if the next pair is not adjacent to the current one in both books, we're done
+                if ((nextPos1 >= pos1+1 && nextPos2 > pos2 + 1) || (nextPos2 < pos2)) {
+                    finished = true
+                    aggregatedPairs :+= aggregate
+                } else if ((nextPos1 > pos1+1) || (nextPos2 > pos2 + 1)) {
+                	//if it is adjacent in one book, we may need to keep looking in future pairs
+                    j = j + 1
+                } else if (((nextPos1 == pos1 + 1) || nextPos1 == pos1) && ((nextPos2 == pos2 + 1) || (nextPos2 == pos2))) {
+                    //if it is, we need to add it to the list and update the current locations
+                    if (!(usedInAggregate contains j)) {
+                        if (!(aggregate contains nextSpan)) {
+                            aggregate :+= nextSpan
+                        }
+                        pos1 = nextPos1
+                        pos2 = nextPos2
+                        usedInAggregate :+= j
+                    }
+                    j += 1
+                }	
+            }
+            if (j == castSpans.length) {
+                aggregatedPairs :+= aggregate
+            }
+        }
+    }
+    aggregatedPairs
+  }
   val hashId = udf { (id: String) => hashString(id) }
   val termSpan = udf { (begin: Int, end: Int, terms: Seq[String]) =>
     terms.slice(Math.max(0, Math.min(terms.size, begin)),
@@ -718,7 +820,7 @@ object PassimApp {
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
       .registerKryoClasses(Array(classOf[Coords], classOf[Region], classOf[Span], classOf[Post],
         classOf[PassAlign],
-        classOf[TokText], classOf[IdSeries]))
+        classOf[TokText], classOf[IdSeries],classOf[ExtentPair]))
 
     val spark = SparkSession
       .builder()
@@ -838,6 +940,7 @@ object PassimApp {
           if ( config.fields != "" ) indexFields ++= config.fields.split(";")
           if ( config.aggregate && !indexFields.contains("seq")) indexFields ++= ListBuffer("seq")
           if ( config.aggregate && !indexFields.contains(config.id)) indexFields ++= ListBuffer(config.id)
+          if ( config.aggregate && !indexFields.contains(config.group)) indexFields ++= ListBuffer(config.group)
           val termCorpus = corpus.select(indexFields.toList.map(expr):_*)
 
           if ( !hdfsExists(spark, pairsFname) ) {
@@ -939,7 +1042,7 @@ object PassimApp {
           }
 
           if ( config.aggregate ) {
-            extents.aggregateAlignments(config, corpus)
+            extents.aggregateAlignments(config, corpus, extents)
               .write.format(config.outputFormat)
               .save(config.outputPath + "/aggregate." + config.outputFormat)
           }
