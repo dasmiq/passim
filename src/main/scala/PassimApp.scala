@@ -705,12 +705,16 @@ object PassimApp {
 
     def aggregateAlignments(config: Config, corpus: DataFrame, extents: DataFrame): DataFrame = {
       import align.sparkSession.implicits._
+      val alignStrings = makeStringAligner(config)
+
       val neededCols = corpus.select("uid", "seq", config.id, config.group)
+      var texts = corpus.select(config.group, "seq","text").withColumnRenamed(config.group,"series")
 
       val pairs = extents.join(neededCols,"uid")
              .orderBy("mid",config.id,"seq")
 
-      pairs.groupBy("mid")
+      //now we will create the aggregated spans of consecutive chunks
+      var aggregatedSpans = pairs.groupBy("mid")
         .agg(first("first") as "sorted", first(config.id) as "id1", last(config.id) as "id2",
         first(config.group) as "series1", last(config.group) as "series2",
         first("begin") as "begin1", last("begin") as "begin2",
@@ -743,9 +747,58 @@ object PassimApp {
         .withColumn("spans",sort_array(col("spans")))
         //now we actually create the aggregate spans
         .withColumn("aggregatedSpans",aggregateSpans(col("spans")))
+        .drop("spans")
+        //create one row per pair of seqs, rather than keeping them all in one array
+        // and create a column for each series of seqs from each text
+        .withColumn("chunkSequencePair",explode(col("aggregatedSpans"))).drop("aggregatedSpans")
+        .withColumn("chunkSequence1",col("chunkSequencePair")(0))
+        .withColumn("chunkSequence2",col("chunkSequencePair")(1))
+        .drop("chunkSequencePair")
+        //and add the id
+        .withColumn("pairID",monotonically_increasing_id())
+
+
+        //now we will collect the texts for the seqs from series1
+        val texts1 = aggregatedSpans.select("chunkSequence1","series1","pairID")
+         .withColumn("seq1",explode(col("chunkSequence1"))).drop("chunkSequence1")
+         .join(texts,(texts("series")===col("series1")) && (texts("seq")===col("seq1"))).drop("series","seq").withColumnRenamed("text","text1")
+         .groupBy("pairID")
+         .agg(collect_list("text1") as "text1",
+             collect_list("seq1") as "chunkSequence1")
+
+        //and likewise for series 2
+        val texts2 = aggregatedSpans.select("chunkSequence2","series2","pairID")
+         .withColumn("seq2",explode(col("chunkSequence2"))).drop("chunkSequence2")
+         .join(texts,(texts("series")===col("series2")) && (texts("seq")===col("seq2"))).drop("series","seq").withColumnRenamed("text","text2")
+         .groupBy("pairID")
+         .agg(collect_list("text2") as "text2",
+             collect_list("seq2") as "chunkSequence2")
+
+        //we need to drop the seq id lists, since they may be reordered when texts are added
+        // and now we add the texts back to the complete dataframe of aggregated chunks
+        aggregatedSpans.drop("chunkSequence1","chunkSequence2").join(texts1,"pairID").join(texts2,"pairID")
+         .withColumn("text1",collectTexts(col("text1"),col("chunkSequence1")))
+         .withColumn("chunkSequence1",sort_array(col("chunkSequence1")))
+         .withColumn("text2",collectTexts(col("text2"),col("chunkSequence2")))
+         .withColumn("chunkSequence2",sort_array(col("chunkSequence2")))
+        //now we will align the new documents
+         .withColumn("alg", alignStrings(col("text1"), col("text2")))
+
     }
   }
 
+  val collectTexts = udf { (texts: Seq[String], seqs: Seq[Int]) =>
+        val textDict = seqs zip texts toMap
+
+        var allTexts = ""
+        for (seq <- seqs.sorted) {
+            allTexts = allTexts.concat(textDict(seq))
+        }
+        allTexts
+  }
+
+  //yes this technically doesn't need the case class anymore, but if we decide to do something more principled in deciding which spans
+  // to merge, the extent endpoints might be useful
   val aggregateSpans = udf { (spans: Seq[Row]) => 
 
     var castSpans = spans.map(PassimApp.rowToExtentPair)
@@ -753,7 +806,7 @@ object PassimApp {
     //
     // outermost list
     //   one entry per group of consecutive chunks between the pair of texts
-    var aggregatedPairs = Array[Array[ExtentPair]]()
+    var aggregatedPairs = Array[Array[Array[Int]]]()
     var usedInAggregate = Array[Int]()
     //for each pair in the set of extent pairs...
     for (i <- castSpans.indices) {
@@ -765,7 +818,7 @@ object PassimApp {
             var pos2 = firstSpan.seq2
 
             //start looking for more pairs to add to the consecutive set
-            var aggregate = Array(firstSpan)
+            var aggregate = Array(Array(pos1),Array(pos2))
 
             var finished = false
             var j = i+1
@@ -785,8 +838,11 @@ object PassimApp {
                 } else if (((nextPos1 == pos1 + 1) || nextPos1 == pos1) && ((nextPos2 == pos2 + 1) || (nextPos2 == pos2))) {
                     //if it is, we need to add it to the list and update the current locations
                     if (!(usedInAggregate contains j)) {
-                        if (!(aggregate contains nextSpan)) {
-                            aggregate :+= nextSpan
+                        if (!(aggregate(0) contains nextPos1)) {
+                            aggregate(0) :+= nextPos1
+                        }
+                        if (!(aggregate(1) contains nextPos2)) {
+                            aggregate(1) :+= nextPos2
                         }
                         pos1 = nextPos1
                         pos2 = nextPos2
@@ -799,6 +855,11 @@ object PassimApp {
                 aggregatedPairs :+= aggregate
             }
         }
+    }
+    //now we add the preceeding and following sections to each sequence of seq ids, in case passim missed something at the boundaries
+    for (i <- aggregatedPairs.indices) {
+        aggregatedPairs(i)(0) = Array(aggregatedPairs(i)(0)(0)-1) ++ aggregatedPairs(i)(0) ++ Array(aggregatedPairs(i)(0).last + 1)
+        aggregatedPairs(i)(1) = Array(aggregatedPairs(i)(1)(0)-1) ++ aggregatedPairs(i)(1) ++ Array(aggregatedPairs(i)(1).last + 1)
     }
     aggregatedPairs
   }
