@@ -323,7 +323,7 @@ object PassimApp {
     }
     val boundLoci = udf {(begin: Int, end: Int, loci: Seq[Row]) =>
       Try(loci.map(rowToLocus)
-        .filter { r => r.start <= end && r.end > begin }
+        .filter { r => r.start < end && r.end > begin }
         .map { _.loc }
         .distinct.sorted) // stable
         .getOrElse(Seq[String]())
@@ -331,7 +331,7 @@ object PassimApp {
     val pageRegions = udf{(begin: Int, end: Int, pages: Seq[Row]) =>
       Try(pages.map(rowToPage)
         .flatMap { p =>
-        val overlap = p.regions.filter { r => r.start <= end && r.end > begin }
+        val overlap = p.regions.filter { r => r.start < end && r.end > begin }
         if ( overlap.size > 0 )
           Some(p.copy(regions = Array(Region(overlap.head.start,
             overlap.last.end - overlap.head.start,
@@ -681,7 +681,7 @@ object PassimApp {
         .withColumn("bw", 'begin)
         .withColumn("ew", 'end)
         .withColumn("begin", 'termCharBegin('bw))
-        .withColumn("end", 'termCharEnd(when('ew < size('termCharEnd), 'ew)
+        .withColumn("end", 'termCharBegin(when('ew < size('termCharEnd), 'ew)
           .otherwise(size('termCharEnd) - 1)))
         .selectRegions("pages")
         .selectLocs("locs")
