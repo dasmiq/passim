@@ -87,7 +87,7 @@ case class NewDoc(id: String, text: String, pages: Seq[Page], aligned: Boolean)
 
 case class LinkedSpan(span: Span, links: ArrayBuffer[Long])
 
-case class ExtentPair(seq1: Int, seq2: Int, begin1: Int, begin2: Int, end1: Int, end2: Int, id1: String, id2: String, tok1: Int, tok2: Int)
+case class ExtentPair(seq1: Int, seq2: Int, begin1: Int, begin2: Int, end1: Int, end2: Int, tok1: Int, tok2: Int)
 
 object PassFun {
   def increasingMatches(matches: Iterable[(Int,Int,Int)]): Array[(Int,Int,Int)] = {
@@ -294,8 +294,8 @@ object PassimApp {
   }
   def rowToExtentPair(r: Row): ExtentPair = {
     r match {
-      case Row(seq1: Int, seq2: Int, begin1: Int, begin2: Int, end1: Int, end2: Int, id1: String, id2: String, tok1: Int, tok2: Int) =>
-        ExtentPair(seq1,seq2,begin1,begin2,end1,end2,id1,id2,tok1,tok2)
+      case Row(seq1: Int, seq2: Int, begin1: Int, begin2: Int, end1: Int, end2: Int, tok1: Int, tok2: Int) =>
+        ExtentPair(seq1,seq2,begin1,begin2,end1,end2,tok1,tok2)
     }
   }
   def rowToPage(r: Row): Page = {
@@ -703,11 +703,11 @@ object PassimApp {
         .sort('id1, 'id2, 'b1, 'b2)
     }
 
-    def aggregateAlignments(config: Config, corpus: DataFrame, extents: DataFrame, alignments: DataFrame): DataFrame = {
+    def aggregateAlignments(config: Config, corpus: DataFrame, extents: DataFrame): DataFrame = {
       import align.sparkSession.implicits._
       val alignStrings = makeStringAligner(config)
       val neededCols = corpus.select("uid", "seq", config.id, config.group)
-      var texts = corpus.select(config.group, "seq","text","termCharBegin","termCharEnd","terms").withColumnRenamed(config.group,"series")
+      var texts = corpus.select(config.group, "seq","text").withColumnRenamed(config.group,"t_series").withColumnRenamed("seq","t_seq")
 
 
       val pairs = extents.join(neededCols,"uid")
@@ -743,7 +743,7 @@ object PassimApp {
           col("seq2").cast(IntegerType) as "seq2",
           col("tok1").cast(IntegerType) as "tok1",
           col("tok2").cast(IntegerType) as "tok2")
-        .withColumn("span",struct("seq1","seq2","begin1","begin2","end1","end2","id1","id2","tok1","tok2"))
+        .withColumn("span",struct("seq1","seq2","begin1","begin2","end1","end2","tok1","tok2"))
         .drop("id1","id2","begin1","begin2","end1","end2","seq1","seq2","tok1","tok2")
         .groupBy("series1","series2")
         .agg(collect_list("span") as "spans")
@@ -751,44 +751,50 @@ object PassimApp {
         //it seems ok, judging by the examples I looked at.
         .withColumn("spans",sort_array(col("spans")))
 
-      //now we actually create the aggregate spans
+      //create the aggregate spans of seqs
       aggregatedSpans = aggregatedSpans.withColumn("gap",lit(config.gap))
         .withColumn("aggregatedSpans",aggregateSpans(col("spans"),col("gap"))).drop("gap")
         .drop("spans")
         //create one row per sequence of seqs, rather than keeping them all in one array
         // and create a column for each series of seqs from each text
         .withColumn("chunkPairSequence",explode(col("aggregatedSpans"))).drop("aggregatedSpans")
+        .withColumn("chunkSequence1",col("chunkPairSequence")(0))
+        .withColumn("chunkSequence2",col("chunkPairSequence")(1)).drop("chunkPairSequence")
         //and add the id
         .withColumn("pairID",monotonically_increasing_id())
 
-      aggregatedSpans
+      //take the two documents from each row and make one new dataframe with each
+      val aggregateDocs1 = aggregatedSpans.select(col("series1"),col("chunkSequence1"),col("pairID"))
+      val aggregateDocs2 = aggregatedSpans.select(col("series2"),col("chunkSequence2"),col("pairID"))
 
-      //now we will collect the texts for the seqs from series1
-      // val texts1 = aggregatedSpans.select("chunkSequence1","series1","pairID")
-      //  .withColumn("seq1",explode(col("chunkSequence1"))).drop("chunkSequence1")
-      //  .join(texts,(texts("series")===col("series1")) && (texts("seq")===col("seq1"))).drop("series","seq").withColumnRenamed("text","text1")
-      //  .groupBy("pairID")
-      //  .agg(collect_list("text1") as "text1",
-      //      collect_list("seq1") as "chunkSequence1")
+      // for some reason this behaves extremely strangely. The fields are properly merged despite not sharing names.
+      val allDocs = aggregateDocs1.union(aggregateDocs2).withColumnRenamed("series1","seriesStr")
+                                                        .withColumnRenamed("chunkSequence1","seqsList")
 
-      //and likewise for series 2
-      // val texts2 = aggregatedSpans.select("chunkSequence2","series2","pairID")
-      //  .withColumn("seq2",explode(col("chunkSequence2"))).drop("chunkSequence2")
-      //  .join(texts,(texts("series")===col("series2")) && (texts("seq")===col("seq2"))).drop("series","seq").withColumnRenamed("text","text2")
-      //  .groupBy("pairID")
-      //  .agg(collect_list("text2") as "text2",
-      //      collect_list("seq2") as "chunkSequence2")
+      //we will now deduplicate the aggregated docuemnts
+      val dedupedlicatedDocs = allDocs.groupBy("seriesStr","seqsList")
+                                  .agg(first("seriesStr") as "series",first("seqsList") as "seqs",
+                                  	   collect_list("pairID") as "pairIDs")
+                                  .select("series","seqs","pairIDs")
+                                  .withColumn("docID",makeId(col("series"),col("seqs")))
 
-      //we need to drop the seq id lists, since they may be reordered when texts are added
-      // and now we add the texts back to the complete dataframe of aggregated chunks
-      // aggregatedSpans.drop("chunkSequence1","chunkSequence2").join(texts1,"pairID").join(texts2,"pairID")
-      //  .withColumn("text1",collectTexts(col("text1"),col("chunkSequence1")))
-      //  .withColumn("chunkSequence1",sort_array(col("chunkSequence1")))
-      //  .withColumn("text2",collectTexts(col("text2"),col("chunkSequence2")))
-      //  .withColumn("chunkSequence2",sort_array(col("chunkSequence2")))
-      // //now we will align the new documents
-      //  .withColumn("alg", alignStrings(col("text1"), col("text2")))
+      //collect the texts for the seqs involved in each aggregate document
+      val textsGrouped = dedupedlicatedDocs.select("seqs","series","docID")
+       .withColumn("seq",explode(col("seqs"))).drop("seqsList")
+       .join(texts,(texts("t_series")===col("series")) && (texts("t_seq")===col("seq")))
+       .drop("t_seq","t_series")
+       .groupBy("series","docID")
+       .agg(collect_list("text") as "text",
+           collect_list("seq") as "seqs")
+       .select("docID","seqs","text")
 
+      //we will finally add the texts to the dataframe of aggregate documents
+      // we need to drop the seq id lists, since they may be reordered when texts are added
+      // the texts will also have to be ordered correctly according to their seq number
+      dedupedlicatedDocs.drop("seqs").join(textsGrouped,"docID")
+       .withColumn("text",collectTexts(col("text"),col("seqs")))
+       .withColumn("seqs",sort_array(col("seqs")))
+       .withColumnRenamed("docID","id")
     }
   }
 
@@ -811,7 +817,7 @@ object PassimApp {
     //
     // outermost list
     //   one entry per group of consecutive chunks between the pair of texts
-    var aggregatedPairs = Array[Array[ExtentPair]]()
+    var aggregatedPairs = Array[Array[Array[Int]]]()
     var usedInAggregate = Array[Int]()
     //for each pair in the set of extent pairs...
     for (i <- castSpans.indices) {
@@ -823,11 +829,24 @@ object PassimApp {
             var pos2 = firstSpan.seq2
             var lengthToEnd1 = firstSpan.tok1-firstSpan.end1
             var lengthToEnd2 = firstSpan.tok2-firstSpan.end2
+            var lengthFromBeginning1 = firstSpan.begin1
+            var lengthFromBeginning2 = firstSpan.begin2
 
-            //start looking for more pairs to add to the consecutive set
-            var aggregate = Array(firstSpan)
+            //determine if we want to check the preceeding chunk to see if passim missed anything in the first pass
+            // in both texts
+            var start1 = Array(pos1)
+            var start2 = Array(pos2)
+            if (lengthFromBeginning1<gap) {
+                start1 +:= (pos1-1)
+            }
+            if (lengthFromBeginning2<gap) {
+                start2 +:= (pos2-1)
+            }
+
+            var aggregate = Array(start1,start2)
             usedInAggregate :+= i
 
+            //start looking for more pairs to add to the consecutive set
             var finished = false
             var j = i+1
             while (!finished && (j < spans.length)) {
@@ -846,15 +865,25 @@ object PassimApp {
                    (((lengthToEnd2>gap) && (lengthToEnd1>gap)) ||
                    ((lengthFromBegin1>gap) && (lengthFromBegin2>gap)))) {
                     finished = true
+                    //check if we should look in the next chunk after this one in either text
+                    if (lengthToEnd1<gap) {
+                        aggregate(0) :+= aggregate(0).last + 1
+                    }
+                    if (lengthToEnd2<gap) {
+                        aggregate(1) :+= aggregate(1).last + 1
+                    }
                     aggregatedPairs :+= aggregate
                 } else if ((nextPos1 > pos1+1) || (nextPos2 > pos2 + 1)) {
-                	//if it is adjacent in one book, we may need to keep looking in future pairs
+                	//if it is adjacent in one book only, we may need to keep looking in future pairs
                     j = j + 1
                 } else if (((nextPos1 == pos1 + 1) || nextPos1 == pos1) && ((nextPos2 == pos2 + 1) || (nextPos2 == pos2))) {
-                    //if it is, we need to add it to the list and update the current locations
+                    //if it is adjacent in both, we need to add it to the list and update the current locations
                     if (!(usedInAggregate contains j)) {
-                        if (!(aggregate contains nextSpan)) {
-                            aggregate :+= nextSpan
+                        if (!(aggregate(0) contains nextPos1)) {
+                            aggregate(0) :+= nextPos1
+                        }
+                        if (!(aggregate(1) contains nextPos2)) {
+                            aggregate(1) :+= nextPos2
                         }
                         pos1 = nextPos1
                         pos2 = nextPos2
@@ -863,21 +892,22 @@ object PassimApp {
                         usedInAggregate :+= j
                     }
                     j += 1
-                }	
+                }
             }
-            if (j == castSpans.length) {
+            if (j == spans.length) {
+            	if (lengthToEnd1<gap) {
+                    aggregate(0) :+= aggregate(0).last + 1
+                }
+                if (lengthToEnd2<gap) {
+                    aggregate(1) :+= aggregate(1).last + 1
+                }
                 aggregatedPairs :+= aggregate
             }
         }
     }
-    //now we add the preceeding and following sections to each sequence of seq ids, in case passim missed something at the boundaries
-    // for (i <- aggregatedPairs.indices) {
-    //     aggregatedPairs(i)(0) = Array(aggregatedPairs(i)(0)(0)-1) ++ aggregatedPairs(i)(0) ++ Array(aggregatedPairs(i)(0).last + 1)
-    //     aggregatedPairs(i)(1) = Array(aggregatedPairs(i)(1)(0)-1) ++ aggregatedPairs(i)(1) ++ Array(aggregatedPairs(i)(1).last + 1)
-    // }
-    //we can't actually do that if we don't work at the full chunk level, which we do now, so nevermind
     aggregatedPairs
   }
+  val makeId = udf { (series: String,seqs: Seq[Int]) => (series+"_"+seqs(0).toString+"-"+seqs.last.toString) }
   val hashId = udf { (id: String) => hashString(id) }
   val termSpan = udf { (begin: Int, end: Int, terms: Seq[String]) =>
     terms.slice(Math.max(0, Math.min(terms.size, begin)),
@@ -1119,7 +1149,7 @@ object PassimApp {
             }
 
             if ( config.aggregate ) {
-              extents.aggregateAlignments(config, corpus, extents, alignments)
+              extents.aggregateAlignments(config, corpus, extents)
                 .write.format(config.outputFormat)
                 .save(config.outputPath + "/aggregate." + config.outputFormat)
             }
@@ -1187,5 +1217,53 @@ object PassimApp {
     }
 
     spark.stop()
+
+    //if the aggregate option was passed in, we must now call main on the aggregated documents
+    // inheriting the config from the current run
+    if ( config.aggregate ) {
+      var command = ""
+      
+      //tildes are used to divide arguments, as there's a comma in the --filterpairs argument
+      command = command.concat("-n~".concat(config.n.toString))
+      command = command.concat("~-l~".concat(config.minDF.toString))
+      command = command.concat("~-u~".concat(config.maxDF.toString))
+      command = command.concat("~-m~".concat(config.minRep.toString))
+      command = command.concat("~-a~".concat(config.minAlg.toString))
+      command = command.concat("~-c~".concat(config.context.toString))
+      command = command.concat("~-o~".concat(config.relOver.toString))
+      command = command.concat("~-M~".concat(config.mergeDiverge.toString))
+      command = command.concat("~-r~".concat(config.maxRep.toString))
+      command = command.concat("~-g~".concat(config.gap.toString))
+      command = command.concat("~-i~".concat("id"))
+      command = command.concat("~-t~".concat("text"))
+      command = command.concat("~-s~".concat("series"))
+
+      if (config.pairwise) {
+        command = command.concat("~--pairwise")
+      }
+
+      if (config.docwise) {
+        command = command.concat("~--docwise")
+      }
+
+      if (config.fields != "") {
+        command = command.concat("~--fields~".concat(config.fields.concat(";pairIDs")))
+      } else {
+      	command = command.concat("~--fields~".concat(config.fields.concat("pairIDs")))
+      }
+
+      //figure out hoe to restrict our search to doc pairs that share a pairID
+      command = command.concat("~--filterpairs~".concat(config.filterpairs.concat(" AND (size(array_intersect(pairIDs,pairIDs2))>0)")))
+
+      command = command.concat("~--input-format~".concat(config.outputFormat))
+      command = command.concat("~--output-format~".concat(config.outputFormat))
+      command = command.concat("~-w~".concat(config.wordLength.toString))
+
+      //add the input and output paths
+      command = command.concat("~"+config.outputPath+"/aggregate." + config.outputFormat)
+      command = command.concat("~"+config.outputPath+"/aggregateAlignments")
+
+      main(command.split("~"))
+    }
   }
 }
