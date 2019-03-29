@@ -1230,36 +1230,46 @@ transform($pageCol,
     if ( !hdfsExists(spark, clusterFname) ) {
       val pass = spark.read.parquet(passFname)
 
-      spark.conf.set("spark.sql.shuffle.partitions", spark.sparkContext.defaultParallelism)
+      // spark.conf.set("spark.sql.shuffle.partitions", spark.sparkContext.defaultParallelism)
 
       val passGraph = GraphFrame(
         pass.select('nid as "id", 'uid, 'gid, 'begin, 'end),
         pass.select('nid, explode('edges) as "eid")
           .groupBy("eid").agg(min("nid") as "src", max("nid") as "dst"))
-      passGraph.cache()
+      // passGraph.cache()
 
-      spark.sparkContext.setCheckpointDir(config.outputPath + "/tmp")
-      val cc = passGraph.connectedComponents.run()
+      val lp = passGraph.labelPropagation.maxIter(11).run()
 
-      val merge_spans = udf { (spans: Seq[Row]) =>
-        PassFun.mergeSpansLR(0, spans.map { s => (Span(s.getInt(0), s.getInt(1)), 0L) })
-          .map { _._1 }
-      }
+      // spark.sparkContext.setCheckpointDir(config.outputPath + "/tmp")
+      // val cc = passGraph.connectedComponents.run()
+
+      // val merge_spans = udf { (spans: Seq[Row]) =>
+      //   PassFun.mergeSpansLR(0, spans.map { s => (Span(s.getInt(0), s.getInt(1)), 0L) })
+      //     .map { _._1 }
+      // }
 
       val clusters =
-        cc.groupBy("component", "uid")
+        lp.groupBy("label", "uid")
           .agg(merge_spans(collect_list(struct("begin", "end"))) as "spans")
-          .select('component as "cluster", 'uid, explode('spans) as "span")
+          .select('label as "cluster", 'uid, explode('spans) as "span")
           .select('cluster, 'uid, $"span.*")
       clusters.cache()
+
+      // val clusters =
+      //   cc.groupBy("component", "uid")
+      //     .agg(merge_spans(collect_list(struct("begin", "end"))) as "spans")
+      //     .select('component as "cluster", 'uid, explode('spans) as "span")
+      //     .select('cluster, 'uid, $"span.*")
+      // clusters.cache()
 
       clusters.join(clusters.groupBy("cluster").agg(count("uid") as "size"), "cluster")
         .select('uid, 'cluster, 'size, 'begin, 'end)
         .write.parquet(clusterFname)
 
-      passGraph.unpersist()
-      cc.unpersist()
-      spark.conf.set("spark.sql.shuffle.partitions", corpus.rdd.getNumPartitions * 3)
+      // clusters.unpersist()
+      // passGraph.unpersist()
+      // cc.unpersist()
+      // spark.conf.set("spark.sql.shuffle.partitions", corpus.rdd.getNumPartitions * 3)
     }
 
     if ( !hdfsExists(spark, outFname) ) {
