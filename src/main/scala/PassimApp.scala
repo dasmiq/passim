@@ -294,11 +294,6 @@ object PassimApp {
         Page(id, seq, width, height, dpi, regions.asInstanceOf[Seq[Row]].map(rowToRegion).toArray)
     }
   }
-  def rowToLocus(r: Row): Locus = {
-    r match {
-      case Row(start: Int, length: Int, loc: String) => Locus(start, length, loc)
-    }
-  }
   implicit class TextTokenizer(df: DataFrame) {
     val tokenizeCol = udf {(text: String) =>
       val tok = new passim.TagTokenizer()
@@ -320,13 +315,6 @@ object PassimApp {
           .withColumn("termCharEnd", col("_tokens")("termCharEnd"))
           .drop("_tokens")
       }
-    }
-    val boundLoci = udf {(begin: Int, end: Int, loci: Seq[Row]) =>
-      Try(loci.map(rowToLocus)
-        .filter { r => r.start < end && r.end > begin }
-        .map { _.loc }
-        .distinct.sorted) // stable
-        .getOrElse(Seq[String]())
     }
     val pageRegions = udf{(begin: Int, end: Int, pages: Seq[Row]) =>
       Try(pages.map(rowToPage)
@@ -351,7 +339,9 @@ object PassimApp {
     }
     def selectLocs(colName: String): DataFrame = {
       if ( df.columns.contains(colName) ) {
-        df.withColumn(colName, boundLoci(col("begin"), col("end"), col(colName)))
+        df.withColumn(colName,
+          expr(s"filter($colName, loc -> loc.start < end AND (loc.start + loc.length) > begin)"))
+          .withColumn(colName, sort_array(array_distinct(col(s"$colName.loc"))))
       } else {
         df
       }
