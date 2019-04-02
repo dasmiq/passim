@@ -316,23 +316,31 @@ object PassimApp {
           .drop("_tokens")
       }
     }
-    val pageRegions = udf{(begin: Int, end: Int, pages: Seq[Row]) =>
-      Try(pages.map(rowToPage)
-        .flatMap { p =>
-        val overlap = p.regions.filter { r => r.start < end && r.end > begin }
-        if ( overlap.size > 0 )
-          Some(p.copy(regions = Array(Region(overlap.head.start,
-            overlap.last.end - overlap.head.start,
-            overlap.map(_.coords).reduce(_.merge(_))))))
-        else
-          None
-      }
-      )
-        .getOrElse(Seq[Page]())
-    }
     def selectRegions(pageCol: String): DataFrame = {
       if ( df.columns.contains(pageCol) ) {
-        df.withColumn(pageCol, pageRegions(col("begin"), col("end"), col(pageCol)))
+        // Do these transformations in SQL to avoid Java's persnicketiness about int/long casting
+        // interacting with JSON's inferring all integers as long.
+        val pageFields = df.select(expr(s"$pageCol[1]") as "p1").select(col("p1.*")).columns
+          .diff(Array("regions")).map { f => s"p.$f as $f" }.mkString(", ")
+        df.withColumn(pageCol,
+          expr(s"filter(transform($pageCol, p -> struct($pageFields, filter(p.regions, r -> r.start < end AND (r.start + r.length) > begin) as regions)), p -> size(p.regions) > 0)"))
+          .withColumn(pageCol,
+            expr(s"""
+transform($pageCol,
+          p -> struct($pageFields,
+                      array(aggregate(p.regions,
+                                      struct(element_at(p.regions.start, 1) as start,
+                                             element_at(p.regions.length, 1) as length,
+                                             struct(element_at(p.regions.coords.x, 1) as x,
+                                                    element_at(p.regions.coords.y, 1) as y,
+                                                    element_at(p.regions.coords.w, 1) as w,
+                                                    element_at(p.regions.coords.h, 1) as h) as coords),
+                                      (acc, r) -> struct(least(acc.start, r.start) as start,
+                                                         greatest(acc.start + acc.length, r.start + r.length) - least(acc.start, r.start) as length,
+                                                         struct(least(acc.coords.x, r.coords.x) as x,
+                                                                least(acc.coords.y, r.coords.y) as y,
+                                                                greatest(acc.coords.x + acc.coords.w, r.coords.x + r.coords.w) - least(acc.coords.x, r.coords.x) as w,
+                                                                greatest(acc.coords.y + acc.coords.h, r.coords.y + r.coords.h) - least(acc.coords.y, r.coords.y) as h) as coords)))))"""))
       } else {
         df
       }
