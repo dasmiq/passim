@@ -296,11 +296,6 @@ object PassimApp {
         Page(id, seq, width, height, dpi, regions.asInstanceOf[Seq[Row]].map(rowToRegion).toArray)
     }
   }
-  def rowToLocus(r: Row): Locus = {
-    r match {
-      case Row(start: Int, length: Int, loc: String) => Locus(start, length, loc)
-    }
-  }
   implicit class TextTokenizer(df: DataFrame) {
     val tokenizeCol = udf {(text: String) =>
       val tok = new passim.TagTokenizer()
@@ -323,37 +318,40 @@ object PassimApp {
           .drop("_tokens")
       }
     }
-    val boundLoci = udf {(begin: Int, end: Int, loci: Seq[Row]) =>
-      Try(loci.map(rowToLocus)
-        .filter { r => r.start <= end && r.end >= begin }
-        .map { _.loc }
-        .distinct.sorted) // stable
-        .getOrElse(Seq[String]())
-    }
-    val pageRegions = udf{(begin: Int, end: Int, pages: Seq[Row]) =>
-      Try(pages.map(rowToPage)
-        .flatMap { p =>
-        val overlap = p.regions.filter { r => r.start <= end && r.end >= begin }
-        if ( overlap.size > 0 )
-          Some(p.copy(regions = Array(Region(overlap.head.start,
-            overlap.last.end - overlap.head.start,
-            overlap.map(_.coords).reduce(_.merge(_))))))
-        else
-          None
-      }
-      )
-        .getOrElse(Seq[Page]())
-    }
     def selectRegions(pageCol: String): DataFrame = {
       if ( df.columns.contains(pageCol) ) {
-        df.withColumn(pageCol, pageRegions(col("begin"), col("end"), col(pageCol)))
+        // Do these transformations in SQL to avoid Java's persnicketiness about int/long casting
+        // interacting with JSON's inferring all integers as long.
+        val pageFields = df.select(expr(s"inline($pageCol)")).columns
+          .filter { _ != "regions" }.map { f => s"p.$f as $f" }.mkString(", ")
+        df.withColumn(pageCol,
+          expr(s"filter(transform($pageCol, p -> struct($pageFields, filter(p.regions, r -> r.start < end AND (r.start + r.length) > begin) as regions)), p -> size(p.regions) > 0)"))
+          .withColumn(pageCol,
+            expr(s"""
+transform($pageCol,
+          p -> struct($pageFields,
+                      array(aggregate(p.regions,
+                                      struct(p.regions[0].start as start,
+                                             p.regions[0].length as length,
+                                             struct(p.regions[0].coords.x as x,
+                                                    p.regions[0].coords.y as y,
+                                                    p.regions[0].coords.w as w,
+                                                    p.regions[0].coords.h as h) as coords),
+                                      (acc, r) -> struct(least(acc.start, r.start) as start,
+                                                         greatest(acc.start + acc.length, r.start + r.length) - least(acc.start, r.start) as length,
+                                                         struct(least(acc.coords.x, r.coords.x) as x,
+                                                                least(acc.coords.y, r.coords.y) as y,
+                                                                greatest(acc.coords.x + acc.coords.w, r.coords.x + r.coords.w) - least(acc.coords.x, r.coords.x) as w,
+                                                                greatest(acc.coords.y + acc.coords.h, r.coords.y + r.coords.h) - least(acc.coords.y, r.coords.y) as h) as coords))) as regions))"""))
       } else {
         df
       }
     }
     def selectLocs(colName: String): DataFrame = {
       if ( df.columns.contains(colName) ) {
-        df.withColumn(colName, boundLoci(col("begin"), col("end"), col(colName)))
+        df.withColumn(colName,
+          expr(s"filter($colName, loc -> loc.start < end AND (loc.start + loc.length) > begin)"))
+          .withColumn(colName, sort_array(array_distinct(col(s"$colName.loc"))))
       } else {
         df
       }
@@ -664,27 +662,43 @@ object PassimApp {
       val alignStrings = makeStringAligner(config)
       val meta = corpus.drop("uid", "text", "terms", "termCharBegin", "termCharEnd",
         "regions", "pages", "locs")
+
+      val corpusFields = ListBuffer(expr("uid"), expr(config.id + " as id"),
+        expr(config.text + " as text"), expr("termCharBegin"), expr("termCharEnd"))
+      val algFields = ListBuffer("uid", "id" ,"bw", "ew", "b", "e", "len", "tok", "text")
+      if ( corpus.columns.contains("pages") ) {
+        corpusFields += expr("pages")
+        algFields += "pages"
+      }
+      if ( corpus.columns.contains("locs") ) {
+        corpusFields += expr("locs")
+        algFields += "locs"
+      }
+      val algFinal = algFields.map { _ + "1" } ++ algFields.map { _ + "2" } ++ ListBuffer("s1", "s2", "matches", "score")
+
       val fullalign = align.drop("gid")
-        .join(corpus.select('uid, col(config.id) as "id", col(config.text) as "text",
-          'termCharBegin, 'termCharEnd), "uid")
+        .join(corpus.select(corpusFields:_*), "uid")
         .withColumn("bw", 'begin)
         .withColumn("ew", 'end)
-        .withColumn("b", 'termCharBegin('bw))
-        .withColumn("e", 'termCharEnd(when('ew < size('termCharEnd), 'ew)
+        .withColumn("begin", 'termCharBegin('bw))
+        .withColumn("end", 'termCharBegin(when('ew < size('termCharEnd), 'ew)
           .otherwise(size('termCharEnd) - 1)))
-        .select('mid, 'first, struct('uid, 'id, 'bw, 'ew, 'b, 'e,
-          length('text) as "len", size('termCharBegin) as "tok",
-          getPassage('text, 'b, 'e) as "text") as "info")
+        .selectRegions("pages")
+        .selectLocs("locs")
+        .withColumn("len", length('text))
+        .withColumn("text", getPassage('text, 'begin, 'end))
+        .withColumn("tok", size('termCharBegin))
+        .withColumnRenamed("begin", "b")
+        .withColumnRenamed("end", "e")
+        .select('mid, 'first, struct(algFields.map(expr):_*) as "info")
         .groupBy("mid")
         .agg(first("first") as "sorted", first("info") as "info1", last("info") as "info2")
         .select(when('sorted, 'info1).otherwise('info2) as "info1",
           when('sorted, 'info2).otherwise('info1) as "info2")
         .withColumn("alg", alignStrings($"info1.text", $"info2.text"))
         .select($"info1.*", $"info2.*", $"alg.*")
-        .toDF("uid1", "id1", "bw1", "ew1", "b1", "e1", "len1", "tok1", "t1",
-          "uid2", "id2", "bw2", "ew2", "b2", "e2", "len2", "tok2", "t2",
-          "s1", "s2", "matches", "score")
-        .drop("t1", "t2")
+        .toDF(algFinal:_*)
+        .drop("text1", "text2")
         .join(meta.toDF(meta.columns.map { _ + "1" }:_*), "id1")
         .join(meta.toDF(meta.columns.map { _ + "2" }:_*), "id2")
 
