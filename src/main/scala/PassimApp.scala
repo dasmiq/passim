@@ -924,6 +924,7 @@ object PassimApp {
   def main(args: Array[String]) {
     val conf = new SparkConf()
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+      .set("spark.driver.maxResultSize", "4g")
       .registerKryoClasses(Array(classOf[Coords], classOf[Region], classOf[Span], classOf[Post],
         classOf[PassAlign],
         classOf[TokText], classOf[IdSeries],classOf[ExtentPair]))
