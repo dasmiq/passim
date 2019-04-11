@@ -1273,7 +1273,7 @@ transform($pageCol,
       	command = command.concat("~--fields~".concat(config.fields.concat("pairIDs")))
       }
 
-      //figure out hoe to restrict our search to doc pairs that share a pairID
+      //figure out how to restrict our search to doc pairs that share a pairID
       command = command.concat("~--filterpairs~".concat(config.filterpairs.concat(" AND (size(array_intersect(pairIDs,pairIDs2))>0)")))
 
       command = command.concat("~--input-format~".concat(config.outputFormat))
