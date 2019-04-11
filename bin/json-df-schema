@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+
+SPARK_SUBMIT_ARGS="$SPARK_SUBMIT_ARGS"
+
+pyspark --master local[1] <<EOF | grep -v 'WARN.*NativeCodeLoader'
+from pyspark.sql import SparkSession
+print(SparkSession.builder.appName('JSON DataFrame schema').getOrCreate().read.json('$1', samplingRatio=None).schema.json())
+EOF
