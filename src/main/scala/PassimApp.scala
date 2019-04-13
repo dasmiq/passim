@@ -523,7 +523,7 @@ transform($pageCol,
       .join(corpus.drop("terms"), "uid")
       .withColumn("begin", 'termCharBegin('begin))
       .withColumn("end",
-        'termCharEnd(when('end < size('termCharEnd), 'end).otherwise(size('termCharEnd)) - 1))
+        when('end < size('termCharBegin), 'termCharBegin('end)).otherwise(length('text)))
       .drop("termCharBegin", "termCharEnd")
       .withColumn(config.text, getPassage(col(config.text), 'begin, 'end))
       .selectRegions("pages")
@@ -558,8 +558,7 @@ transform($pageCol,
         'termCharBegin, 'termCharEnd), "uid")
       .withColumn("begin", 'termCharBegin('begin))
       .withColumn("end",
-        'termCharEnd(when('end < size('termCharEnd), 'end)
-          .otherwise(size('termCharEnd) - 1)))
+        when('end < size('termCharBegin), 'termCharBegin('end)).otherwise(length('text)))
       .drop("termCharBegin", "termCharEnd")
       .withColumn("text", getPassage('text, 'begin, 'end))
       .groupBy("mid")
@@ -586,8 +585,8 @@ transform($pageCol,
         .withColumn("bw", 'begin)
         .withColumn("ew", 'end)
         .withColumn("begin", 'termCharBegin('bw))
-        .withColumn("end", 'termCharEnd(when('ew < size('termCharEnd), 'ew)
-          .otherwise(size('termCharEnd) - 1)))
+        .withColumn("end",
+          when('ew < size('termCharBegin), 'termCharBegin('ew)).otherwise(length('text)))
         .withColumn("s", getPassage('text, 'begin, 'end))
         .withColumn("before", getPassage('text, when('bw - config.context <= 0, 0).otherwise('termCharBegin('bw - config.context)), 'begin))
         .withColumn("after", getPassage('text, 'end, when('ew + config.context >= size('termCharEnd), length('text)).otherwise('termCharEnd('ew + config.context))))
@@ -690,8 +689,8 @@ transform($pageCol,
         .withColumn("bw", 'begin)
         .withColumn("ew", 'end)
         .withColumn("begin", 'termCharBegin('bw))
-        .withColumn("end", 'termCharBegin(when('ew < size('termCharEnd), 'ew)
-          .otherwise(size('termCharEnd) - 1)))
+        .withColumn("end",
+          when('ew < size('termCharBegin), 'termCharBegin('ew)).otherwise(length('text)))
         .selectRegions("pages")
         .selectLocs("locs")
         .withColumn("len", length('text))
