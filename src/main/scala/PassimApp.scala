@@ -550,33 +550,6 @@ transform($pageCol,
     }
   }
 
-  def boilerPassages(config: Config, align: DataFrame, corpus: DataFrame): DataFrame = {
-    import align.sparkSession.implicits._
-    val alignStrings = makeStringAligner(config, openGap = 1)
-    align.drop("gid")
-      .join(corpus.select('uid, col(config.id) as "id", col(config.text) as "text",
-        'termCharBegin, 'termCharEnd), "uid")
-      .withColumn("begin", 'termCharBegin('begin))
-      .withColumn("end",
-        when('end < size('termCharBegin), 'termCharBegin('end)).otherwise(length('text)))
-      .drop("termCharBegin", "termCharEnd")
-      .withColumn("text", getPassage('text, 'begin, 'end))
-      .groupBy("mid")
-      .agg(first("id") as "id1", last("id") as "id2", first("first") as "sorted",
-        alignStrings(first('text) as "s1", last('text) as "s2") as "alg",
-        first("begin") as "b1", last("begin") as "b2")
-      .select(when('sorted, 'id1).otherwise('id2) as "id1",
-        when('sorted, 'id2).otherwise('id1) as "id2",
-        when('sorted, 'b1).otherwise('b2) as "b1",
-        when('sorted, 'b2).otherwise('b1) as "b2",
-        explode(alignedPassages(when('sorted, $"alg.s1").otherwise($"alg.s2"),
-          when('sorted, $"alg.s2").otherwise($"alg.s1"))) as "pass")
-      .select('id1, 'id2,
-        $"pass._3" as "pairs",
-        ('b1 + $"pass._1.begin") as "b1", ('b1 + $"pass._1.end") as "e1",
-        ('b2 + $"pass._2.begin") as "b2", ('b2 + $"pass._2.end") as "e2")
-  }
-
   implicit class Passages(pass: DataFrame) {
     def withContext(config: Config, corpus: DataFrame): DataFrame = {
       import pass.sparkSession.implicits._
@@ -716,7 +689,32 @@ transform($pageCol,
         .select((cols.filter(_ endsWith "1") ++ cols.filter(_ endsWith "2") ++ Seq("matches", "score")).map(col):_*)
         .sort('id1, 'id2, 'b1, 'b2)
     }
-
+    def boilerPassages(config: Config, corpus: DataFrame): DataFrame = {
+      import align.sparkSession.implicits._
+      val alignStrings = makeStringAligner(config, openGap = 1)
+      align.drop("gid")
+        .join(corpus.select('uid, col(config.id) as "id", col(config.text) as "text",
+          'termCharBegin, 'termCharEnd), "uid")
+        .withColumn("begin", 'termCharBegin('begin))
+        .withColumn("end",
+          when('end < size('termCharBegin), 'termCharBegin('end)).otherwise(length('text)))
+        .drop("termCharBegin", "termCharEnd")
+        .withColumn("text", getPassage('text, 'begin, 'end))
+        .groupBy("mid")
+        .agg(first("id") as "id1", last("id") as "id2", first("first") as "sorted",
+          alignStrings(first('text) as "s1", last('text) as "s2") as "alg",
+          first("begin") as "b1", last("begin") as "b2")
+        .select(when('sorted, 'id1).otherwise('id2) as "id1",
+          when('sorted, 'id2).otherwise('id1) as "id2",
+          when('sorted, 'b1).otherwise('b2) as "b1",
+          when('sorted, 'b2).otherwise('b1) as "b2",
+          explode(alignedPassages(when('sorted, $"alg.s1").otherwise($"alg.s2"),
+            when('sorted, $"alg.s2").otherwise($"alg.s1"))) as "pass")
+        .select('id1, 'id2,
+          $"pass._3" as "pairs",
+          ('b1 + $"pass._1.begin") as "b1", ('b1 + $"pass._1.end") as "e1",
+          ('b2 + $"pass._2.begin") as "b2", ('b2 + $"pass._2.end") as "e2")
+    }
     def aggregateAlignments(config: Config, corpus: DataFrame, extents: DataFrame): DataFrame = {
       import align.sparkSession.implicits._
       val alignStrings = makeStringAligner(config)
@@ -1173,7 +1171,7 @@ transform($pageCol,
     }
 
     if ( config.boilerplate || config.docwise ) {
-      val pass = boilerPassages(config, extents, corpus)
+      val pass = extents.boilerPassages(config, corpus)
       if ( config.docwise ) {
         pass.write.format(config.outputFormat)
           .save(config.outputPath + "/pass." + config.outputFormat)
