@@ -6,9 +6,9 @@ scalaVersion := "2.11.8"
 
 resolvers += Resolver.mavenLocal
 
-libraryDependencies += "org.apache.spark" %% "spark-core" % "2.4.0"
-libraryDependencies += "org.apache.spark" %% "spark-graphx" % "2.4.0"
-libraryDependencies += "org.apache.spark" %% "spark-sql" % "2.4.0"
+libraryDependencies += "org.apache.spark" %% "spark-core" % "2.4.1"
+libraryDependencies += "org.apache.spark" %% "spark-graphx" % "2.4.1"
+libraryDependencies += "org.apache.spark" %% "spark-sql" % "2.4.1"
 
 resolvers += "Spark Packages Repo" at "http://dl.bintray.com/spark-packages/maven"
 
