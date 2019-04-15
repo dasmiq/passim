@@ -1036,204 +1036,197 @@ transform($pageCol,
     val clusterFname = config.outputPath + "/clusters.parquet"
     val outFname = config.outputPath + "/out." + config.outputFormat
 
-    if ( !hdfsExists(spark, outFname) ) {
-      val raw = (if ( config.schemaPath == "" || !hdfsExists(spark, config.schemaPath) ) {
-        spark.read.option("mergeSchema", "true")
+    val raw = (if ( config.schemaPath == "" || !hdfsExists(spark, config.schemaPath) ) {
+      spark.read.option("mergeSchema", "true")
+    } else {
+      val jsonSchema = spark.read.text(config.schemaPath).collect()(0).getString(0)
+      spark.read.schema(DataType.fromJson(jsonSchema).asInstanceOf[StructType])
+    }).format(config.inputFormat)
+      .load(config.inputPaths)
+
+    val groupCol = if ( raw.columns.contains(config.group) ) config.group else config.id
+
+    val corpus = raw.na.drop(Seq(config.id, config.text))
+      .withColumn("uid", hashId(col(config.id)))
+      .withColumn("gid", hashId(col(groupCol)))
+      .tokenize(config.text)
+
+    spark.conf.set("spark.sql.shuffle.partitions", corpus.rdd.getNumPartitions * 3)
+
+    if ( config.names ) {
+      corpus.select('uid, col(config.id), col(groupCol), size('terms) as "nterms")
+        .write.save(config.outputPath + "/names.parquet")
+      sys.exit(0)
+    }
+
+    val indexFields = ListBuffer("uid", "gid", "terms")
+    if ( config.fields != "" ) indexFields ++= config.fields.split(";")
+    if ( config.aggregate && !indexFields.contains("seq")) indexFields ++= ListBuffer("seq")
+    if ( config.aggregate && !indexFields.contains(config.id)) indexFields ++= ListBuffer(config.id)
+    if ( config.aggregate && !indexFields.contains(config.group)) indexFields ++= ListBuffer(config.group)
+    val termCorpus = corpus.select(indexFields.toList.map(expr):_*)
+
+    if ( !hdfsExists(spark, dfpostFname) ) {
+      val getPostings = makeIndexer(config.n, config.wordLength)
+
+      val postings = termCorpus
+        .withColumn("post", explode(getPostings('terms)))
+        .drop("terms")
+        .withColumn("feat", 'post("feat"))
+        .withColumn("tf", 'post("tf"))
+        .withColumn("post", 'post("post"))
+        .filter { 'tf === 1 }
+        .drop("tf")
+
+      val df = postings.groupBy("feat").count.select('feat, 'count.cast("int") as "df")
+        .filter { 'df >= config.minDF && 'df <= config.maxDF }
+
+      postings.join(df, "feat").write.save(dfpostFname)
+    }
+    if ( config.postings ) sys.exit(0)
+
+    if ( !hdfsExists(spark, pairsFname) ) {
+      val getPairs =
+        udf { (uid: Long, uid2: Long, post: Seq[Int], post2: Seq[Int], df: Seq[Int]) =>
+        val matches = PassFun.increasingMatches((post, post2, df).zipped.toSeq)
+        if ( matches.size >= config.minRep ) {
+          PassFun.gappedMatches(config.n, config.gap, config.minAlg, matches)
+            .map { case ((s1, e1), (s2, e2)) =>
+              Seq(DocSpan(uid, s1, e1, true), DocSpan(uid2, s2, e2, false)) }
+        } else Seq()
+      }
+
+      val dfpost = spark.read.load(dfpostFname)
+
+      dfpost
+        .join(dfpost.toDF(dfpost.columns.map { f => if ( f == "feat" ) f else f + "2" }:_*),
+          "feat")
+        .filter(config.filterpairs)
+        .select("uid", "uid2", "post", "post2", "df")
+        .groupBy("uid", "uid2")
+        .agg(collect_list("post") as "post", collect_list("post2") as "post2",
+          collect_list("df") as "df")
+        .filter(size('post) >= config.minRep)
+        .select(explode(getPairs('uid, 'uid2, 'post, 'post2, 'df)) as "pair",
+          monotonically_increasing_id() as "mid") // Unique IDs serve as edge IDs in connected component graph
+        .select(explode('pair) as "pass", 'mid)
+        .select($"pass.*", 'mid)
+        .write.parquet(pairsFname) // But we need to cache so IDs don't get reassigned.
+    }
+
+    if ( !hdfsExists(spark, extentsFname) ) {
+      val pairs = spark.read.parquet(pairsFname)
+
+      val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
+      val alignEdge = udf {
+        (idx1: Int, idx2: Int, text1: String, text2: String, anchor: String) =>
+        PassFun.alignEdge(matchMatrix, idx1, idx2, text1, text2, anchor)
+      }
+
+      val extentFields = ListBuffer("uid", "gid", "first", "size(terms) as tok")
+      extentFields += (if ( termCorpus.columns.contains("ref") ) "ref" else "0 as ref")
+
+      val extent: Int = config.gap * 2/3
+      pairs.join(termCorpus, "uid")
+        .select('mid, 'begin, 'end,
+          struct(extentFields.toList.map(expr):_*) as "info",
+          termSpan('begin - extent, 'begin, 'terms) as "prefix",
+          termSpan('end, 'end + extent, 'terms) as "suffix")
+        .groupBy("mid")
+        .agg(first("info") as "info", last("info") as "info2",
+          alignEdge(first("begin"), last("begin"),
+            first("prefix"), last("prefix"), lit("R")) as "begin",
+          alignEdge(first("end"), last("end"),
+            first("suffix"), last("suffix"), lit("L")) as "end")
+        .filter { ($"end._1" - $"begin._1") >= config.minAlg &&
+          ($"end._2" - $"begin._2") >= config.minAlg }
+        .select(explode(array(struct('mid, $"info.*",
+          ($"end._2" - $"begin._2") as "olen",
+          $"begin._1" as "begin", $"end._1" as "end"),
+          struct('mid, $"info2.*",
+            ($"end._1" - $"begin._1") as "olen",
+            $"begin._2" as "begin", $"end._2" as "end"))) as "pair")
+        .select($"pair.*")
+        .write.parquet(extentsFname)
+    }
+
+    val extents = spark.read.parquet(extentsFname)
+
+    if ( config.context > 0 ) {
+      extents.withContext(config, corpus)
+        .write.format(config.outputFormat)
+        .save(config.outputPath + "/context." + config.outputFormat)
+    }
+
+    if (config.pairwise || config.aggregate) {
+      val alignments = extents.pairwiseAlignments(config, corpus)
+      if ( config.pairwise ) {
+        alignments.write.format(config.outputFormat)
+          .save(config.outputPath + "/align." + config.outputFormat)
+      }
+
+      if ( config.aggregate ) {
+        extents.aggregateAlignments(config, corpus, extents)
+          .write.format(config.outputFormat)
+          .save(config.outputPath + "/aggregate." + config.outputFormat)
+      }
+    }
+
+    if ( config.boilerplate || config.docwise ) {
+      val pass = boilerPassages(config, extents, corpus)
+      if ( config.docwise ) {
+        pass.write.format(config.outputFormat)
+          .save(config.outputPath + "/pass." + config.outputFormat)
       } else {
-        val jsonSchema = spark.read.text(config.schemaPath).collect()(0).getString(0)
-        spark.read.schema(DataType.fromJson(jsonSchema).asInstanceOf[StructType])
-      }).format(config.inputFormat)
-        .load(config.inputPaths)
-
-      val groupCol = if ( raw.columns.contains(config.group) ) config.group else config.id
-
-      val corpus = raw.na.drop(Seq(config.id, config.text))
-        .withColumn("uid", hashId(col(config.id)))
-        .withColumn("gid", hashId(col(groupCol)))
-        .tokenize(config.text)
-
-      spark.conf.set("spark.sql.shuffle.partitions", corpus.rdd.getNumPartitions * 3)
-
-      if ( config.names ) {
-        corpus.select('uid, col(config.id), col(groupCol), size('terms) as "nterms")
-          .write.save(config.outputPath + "/names.parquet")
-        sys.exit(0)
-      }
-
-      if ( !hdfsExists(spark, clusterFname) || config.boilerplate ) {
-        if ( !hdfsExists(spark, passFname) ) {
-          val indexFields = ListBuffer("uid", "gid", "terms")
-          if ( config.fields != "" ) indexFields ++= config.fields.split(";")
-          if ( config.aggregate && !indexFields.contains("seq")) indexFields ++= ListBuffer("seq")
-          if ( config.aggregate && !indexFields.contains(config.id)) indexFields ++= ListBuffer(config.id)
-          if ( config.aggregate && !indexFields.contains(config.group)) indexFields ++= ListBuffer(config.group)
-          val termCorpus = corpus.select(indexFields.toList.map(expr):_*)
-
-          if ( !hdfsExists(spark, pairsFname) ) {
-            if ( !hdfsExists(spark, dfpostFname) ) {
-              val getPostings = makeIndexer(config.n, config.wordLength)
-
-              val postings = termCorpus
-                .withColumn("post", explode(getPostings('terms)))
-                .drop("terms")
-                .withColumn("feat", 'post("feat"))
-                .withColumn("tf", 'post("tf"))
-                .withColumn("post", 'post("post"))
-                .filter { 'tf === 1 }
-                .drop("tf")
-
-              val df = postings.groupBy("feat").count.select('feat, 'count.cast("int") as "df")
-                .filter { 'df >= config.minDF && 'df <= config.maxDF }
-
-              postings.join(df, "feat").write.save(dfpostFname)
-            }
-            if ( config.postings ) sys.exit(0)
-
-            val getPassages =
-              udf { (uid: Long, uid2: Long, post: Seq[Int], post2: Seq[Int], df: Seq[Int]) =>
-                val matches = PassFun.increasingMatches((post, post2, df).zipped.toSeq)
-                if ( matches.size >= config.minRep ) {
-                  PassFun.gappedMatches(config.n, config.gap, config.minAlg, matches)
-                    .map { case ((s1, e1), (s2, e2)) =>
-                      Seq(DocSpan(uid, s1, e1, true), DocSpan(uid2, s2, e2, false)) }
-                } else Seq()
-              }
-
-            val dfpost = spark.read.load(dfpostFname)
-
-            dfpost
-              .join(dfpost.toDF(dfpost.columns.map { f => if ( f == "feat" ) f else f + "2" }:_*),
-                "feat")
-              .filter(config.filterpairs)
-              .select("uid", "uid2", "post", "post2", "df")
-              .groupBy("uid", "uid2")
-              .agg(collect_list("post") as "post", collect_list("post2") as "post2",
-                collect_list("df") as "df")
-              .filter(size('post) >= config.minRep)
-              .select(explode(getPassages('uid, 'uid2, 'post, 'post2, 'df)) as "pair",
-                monotonically_increasing_id() as "mid") // Unique IDs serve as edge IDs in connected component graph
-              .select(explode('pair) as "pass", 'mid)
-              .select($"pass.*", 'mid)
-              .write.parquet(pairsFname) // But we need to cache so IDs don't get reassigned.
-          }
-
-          if ( !hdfsExists(spark, extentsFname) ) {
-            val pairs = spark.read.parquet(pairsFname)
-
-            val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
-            val alignEdge = udf {
-              (idx1: Int, idx2: Int, text1: String, text2: String, anchor: String) =>
-              PassFun.alignEdge(matchMatrix, idx1, idx2, text1, text2, anchor)
-            }
-
-            val extentFields = ListBuffer("uid", "gid", "first", "size(terms) as tok")
-            extentFields += (if ( termCorpus.columns.contains("ref") ) "ref" else "0 as ref")
-
-            val extent: Int = config.gap * 2/3
-            pairs.join(termCorpus, "uid")
-              .select('mid, 'begin, 'end,
-                struct(extentFields.toList.map(expr):_*) as "info",
-                termSpan('begin - extent, 'begin, 'terms) as "prefix",
-                termSpan('end, 'end + extent, 'terms) as "suffix")
-              .groupBy("mid")
-              .agg(first("info") as "info", last("info") as "info2",
-                alignEdge(first("begin"), last("begin"),
-                  first("prefix"), last("prefix"), lit("R")) as "begin",
-                alignEdge(first("end"), last("end"),
-                  first("suffix"), last("suffix"), lit("L")) as "end")
-              .filter { ($"end._1" - $"begin._1") >= config.minAlg &&
-                ($"end._2" - $"begin._2") >= config.minAlg }
-              .select(explode(array(struct('mid, $"info.*",
-                ($"end._2" - $"begin._2") as "olen",
-                $"begin._1" as "begin", $"end._1" as "end"),
-                struct('mid, $"info2.*",
-                  ($"end._1" - $"begin._1") as "olen",
-                  $"begin._2" as "begin", $"end._2" as "end"))) as "pair")
-              .select($"pair.*")
-              .write.parquet(extentsFname)
-          }
-
-          val extents = spark.read.parquet(extentsFname)
-
-          if ( config.context > 0 ) {
-            extents.withContext(config, corpus)
-              .write.format(config.outputFormat)
-              .save(config.outputPath + "/context." + config.outputFormat)
-          }
-
-          if (config.pairwise || config.aggregate) {
-            val alignments = extents.pairwiseAlignments(config, corpus)
-            if ( config.pairwise ) {
-              alignments.write.format(config.outputFormat)
-              .save(config.outputPath + "/align." + config.outputFormat)
-            }
-
-            if ( config.aggregate ) {
-              extents.aggregateAlignments(config, corpus, extents)
-                .write.format(config.outputFormat)
-                .save(config.outputPath + "/aggregate." + config.outputFormat)
-            }
-          }
-          
-
-          if ( config.boilerplate || config.docwise ) {
-            val pass = boilerPassages(config, extents, corpus)
-            if ( config.docwise ) {
-              pass.write.format(config.outputFormat)
-                .save(config.outputPath + "/pass." + config.outputFormat)
-              sys.exit(0)
-            } else {
-              pass.drop("pairs").write.parquet(passFname)
-            }
-          } else {
-            extents.mergePassages(config).write.parquet(passFname)
-          }
-        }
-
-        if ( !config.boilerplate ) {
-          val pass = spark.read.parquet(passFname)
-
-          spark.conf.set("spark.sql.shuffle.partitions", spark.sparkContext.defaultParallelism)
-
-          val passGraph = GraphFrame(
-            pass.select('nid as "id", 'uid, 'gid, 'begin, 'end),
-            pass.select('nid, explode('edges) as "eid")
-              .groupBy("eid").agg(min("nid") as "src", max("nid") as "dst"))
-          passGraph.cache()
-
-          spark.sparkContext.setCheckpointDir(config.outputPath + "/tmp")
-          val cc = passGraph.connectedComponents.run()
-
-          val merge_spans = udf { (spans: Seq[Row]) =>
-            PassFun.mergeSpansLR(0, spans.map { s => (Span(s.getInt(0), s.getInt(1)), 0L) })
-              .map { _._1 }
-          }
-
-          val clusters =
-            cc.groupBy("component", "uid")
-              .agg(merge_spans(collect_list(struct("begin", "end"))) as "spans")
-              .select('component as "cluster", 'uid, explode('spans) as "span")
-              .select('cluster, 'uid, $"span.*")
-          clusters.cache()
-
-          clusters.join(clusters.groupBy("cluster").agg(count("uid") as "size"), "cluster")
-            .select('uid, 'cluster, 'size, 'begin, 'end)
-            .write.parquet(clusterFname)
-
-          passGraph.unpersist()
-          cc.unpersist()
-        }
-      }
-
-      spark.conf.set("spark.sql.shuffle.partitions", corpus.rdd.getNumPartitions * 3)
-
-      val out = if ( config.boilerplate ) {
+        pass.drop("pairs").write.parquet(passFname)
         boilerSplit(spark.read.parquet(passFname), raw)
-      } else {
-        clusterJoin(config, spark.read.parquet(clusterFname), corpus)
+          .write.format(config.outputFormat).save(outFname)
+      }
+      sys.exit(0)
+    }
+
+    if ( !hdfsExists(spark, passFname) ) {
+      extents.mergePassages(config).write.parquet(passFname)
+    }
+
+    if ( !hdfsExists(spark, clusterFname) ) {
+      val pass = spark.read.parquet(passFname)
+
+      spark.conf.set("spark.sql.shuffle.partitions", spark.sparkContext.defaultParallelism)
+
+      val passGraph = GraphFrame(
+        pass.select('nid as "id", 'uid, 'gid, 'begin, 'end),
+        pass.select('nid, explode('edges) as "eid")
+          .groupBy("eid").agg(min("nid") as "src", max("nid") as "dst"))
+      passGraph.cache()
+
+      spark.sparkContext.setCheckpointDir(config.outputPath + "/tmp")
+      val cc = passGraph.connectedComponents.run()
+
+      val merge_spans = udf { (spans: Seq[Row]) =>
+        PassFun.mergeSpansLR(0, spans.map { s => (Span(s.getInt(0), s.getInt(1)), 0L) })
+          .map { _._1 }
       }
 
-      out.write.format(config.outputFormat).save(outFname)
+      val clusters =
+        cc.groupBy("component", "uid")
+          .agg(merge_spans(collect_list(struct("begin", "end"))) as "spans")
+          .select('component as "cluster", 'uid, explode('spans) as "span")
+          .select('cluster, 'uid, $"span.*")
+      clusters.cache()
+
+      clusters.join(clusters.groupBy("cluster").agg(count("uid") as "size"), "cluster")
+        .select('uid, 'cluster, 'size, 'begin, 'end)
+        .write.parquet(clusterFname)
+
+      passGraph.unpersist()
+      cc.unpersist()
+      spark.conf.set("spark.sql.shuffle.partitions", corpus.rdd.getNumPartitions * 3)
+    }
+
+    if ( !hdfsExists(spark, outFname) ) {
+      clusterJoin(config, spark.read.parquet(clusterFname), corpus)
+        .write.format(config.outputFormat).save(outFname)
     }
 
     spark.stop()
