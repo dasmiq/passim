@@ -693,27 +693,24 @@ transform($pageCol,
       import align.sparkSession.implicits._
       val alignStrings = makeStringAligner(config, openGap = 1)
       align.drop("gid")
-        .join(corpus.select('uid, col(config.id) as "id", col(config.text) as "text",
+        .join(corpus.select('uid, col(config.id) as "id", 'date, col(config.text) as "text",
           'termCharBegin, 'termCharEnd), "uid")
         .withColumn("begin", 'termCharBegin('begin))
         .withColumn("end",
           when('end < size('termCharBegin), 'termCharBegin('end)).otherwise(length('text)))
-        .drop("termCharBegin", "termCharEnd")
-        .withColumn("text", getPassage('text, 'begin, 'end))
+        .select('mid, struct('first, 'id, 'date, 'begin, 'end,
+          getPassage('text, 'begin, 'end) as "text") as "info")
         .groupBy("mid")
-        .agg(first("id") as "id1", last("id") as "id2", first("first") as "sorted",
-          alignStrings(first('text) as "s1", last('text) as "s2") as "alg",
-          first("begin") as "b1", last("begin") as "b2")
-        .select(when('sorted, 'id1).otherwise('id2) as "id1",
-          when('sorted, 'id2).otherwise('id1) as "id2",
-          when('sorted, 'b1).otherwise('b2) as "b1",
-          when('sorted, 'b2).otherwise('b1) as "b2",
-          explode(alignedPassages(when('sorted, $"alg.s1").otherwise($"alg.s2"),
-            when('sorted, $"alg.s2").otherwise($"alg.s1"))) as "pass")
-        .select('id1, 'id2,
-          $"pass._3" as "pairs",
-          ('b1 + $"pass._1.begin") as "b1", ('b1 + $"pass._1.end") as "e1",
-          ('b2 + $"pass._2.begin") as "b2", ('b2 + $"pass._2.end") as "e2")
+        .agg(sort_array(collect_list("info"), false) as "info") // "first" == true sorts first
+        .withColumn("alg", alignStrings('info(0)("text"), 'info(1)("text")))
+        .select('info, explode(alignedPassages($"alg.s1", $"alg.s2")) as "pass")
+        .selectExpr("info[0].id as id1", "info[1].id as id2",
+          "info[0].date as date1","info[1].date as date2",
+          "pass._3 as pairs",
+          "info[0].begin + pass._1.begin as b1",
+          "info[0].begin + pass._1.end as e1",
+          "info[1].begin + pass._2.begin as b2",
+          "info[1].begin + pass._2.end as e2")
     }
     def aggregateAlignments(config: Config, corpus: DataFrame, extents: DataFrame): DataFrame = {
       import align.sparkSession.implicits._
