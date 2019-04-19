@@ -90,6 +90,8 @@ case class LinkedSpan(span: Span, links: ArrayBuffer[Long])
 
 case class ExtentPair(seq1: Int, seq2: Int, begin1: Int, begin2: Int, end1: Int, end2: Int, tok1: Int, tok2: Int)
 
+case class WitInfo(start: Int, length: Int, begin: Int, text: String)
+
 object PassFun {
   def increasingMatches(matches: Iterable[(Int,Int,Int)]): Array[(Int,Int,Int)] = {
     val in = matches.toArray.sorted
@@ -1170,8 +1172,29 @@ transform($pageCol,
     if ( config.boilerplate || config.docwise ) {
       val pass = extents.boilerPassages(config, corpus)
       if ( config.docwise ) {
-        pass.write.format(config.outputFormat)
-          .save(config.outputPath + "/pass." + config.outputFormat)
+        val lineRecord = udf {
+          (b1: Int, b2: Int, pairs: Seq[Row]) =>
+          var off1 = b1
+          var off2 = b2
+          pairs.map { (p: Row) =>
+            val s1 = p.getString(0)
+            val s2 = p.getString(1)
+            off2 += s2.length
+            off1 += s1.length
+            WitInfo(off2 - s2.length, s2.length, off1 - s1.length, s1)
+          }
+        }
+        pass
+          .select('id2 as "id", 'id1 as "id1", 'date1 as "date",
+            explode(lineRecord('b1, 'b2, 'pairs)) as "wit")
+          .select('id, $"wit.start", $"wit.length",
+            struct('date, 'id1 as "id", $"wit.begin", $"wit.text") as "wit")
+          .groupBy("id", "start", "length")
+          .agg(sort_array(collect_list("wit")) as "wits")
+          .groupBy("id")
+          .agg(collect_list(struct("start", "length", "wits")) as "variants")
+          .join(raw, Seq("id"), "right_outer")
+          .write.format(config.outputFormat).save(outFname)
       } else {
         pass.drop("pairs").write.parquet(passFname)
         boilerSplit(spark.read.parquet(passFname), raw)
