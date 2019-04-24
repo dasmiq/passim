@@ -1184,6 +1184,19 @@ transform($pageCol,
             WitInfo(off2 - s2.length, s2.length, off1 - s1.length, s1)
           }
         }
+        val mapVar = udf { (text: String, vars: Map[Int, Seq[Row]]) =>
+          if ( vars == null ) {
+            text.linesWithSeparators.map { Seq(_) }.toSeq
+          } else {
+            val res = ListBuffer[Seq[String]]()
+            var off = 0
+            for ( line <- text.linesWithSeparators ) {
+              res += Seq(line) ++ vars.getOrElse(off, Nil).map { _.getAs[String]("text") }
+              off += line.length
+            }
+            res.toSeq
+          }
+        }
         pass
           .select('id2 as "id", 'id1 as "id1", 'date1 as "date",
             explode(lineRecord('b1, 'b2, 'pairs)) as "wit")
@@ -1194,6 +1207,8 @@ transform($pageCol,
           .groupBy("id")
           .agg(collect_list(struct("start", "length", "wits")) as "variants")
           .join(raw, Seq("id"), "right_outer")
+          .withColumn("witnesses",
+            mapVar('text, map_from_arrays($"variants.start", $"variants.wits")))
           .write.format(config.outputFormat).save(outFname)
       } else {
         pass.drop("pairs").write.parquet(passFname)
