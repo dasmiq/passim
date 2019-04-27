@@ -21,6 +21,7 @@ import org.graphframes._
 
 case class Config(version: String = BuildInfo.version,
   boilerplate: Boolean = false,
+  labelPropagation: Boolean = false,
   n: Int = 5, minDF: Int = 2, maxDF: Int = 100, minRep: Int = 5, minAlg: Int = 20,
   gap: Int = 100, relOver: Double = 0.8, mergeDiverge: Double = 0.3, maxRep: Int = 10,
   context: Int = 0,
@@ -957,6 +958,8 @@ transform($pageCol,
     val parser = new scopt.OptionParser[Config]("passim") {
       opt[Unit]("boilerplate") action { (_, c) =>
         c.copy(boilerplate = true) } text("Detect boilerplate within groups.")
+      opt[Unit]("labelPropagation") action { (_, c) =>
+        c.copy(labelPropagation = true) } text("Cluster with label propagation.")
       opt[Int]('n', "n") action { (x, c) => c.copy(n = x) } validate { x =>
         if ( x > 0 ) success else failure("n-gram order must be > 0")
       } text("index n-gram features; default=5")
@@ -1230,46 +1233,42 @@ transform($pageCol,
     if ( !hdfsExists(spark, clusterFname) ) {
       val pass = spark.read.parquet(passFname)
 
-      // spark.conf.set("spark.sql.shuffle.partitions", spark.sparkContext.defaultParallelism)
+      if ( !config.labelPropagation ) {
+        spark.conf.set("spark.sql.shuffle.partitions", spark.sparkContext.defaultParallelism)
+      }
 
       val passGraph = GraphFrame(
         pass.select('nid as "id", 'uid, 'gid, 'begin, 'end),
         pass.select('nid, explode('edges) as "eid")
           .groupBy("eid").agg(min("nid") as "src", max("nid") as "dst"))
-      // passGraph.cache()
 
-      val lp = passGraph.labelPropagation.maxIter(11).run()
+      val groups = if ( config.labelPropagation ) {
+        passGraph.labelPropagation.maxIter(11).run().withColumnRenamed("label", "cluster")
+      } else {
+        spark.sparkContext.setCheckpointDir(config.outputPath + "/tmp")
+        passGraph.connectedComponents.run().withColumnRenamed("component", "cluster")
+      }
 
-      // spark.sparkContext.setCheckpointDir(config.outputPath + "/tmp")
-      // val cc = passGraph.connectedComponents.run()
-
-      // val merge_spans = udf { (spans: Seq[Row]) =>
-      //   PassFun.mergeSpansLR(0, spans.map { s => (Span(s.getInt(0), s.getInt(1)), 0L) })
-      //     .map { _._1 }
-      // }
+      val merge_spans = udf { (spans: Seq[Row]) =>
+        PassFun.mergeSpansLR(0, spans.map { s => (Span(s.getInt(0), s.getInt(1)), 0L) })
+          .map { _._1 }
+      }
 
       val clusters =
-        lp.groupBy("label", "uid")
+        groups.groupBy("cluster", "uid")
           .agg(merge_spans(collect_list(struct("begin", "end"))) as "spans")
-          .select('label as "cluster", 'uid, explode('spans) as "span")
+          .select('cluster, 'uid, explode('spans) as "span")
           .select('cluster, 'uid, $"span.*")
       clusters.cache()
-
-      // val clusters =
-      //   cc.groupBy("component", "uid")
-      //     .agg(merge_spans(collect_list(struct("begin", "end"))) as "spans")
-      //     .select('component as "cluster", 'uid, explode('spans) as "span")
-      //     .select('cluster, 'uid, $"span.*")
-      // clusters.cache()
 
       clusters.join(clusters.groupBy("cluster").agg(count("uid") as "size"), "cluster")
         .select('uid, 'cluster, 'size, 'begin, 'end)
         .write.parquet(clusterFname)
 
-      // clusters.unpersist()
-      // passGraph.unpersist()
-      // cc.unpersist()
-      // spark.conf.set("spark.sql.shuffle.partitions", corpus.rdd.getNumPartitions * 3)
+      clusters.unpersist()
+      if ( !config.labelPropagation ) {
+        spark.conf.set("spark.sql.shuffle.partitions", corpus.rdd.getNumPartitions * 3)
+      }
     }
 
     if ( !hdfsExists(spark, outFname) ) {
