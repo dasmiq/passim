@@ -92,6 +92,8 @@ case class ExtentPair(seq1: Int, seq2: Int, begin1: Int, begin2: Int, end1: Int,
 
 case class WitInfo(start: Int, length: Int, begin: Int, text: String)
 
+case class LineInfo(start: Int, text: String)
+
 object PassFun {
   def increasingMatches(matches: Iterable[(Int,Int,Int)]): Array[(Int,Int,Int)] = {
     val in = matches.toArray.sorted
@@ -1184,18 +1186,14 @@ transform($pageCol,
             WitInfo(off2 - s2.length, s2.length, off1 - s1.length, s1)
           }
         }
-        val mapVar = udf { (text: String, vars: Map[Int, Seq[Row]]) =>
-          if ( vars == null ) {
-            text.linesWithSeparators.map { Seq(_) }.toSeq
-          } else {
-            val res = ListBuffer[Seq[String]]()
-            var off = 0
-            for ( line <- text.linesWithSeparators ) {
-              res += Seq(line) ++ vars.getOrElse(off, Nil).map { _.getAs[String]("text") }
-              off += line.length
-            }
-            res.toSeq
+        val textLines = udf { (text: String) =>
+          val res = ListBuffer[LineInfo]()
+          var off = 0
+          for ( line <- text.linesWithSeparators ) {
+            res += LineInfo(off, line)
+            off += line.length
           }
+          res.toSeq
         }
         pass
           .select('id2 as "id", 'id1 as "id1", 'date1 as "date",
@@ -1207,8 +1205,11 @@ transform($pageCol,
           .groupBy("id")
           .agg(collect_list(struct("start", "length", "wits")) as "variants")
           .join(raw, Seq("id"), "right_outer")
-          .withColumn("witnesses",
-            mapVar('text, map_from_arrays($"variants.start", $"variants.wits")))
+          .withColumn("tlines", textLines('text))
+          .withColumn("mvars", map_from_arrays($"variants.start", $"variants.wits"))
+          .withColumn("lines",
+            expr("transform(tlines, r -> struct(r.text as text, mvars[r.start] as wits))"))
+          .drop("tlines", "mvars", "variants")
           .write.format(config.outputFormat).save(outFname)
       } else {
         pass.drop("pairs").write.parquet(passFname)
