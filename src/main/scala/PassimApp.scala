@@ -696,20 +696,24 @@ transform($pageCol,
     def boilerPassages(config: Config, corpus: DataFrame): DataFrame = {
       import align.sparkSession.implicits._
       val alignStrings = makeStringAligner(config, openGap = 1)
+      val metaFields = ListBuffer[String]()
+      if ( corpus.columns.contains("date") ) metaFields += "date"
+      metaFields += (if ( corpus.columns.contains("gold") ) "gold" else "0 as gold")
       align.drop("gid")
-        .join(corpus.select('uid, col(config.id) as "id", 'date, col(config.text) as "text",
+        .join(corpus.select('uid, col(config.id) as "id", col(config.text) as "text",
+          struct(metaFields.toList.map(expr):_*) as "meta",
           'termCharBegin, 'termCharEnd), "uid")
         .withColumn("begin", 'termCharBegin('begin))
         .withColumn("end",
           when('end < size('termCharBegin), 'termCharBegin('end)).otherwise(length('text)))
-        .select('mid, struct('first, 'id, 'date, 'begin, 'end,
+        .select('mid, struct('first, 'id, 'meta, 'begin, 'end,
           getPassage('text, 'begin, 'end) as "text") as "info")
         .groupBy("mid")
         .agg(sort_array(collect_list("info"), false) as "info") // "first" == true sorts first
         .withColumn("alg", alignStrings('info(0)("text"), 'info(1)("text")))
         .select('info, explode(alignedPassages($"alg.s1", $"alg.s2")) as "pass")
         .selectExpr("info[0].id as id1", "info[1].id as id2",
-          "info[0].date as date1","info[1].date as date2",
+          "info[0].meta as meta1","info[1].meta as meta2",
           "pass._3 as pairs",
           "info[0].begin + pass._1.begin as b1",
           "info[0].begin + pass._1.end as e1",
@@ -1196,10 +1200,10 @@ transform($pageCol,
           res.toSeq
         }
         pass
-          .select('id2 as "id", 'id1 as "id1", 'date1 as "date",
+          .select('id2 as "id", 'id1 as "id1", 'meta1 as "meta",
             explode(lineRecord('b1, 'b2, 'pairs)) as "wit")
           .select('id, $"wit.start", $"wit.length",
-            struct('date, 'id1 as "id", $"wit.begin", $"wit.text") as "wit")
+            struct('meta, 'id1 as "id", $"wit.begin", $"wit.text") as "wit")
           .groupBy("id", "start", "length")
           .agg(sort_array(collect_list("wit")) as "wits")
           .groupBy("id")
