@@ -76,15 +76,11 @@ case class Span(val begin: Int, val end: Int) {
 
 case class Post(feat: Long, tf: Int, post: Int)
 
-case class IdSeries(id: Long, series: Long)
-
 case class PassAlign(id1: String, id2: String,
   s1: String, s2: String, b1: Int, e1: Int, n1: Int, b2: Int, e2: Int, n2: Int,
   matches: Int, score: Float)
 
 case class AlignedStrings(s1: String, s2: String, matches: Int, score: Float)
-
-case class NewDoc(id: String, text: String, pages: Seq[Page], aligned: Boolean)
 
 case class LinkedSpan(span: Span, links: ArrayBuffer[Long])
 
@@ -92,7 +88,11 @@ case class ExtentPair(seq1: Int, seq2: Int, begin1: Int, begin2: Int, end1: Int,
 
 case class WitInfo(start: Int, length: Int, begin: Int, text: String)
 
+case class SpanPair(b1: Int, e1: Int, b2: Int, e2: Int)
+
 case class LineInfo(start: Int, text: String)
+
+case class NewDoc(id: String, text: String, pages: Seq[Page], span: SpanPair)
 
 object PassFun {
   def increasingMatches(matches: Iterable[(Int,Int,Int)]): Array[(Int,Int,Int)] = {
@@ -387,6 +387,7 @@ transform($pageCol,
     }
   }
 
+  // TODO: Make minLines a parameter
   val alignedPassages = udf { (s1: String, s2: String) =>
     var start = 0
     var b1 = 0
@@ -459,43 +460,46 @@ transform($pageCol,
       p
   }
 
-  val splitDoc = udf { (id: String, text: String, pages: Seq[Row],
-    begin: Seq[Int], end: Seq[Int]) =>
+  val splitDoc = udf { (id: String, text: String, pages: Seq[Row], spans: Seq[Row]) =>
     val pp
       = if ( pages == null ) Array[Page]() // Try doesn't catch nulls
       else Try(pages.map(PassimApp.rowToPage).toArray).getOrElse(Array[Page]())
     val reg = if ( pp.size == 0 ) Array[Region]() else pp(0).regions
     val docs = new ArrayBuffer[NewDoc]
-    if ( begin == null || begin.size <= 0 ) {
-      docs += NewDoc(id, text, pp, false)
+    if ( spans == null || spans.size <= 0 ) {
+      docs += NewDoc(id, text, pp, null)
     } else {
       var start = 0
       var breg = 0
       var ereg = 0
-      for ( i <- 0 until begin.size ) {
-        if ( (begin(i) - start) >= 2 ) {
-          // Should check that this document is more than just a few whitespace characters
-          while ( ereg < reg.size && reg(ereg).start < begin(i) ) ereg += 1
-          docs += NewDoc(id + "_" + start + "_" + begin(i),
-            text.substring(start, begin(i)),
-            subpage(pp, reg.slice(breg, ereg).map(_.offset(-start))),
-            false)
-          breg = ereg
+      for ( span <- spans ) {
+        span match {
+          case Row(b1: Int, e1: Int, b2: Int, e2: Int) =>
+            if ( (b1 - start) >= 2 ) {
+              // Should check that this document is more than just a few whitespace characters
+              while ( ereg < reg.size && reg(ereg).start < b1 ) ereg += 1
+              docs += NewDoc(id + "_" + start + "_" + b1,
+                text.substring(start, b1),
+                subpage(pp, reg.slice(breg, ereg).map(_.offset(-start))),
+                null)
+              breg = ereg
+            }
+            while ( ereg < reg.size && reg(ereg).start < e1 ) ereg += 1
+            docs += NewDoc(id + "_" + b1 + "_" + e1,
+              text.substring(b1, e1),
+              subpage(pp, reg.slice(breg, ereg).map(_.offset(-b1))),
+              SpanPair(b1, e1, b2, e2))
+            breg = ereg
+            start = e1
         }
-        while ( ereg < reg.size && reg(ereg).start < end(i) ) ereg += 1
-        docs += NewDoc(id + "_" + begin(i) + "_" + end(i),
-          text.substring(begin(i), end(i)),
-          subpage(pp, reg.slice(breg, ereg).map(_.offset(-begin(i)))),
-          true)
-        breg = ereg
-        start = end(i)
       }
-      if ( (text.size - end.last) >= 2 ) {
+      val lastend = spans.last.getInt(1)
+      if ( (text.size - lastend) >= 2 ) {
         if ( ereg < reg.size ) ereg = reg.size
-        docs += NewDoc(id + "_" + end.last + "_" + text.size,
-          text.substring(end.last, text.size),
-          subpage(pp, reg.slice(breg, ereg).map(_.offset(-end.last))),
-          false)
+        docs += NewDoc(id + "_" + lastend + "_" + text.size,
+          text.substring(lastend, text.size),
+          subpage(pp, reg.slice(breg, ereg).map(_.offset(-lastend))),
+          null)
       }
     }
     docs.toArray
@@ -503,20 +507,62 @@ transform($pageCol,
   def boilerSplit(passages: DataFrame, raw: DataFrame): DataFrame = {
     import passages.sparkSession.implicits._
     val pageField = if ( raw.columns.contains("pages") ) "pages" else "null"
+    val srcSpans = udf { (lines: Seq[Row]) =>
+      val res = ListBuffer[SpanPair]()
+      var curb1 = -1
+      var cure1 = -1
+      var curb2 = -1
+      var cure2 = -1
+      for ( cur <- lines ) {
+        cur match {
+          case Row(b1: Int, len1: Int, b2: Int, len2: Int) =>
+            val e1 = b1 + len1
+            val e2 = b2 + len2
+            if ( b1 > cure1 || b2 > cure2 ) {
+              if ( curb1 > -1 ) {
+                res += SpanPair(curb1, cure1, curb2, cure2)
+              }
+              curb1 = b1
+              cure1 = e1
+              curb2 = b2
+              cure2 = e2
+            } else {
+              cure1 = e1
+              cure2 = e2
+            }
+        }
+      }
+      if ( curb1 > -1 ) {
+        res += SpanPair(curb1, cure1, curb2, cure2)
+      }
+      res.toSeq
+    }
+    // TODO: Just pick one and split the destination document. BUT! If
+    // we point to a span in the source document, but the source
+    // document itself gets split, what do we do?  We don't even need
+    // to assume errors in the alignment: If A copies two ads from
+    // different sources and then puts them side by side, and then B
+    // copies both ads, then B will be segmented, and point to two
+    // segments of A. Do we have to resolve this at the line level?
     passages
-      .select('id2 as "id", 'b2 as "begin", 'e2 as "end")
+      .groupBy("id", "start", "length")
+      .agg(max("wit") as "src")
+      .groupBy($"id", $"src.id" as "src")
+      .agg(sort_array(collect_list(struct($"start", $"length",
+        $"src.begin" as "sstart", length($"src.text") as "slength"))) as "lines")
       .groupBy("id")
-      .agg(mergeAligned(collect_list("begin"), collect_list("end")) as "spans")
-      .select('id, $"spans._1" as "begin", $"spans._2" as "end")
+      .agg(max(struct(size($"lines") as "count", $"src" as "id", $"lines")) as "src")
+      .select($"id", $"src.id" as "src", srcSpans($"src.lines") as "spans")
       .join(raw, Seq("id"), "right_outer")
-      .withColumn("subdoc", explode(splitDoc('id, 'text, expr(pageField), 'begin, 'end)))
-      .drop("begin", "end")
-      .withColumnRenamed("id", "docid")
+      .withColumn("subdoc", explode(splitDoc('id, 'text, expr(pageField), 'spans)))
+      .withColumn("src", when($"subdoc.span".isNull, null).otherwise(struct('src as "id",
+        $"subdoc.span.b2" as "start", $"subdoc.span.e2" - $"subdoc.span.b2" as "length")))
+      .withColumn("doc", when($"subdoc.span".isNull, null).otherwise(struct('id,
+        $"subdoc.span.b1" as "start", $"subdoc.span.e1" - $"subdoc.span.b1" as "length")))
       .withColumn("id", $"subdoc.id")
       .withColumn("text", $"subdoc.text")
       .withColumn("pages", $"subdoc.pages")
-      .withColumn("aligned", $"subdoc.aligned")
-      .drop("subdoc")
+      .drop("subdoc", "spans")
   }
   def clusterJoin(config: Config, clusters: DataFrame, corpus: DataFrame): DataFrame = {
     import clusters.sparkSession.implicits._
@@ -695,6 +741,18 @@ transform($pageCol,
     }
     def boilerPassages(config: Config, corpus: DataFrame): DataFrame = {
       import align.sparkSession.implicits._
+      val lineRecord = udf {
+        (b1: Int, b2: Int, pairs: Seq[Row]) =>
+        var off1 = b1
+        var off2 = b2
+        pairs.map { (p: Row) =>
+          val s1 = p.getString(0)
+          val s2 = p.getString(1)
+          off2 += s2.length
+          off1 += s1.length
+          WitInfo(off2 - s2.length, s2.length, off1 - s1.length, s1)
+        }
+      }
       val alignStrings = makeStringAligner(config, openGap = 1)
       val metaFields = ListBuffer[String]()
       if ( corpus.columns.contains("date") ) metaFields += "date"
@@ -703,9 +761,10 @@ transform($pageCol,
         .join(corpus.select('uid, col(config.id) as "id", col(config.text) as "text",
           struct(metaFields.toList.map(expr):_*) as "meta",
           'termCharBegin, 'termCharEnd), "uid")
-        .withColumn("begin", 'termCharBegin('begin))
+        .withColumn("begin", lineStart('text, 'termCharBegin('begin)))
         .withColumn("end",
-          when('end < size('termCharBegin), 'termCharBegin('end)).otherwise(length('text)))
+          lineStop('text,
+            when('end < size('termCharBegin), 'termCharBegin('end)).otherwise(length('text))))
         .select('mid, struct('first, 'id, 'meta, 'begin, 'end,
           getPassage('text, 'begin, 'end) as "text") as "info")
         .groupBy("mid")
@@ -719,6 +778,10 @@ transform($pageCol,
           "info[0].begin + pass._1.end as e1",
           "info[1].begin + pass._2.begin as b2",
           "info[1].begin + pass._2.end as e2")
+        .select('id2 as "id", 'id1 as "src", 'meta1 as "meta",
+          explode(lineRecord('b1, 'b2, 'pairs)) as "wit")
+        .select('id, $"wit.start", $"wit.length",
+          struct('meta, 'src as "id", $"wit.begin", $"wit.text") as "wit")
     }
     def aggregateAlignments(config: Config, corpus: DataFrame, extents: DataFrame): DataFrame = {
       import align.sparkSession.implicits._
@@ -931,6 +994,26 @@ transform($pageCol,
       Math.max(0, Math.min(terms.size, end))).mkString(" ")
   }
   val getPassage = udf { (text: String, begin: Int, end: Int) => text.substring(begin, end) }
+  val lineStart = udf { (text: String, begin: Int) =>
+    var start = begin
+    while ( start > 0 && (begin - start) < 20 && text.charAt(start - 1) != '\n' ) {
+      start -= 1
+    }
+    if ( start > 0 && text.charAt(start - 1) != '\n' )
+      begin
+    else
+      start
+  }
+  val lineStop = udf { (text: String, end: Int) =>
+    var stop = end
+    while ( stop < text.length && (stop - end) < 20 && text.charAt(stop - 1) != '\n' ) {
+      stop += 1
+    }
+    if ( stop < text.length && text.charAt(stop - 1) != '\n' )
+      end
+    else
+      stop
+  }
   def hdfsExists(spark: SparkSession, path: String) = {
     val hdfsPath = new Path(path)
     val fs = hdfsPath.getFileSystem(spark.sparkContext.hadoopConfiguration)
@@ -944,7 +1027,7 @@ transform($pageCol,
       .set("spark.driver.maxResultSize", "4g")
       .registerKryoClasses(Array(classOf[Coords], classOf[Region], classOf[Span], classOf[Post],
         classOf[PassAlign],
-        classOf[TokText], classOf[IdSeries],classOf[ExtentPair]))
+        classOf[TokText], classOf[ExtentPair]))
 
     val spark = SparkSession
       .builder()
@@ -1176,20 +1259,11 @@ transform($pageCol,
     }
 
     if ( config.boilerplate || config.docwise ) {
-      val pass = extents.boilerPassages(config, corpus)
+      if ( !hdfsExists(spark, passFname) ) {
+        extents.boilerPassages(config, corpus).write.parquet(passFname)
+      }
+      val pass = spark.read.parquet(passFname)
       if ( config.docwise ) {
-        val lineRecord = udf {
-          (b1: Int, b2: Int, pairs: Seq[Row]) =>
-          var off1 = b1
-          var off2 = b2
-          pairs.map { (p: Row) =>
-            val s1 = p.getString(0)
-            val s2 = p.getString(1)
-            off2 += s2.length
-            off1 += s1.length
-            WitInfo(off2 - s2.length, s2.length, off1 - s1.length, s1)
-          }
-        }
         val textLines = udf { (text: String) =>
           val res = ListBuffer[LineInfo]()
           var off = 0
@@ -1199,11 +1273,7 @@ transform($pageCol,
           }
           res.toSeq
         }
-        pass
-          .select('id2 as "id", 'id1 as "id1", 'meta1 as "meta",
-            explode(lineRecord('b1, 'b2, 'pairs)) as "wit")
-          .select('id, $"wit.start", $"wit.length",
-            struct('meta, 'id1 as "id", $"wit.begin", $"wit.text") as "wit")
+        pass // should include target text offset to support later correction
           .groupBy("id", "start", "length")
           .agg(sort_array(collect_list("wit")) as "wits")
           .groupBy("id")
@@ -1216,9 +1286,7 @@ transform($pageCol,
           .drop("tlines", "mvars", "variants")
           .write.format(config.outputFormat).save(outFname)
       } else {
-        pass.drop("pairs").write.parquet(passFname)
-        boilerSplit(spark.read.parquet(passFname), raw)
-          .write.format(config.outputFormat).save(outFname)
+        boilerSplit(pass, raw).write.format(config.outputFormat).save(outFname)
       }
       sys.exit(0)
     }
