@@ -519,7 +519,7 @@ transform($pageCol,
           case Row(b1: Int, len1: Int, b2: Int, len2: Int) =>
             val e1 = b1 + len1
             val e2 = b2 + len2
-            if ( b1 > cure1 || b2 > cure2 ) {
+            if ( b1 > cure1 || b2 > cure2 || e2 < cure2 ) {
               if ( curb1 > -1 ) {
                 res += SpanPair(curb1, cure1, curb2, cure2)
               }
