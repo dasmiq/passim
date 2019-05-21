@@ -92,7 +92,7 @@ case class SpanPair(b1: Int, e1: Int, b2: Int, e2: Int)
 
 case class LineInfo(start: Int, text: String)
 
-case class NewDoc(id: String, text: String, pages: Seq[Page], span: SpanPair)
+case class NewDoc(id: String, text: String, pages: Seq[Page], docspan: Span, srcspan: Span)
 
 object PassFun {
   def increasingMatches(matches: Iterable[(Int,Int,Int)]): Array[(Int,Int,Int)] = {
@@ -467,7 +467,7 @@ transform($pageCol,
     val reg = if ( pp.size == 0 ) Array[Region]() else pp(0).regions
     val docs = new ArrayBuffer[NewDoc]
     if ( spans == null || spans.size <= 0 ) {
-      docs += NewDoc(id, text, pp, null)
+      docs += NewDoc(id, text, pp, null, null)
     } else {
       var start = 0
       var breg = 0
@@ -481,14 +481,14 @@ transform($pageCol,
               docs += NewDoc(id + "_" + start + "_" + b1,
                 text.substring(start, b1),
                 subpage(pp, reg.slice(breg, ereg).map(_.offset(-start))),
-                null)
+                Span(start, b1), null)
               breg = ereg
             }
             while ( ereg < reg.size && reg(ereg).start < e1 ) ereg += 1
             docs += NewDoc(id + "_" + b1 + "_" + e1,
               text.substring(b1, e1),
               subpage(pp, reg.slice(breg, ereg).map(_.offset(-b1))),
-              SpanPair(b1, e1, b2, e2))
+              Span(b1, e1), Span(b2, e2))
             breg = ereg
             start = e1
         }
@@ -499,7 +499,7 @@ transform($pageCol,
         docs += NewDoc(id + "_" + lastend + "_" + text.size,
           text.substring(lastend, text.size),
           subpage(pp, reg.slice(breg, ereg).map(_.offset(-lastend))),
-          null)
+          Span(lastend, text.size), null)
       }
     }
     docs.toArray
@@ -555,10 +555,12 @@ transform($pageCol,
       .select($"id", $"src.id" as "src", srcSpans($"src.lines") as "spans")
       .join(raw, Seq("id"), "right_outer")
       .withColumn("subdoc", explode(splitDoc('id, 'text, expr(pageField), 'spans)))
-      .withColumn("src", when($"subdoc.span".isNull, null).otherwise(struct('src as "id",
-        $"subdoc.span.b2" as "start", $"subdoc.span.e2" - $"subdoc.span.b2" as "length")))
-      .withColumn("doc", when($"subdoc.span".isNull, null).otherwise(struct('id,
-        $"subdoc.span.b1" as "start", $"subdoc.span.e1" - $"subdoc.span.b1" as "length")))
+      .withColumn("src", when($"subdoc.srcspan".isNull, null).otherwise(struct('src as "id",
+        $"subdoc.srcspan.begin" as "start",
+        $"subdoc.srcspan.end" - $"subdoc.srcspan.begin" as "length")))
+      .withColumn("doc", when($"subdoc.docspan".isNull, null).otherwise(struct('id,
+        $"subdoc.docspan.begin" as "start",
+        $"subdoc.docspan.end" - $"subdoc.docspan.begin" as "length")))
       .withColumn("id", $"subdoc.id")
       .withColumn("text", $"subdoc.text")
       .withColumn("pages", $"subdoc.pages")
