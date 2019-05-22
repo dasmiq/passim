@@ -23,6 +23,7 @@ case class Config(version: String = BuildInfo.version,
   boilerplate: Boolean = false,
   n: Int = 5, minDF: Int = 2, maxDF: Int = 100, minRep: Int = 5, minAlg: Int = 20,
   gap: Int = 100, relOver: Double = 0.8, mergeDiverge: Double = 0.3, maxRep: Int = 10,
+  minLines: Int = 5,
   context: Int = 0,
   wordLength: Double = 2,
   pairwise: Boolean = false,
@@ -387,72 +388,6 @@ transform($pageCol,
     }
   }
 
-  // TODO: Make minLines a parameter
-  val alignedPassages = udf { (s1: String, s2: String) =>
-    var start = 0
-    var b1 = 0
-    var b2 = 0
-    val buf = ArrayBuffer[(Int, Double, Int, Int, String, String)]()
-    for ( end <- 1 until s2.size ) {
-      if ( s2(end) == '\n' ) {
-        val alg1 = s1.substring(start, end+1)
-        val alg2 = s2.substring(start, end+1)
-        val t1 = alg1.replaceAll("-", "").replaceAll("\u2010", "-")
-        val t2 = alg2.replaceAll("-", "").replaceAll("\u2010", "-")
-
-        val matches = alg1.zip(alg2).count(x => x._1 == x._2)
-        buf += ((t2.size - t1.size, matches * 1.0 / t2.size, b1, b2, t1, t2))
-        start = end + 1
-        b1 += t1.size
-        b2 += t2.size
-      }
-    }
-    val lines = buf.toArray
-
-    val minLines = 5
-
-    val pass = ArrayBuffer[(Span, Span, Array[(String, String)])]()
-    val pairs = ArrayBuffer[(String, String)]()
-    var i = 0
-    start = 0
-    while ( i < lines.size ) {
-      if ( lines(i)._1.abs > 20 || lines(i)._2 < 0.1 ) {
-        if ( start < i
-          && (i + 2) < lines.size
-          && lines(i+1)._1.abs <= 20 && lines(i+1)._2 >= 0.1
-          && (lines(i+1)._3 - lines(i)._3) <= 20
-          && (lines(i+1)._4 - lines(i)._4) <= 20 ) {
-          // continue passage
-          pairs += ((lines(i)._5, lines(i)._6))
-        } else {
-          if ( (i - start) >= minLines ) {
-            pass += ((Span(lines(start)._3, lines(i)._3),
-              Span(lines(start)._4, lines(i)._4),
-              pairs.toArray))
-          }
-          start = i + 1
-          pairs.clear
-        }
-      } else {
-        pairs += ((lines(i)._5, lines(i)._6))
-      }
-      i += 1
-    }
-    if ( (i - start) >= minLines ) {
-      pass += ((Span(lines(start)._3, lines(lines.size - 1)._3),
-        Span(lines(start)._4, lines(lines.size - 1)._4),
-        pairs.toArray))
-    }
-    pass.toSeq
-  }
-
-  val mergeAligned = udf { (begins: Seq[Int], ends: Seq[Int]) =>
-    val spans = PassFun.mergeSpansLR(0, begins.zip(ends).map(x => Span(x._1, x._2))
-      .zip(Range(0, begins.size).map(_.toLong)))
-      .map(_._1) // TODO? merge nearly adjacent?
-    (spans.map(_.begin), spans.map(_.end)) // unzip
-  }
-
   def subpage(p: Seq[Page], r: Array[Region]) = {
     if ( p.size > 0 )
       Seq(p(0).copy(regions = r))
@@ -743,6 +678,61 @@ transform($pageCol,
     }
     def boilerPassages(config: Config, corpus: DataFrame): DataFrame = {
       import align.sparkSession.implicits._
+      val alignedPassages = udf { (s1: String, s2: String) =>
+        var start = 0
+        var b1 = 0
+        var b2 = 0
+        val buf = ArrayBuffer[(Int, Double, Int, Int, String, String)]()
+        for ( end <- 1 until s2.size ) {
+          if ( s2(end) == '\n' ) {
+            val alg1 = s1.substring(start, end+1)
+            val alg2 = s2.substring(start, end+1)
+            val t1 = alg1.replaceAll("-", "").replaceAll("\u2010", "-")
+            val t2 = alg2.replaceAll("-", "").replaceAll("\u2010", "-")
+
+            val matches = alg1.zip(alg2).count(x => x._1 == x._2)
+            buf += ((t2.size - t1.size, matches * 1.0 / t2.size, b1, b2, t1, t2))
+            start = end + 1
+            b1 += t1.size
+            b2 += t2.size
+          }
+        }
+        val lines = buf.toArray
+
+        val pass = ArrayBuffer[(Span, Span, Array[(String, String)])]()
+        val pairs = ArrayBuffer[(String, String)]()
+        var i = 0
+        start = 0
+        while ( i < lines.size ) {
+          if ( lines(i)._1.abs > 20 || lines(i)._2 < 0.1 ) {
+            if ( start < i
+              && (i + 2) < lines.size
+              && lines(i+1)._1.abs <= 20 && lines(i+1)._2 >= 0.1
+              && (lines(i+1)._3 - lines(i)._3) <= 20
+              && (lines(i+1)._4 - lines(i)._4) <= 20 ) {
+              // continue passage
+              pairs += ((lines(i)._5, lines(i)._6))
+            } else {
+              if ( (i - start) >= config.minLines ) {
+                pass += ((Span(lines(start)._3, lines(i)._3),
+                  Span(lines(start)._4, lines(i)._4),
+                  pairs.toArray))
+              }
+              start = i + 1
+              pairs.clear
+            }
+          } else {
+            pairs += ((lines(i)._5, lines(i)._6))
+          }
+          i += 1
+        }
+        if ( (i - start) >= config.minLines ) {
+          pass += ((Span(lines(start)._3, lines(lines.size - 1)._3),
+            Span(lines(start)._4, lines(lines.size - 1)._4),
+            pairs.toArray))
+        }
+        pass.toSeq
+      }
       val lineRecord = udf {
         (b1: Int, b2: Int, pairs: Seq[Row]) =>
         var off1 = b1
@@ -881,7 +871,7 @@ transform($pageCol,
   }
 
   val collectTexts = udf { (texts: Seq[String], seqs: Seq[Int]) =>
-        val textDict = seqs zip texts toMap
+        val textDict = seqs.zip(texts).toMap
 
         var allTexts = ""
         for (seq <- seqs.sorted) {
@@ -1053,6 +1043,8 @@ transform($pageCol,
         c.copy(minRep = x) } text("Minimum number of n-gram matches between documents; default=5")
       opt[Int]('a', "min-align") action { (x, c) =>
         c.copy(minAlg = x) } text("Minimum length of alignment; default=20")
+      opt[Int]('L', "min-lines") action { (x, c) =>
+        c.copy(minLines = x) } text("Minimum number of lines in boilerplate and docwise alignments; default=5")
       opt[Int]('g', "gap") action { (x, c) =>
         c.copy(gap = x) } text("Minimum size of the gap that separates passages; default=100")
       opt[Int]('c', "context") action { (x, c) =>
