@@ -439,7 +439,7 @@ transform($pageCol,
     }
     docs.toArray
   }
-  def boilerSplit(passages: DataFrame, raw: DataFrame): DataFrame = {
+  def boilerSplit(config: Config, passages: DataFrame, raw: DataFrame): DataFrame = {
     import passages.sparkSession.implicits._
     val pageField = if ( raw.columns.contains("pages") ) "pages" else "null"
     val srcSpans = udf { (lines: Seq[Row]) =>
@@ -448,26 +448,29 @@ transform($pageCol,
       var cure1 = -1
       var curb2 = -1
       var cure2 = -1
+      var lineCount = 0
       for ( cur <- lines ) {
         cur match {
           case Row(b1: Int, len1: Int, b2: Int, len2: Int) =>
             val e1 = b1 + len1
             val e2 = b2 + len2
             if ( b1 > cure1 || b2 > cure2 || e2 < cure2 ) {
-              if ( curb1 > -1 ) {
+              if ( curb1 > -1 && lineCount > config.minLines ) {
                 res += SpanPair(curb1, cure1, curb2, cure2)
               }
               curb1 = b1
               cure1 = e1
               curb2 = b2
               cure2 = e2
+              lineCount = 1
             } else {
               cure1 = e1
               cure2 = e2
+              lineCount += 1
             }
         }
       }
-      if ( curb1 > -1 ) {
+      if ( curb1 > -1 && lineCount > config.minLines ) {
         res += SpanPair(curb1, cure1, curb2, cure2)
       }
       res.toSeq
@@ -1280,7 +1283,7 @@ transform($pageCol,
           .drop("tlines", "mvars", "variants")
           .write.format(config.outputFormat).save(outFname)
       } else {
-        boilerSplit(pass, raw).write.format(config.outputFormat).save(outFname)
+        boilerSplit(config, pass, raw).write.format(config.outputFormat).save(outFname)
       }
       sys.exit(0)
     }
