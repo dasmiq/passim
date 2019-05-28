@@ -278,6 +278,91 @@ object PassFun {
         }).toSeq
     }
   }
+
+  def recursivelySWAlignStrings(s1: String, s2: String,
+    n: Int, gap2: Int, matchMatrix: jaligner.matrix.Matrix,
+    openGap: Float, contGap: Float): Seq[AlignedPassage] = {
+    val m1 = hapaxIndex(n, s1)
+    val m2 = hapaxIndex(n, s2)
+    val inc = increasingMatches(m1
+      .flatMap(z => if (m2.contains(z._1)) Some((z._2, m2(z._1), 1)) else None))
+    val prod = s1.size * s2.size
+    if ( inc.size == 0 && (prod >= gap2 || prod < 0) ) {
+      Seq()
+    } else {
+      (Array((0, 0, 0)) ++ inc ++ Array((s1.size, s2.size, 0)))
+        .sliding(2).flatMap(z => {
+          val (b1, b2, c) = z(0)
+          val (e1, e2, d) = z(1)
+          val n1 = e1 - b1
+          val n2 = e2 - b2
+          val chartSize = n1 * n2
+          if ( c == 0 ) { // if we're before the last matching n-gram
+            if ( d == 0 ) {
+              Seq()
+            } else {
+              val p1 = s1.substring(Math.max(0, e1 - 100), e1 + n)
+              val p2 = s2.substring(Math.max(0, e2 - 100), e2 + n)
+              val alg = jaligner.SmithWatermanGotoh.align(new jaligner.Sequence(p1),
+                new jaligner.Sequence(p2), matchMatrix, openGap, contGap)
+              val a1 = new String(alg.getSequence1())
+              val a2 = new String(alg.getSequence2())
+              val len1 = a1.length - a1.count(_ == '-')
+              val len2 = a2.length - a2.count(_ == '-')
+              // Check if SW alignment is anchored at the right edge.
+              if ( len1 > n && len2 > n
+                && alg.getStart1() + len1 >= p1.length && alg.getStart2() + len2 >= p2.length ) {
+                Seq(AlignedPassage(a1.substring(0, a1.length-n),
+                  a2.substring(0, a2.length-n),
+                  e1 - len1 + n, e2 - len2 + n, alg.getIdentity - n, alg.getScore))
+              } else {
+                Seq()
+              }
+            }
+          }  else if ( d == 0 ) { // if we're after the last matching n-gram
+            val p1 = s1.substring(b1, Math.min(b1 + 100, e1))
+            val p2 = s2.substring(b2, Math.min(b2 + 100, e2))
+            val alg = jaligner.SmithWatermanGotoh.align(new jaligner.Sequence(p1),
+              new jaligner.Sequence(p2), matchMatrix, openGap, contGap)
+            val a1 = new String(alg.getSequence1())
+            val a2 = new String(alg.getSequence2())
+            // Check if SW alignment is anchored at the left edge
+            if ( alg.getStart1() == 0 && alg.getStart2() == 0 ) {
+              Seq(AlignedPassage(a1, a2, b1, b2, alg.getIdentity, alg.getScore))
+            } else {
+              Seq()
+            }
+          } else if ( chartSize <= gap2 && chartSize >= 0 ) { // overflow!
+            val p1 = s1.substring(b1, e1)
+            val p2 = s2.substring(b2, e2)
+            if ( n1 == n2 && p1 == p2 ) {
+              Seq(AlignedPassage(p1, p2, b1, b2, p1.size, 2.0f * p2.size))
+             } else {
+              val alg = jaligner.NeedlemanWunschGotoh.align(new jaligner.Sequence(p1),
+                new jaligner.Sequence(p2), matchMatrix, openGap, contGap)
+              // // HACK!! WHY does JAligner swap sequences ?!?!?!?
+              val a1 = new String(alg.getSequence2)
+              val a2 = new String(alg.getSequence1)
+              if ( a1.replaceAll("-", "") == p2 && a2.replaceAll("-", "") == p1 ) {
+                Seq(AlignedPassage(a2, a1, b1, b2, alg.getIdentity, alg.getScore))
+              } else {
+                Seq(AlignedPassage(a1, a2, b1, b2, alg.getIdentity, alg.getScore))
+              }
+            }
+          } else {
+            if ( c > 0 ) {
+              val len = Math.min(n, Math.min(n1, n2))
+              val p1 = s1.substring(b1, b1 + len)
+              val p2 = s2.substring(b2, b2 + len)
+              Array(AlignedPassage(p1, p2, b1, b2, len, 2.0f * len)) ++
+              recursivelyAlignStrings(s1.substring(b1 + len, e1), s2.substring(b2 + len, e2), n, gap2, matchMatrix, openGap, contGap)
+            } else {
+              recursivelyAlignStrings(s1.substring(b1, e1), s2.substring(b2, e2), n, gap2, matchMatrix, openGap, contGap)
+            }
+          }
+        }).toSeq
+    }
+  }
 }
 
 case class TokText(terms: Array[String], termCharBegin: Array[Int], termCharEnd: Array[Int])
@@ -545,6 +630,21 @@ transform($pageCol,
     val matchMatrix = jaligner.matrix.MatrixGenerator.generate(matchScore, mismatchScore)
     udf { (s1: String, s2: String) =>
       val chunks = PassFun.recursivelyAlignStrings(
+        (if ( s1 != null ) s1.replaceAll("-", "\u2010") else ""),
+        (if ( s2 != null ) s2.replaceAll("-", "\u2010") else ""),
+        config.n, config.gap * config.gap,
+        matchMatrix, openGap, contGap)
+      AlignedStrings(chunks.map(_.s1).mkString, chunks.map(_.s2).mkString,
+        chunks.map(_.matches).sum, chunks.map(_.score).sum)
+    }
+  }
+
+  def makeSWAligner(config: Config,
+    matchScore: Float = 2, mismatchScore: Float = -1,
+    openGap: Float = 5.0f, contGap: Float = 0.5f) = {
+    val matchMatrix = jaligner.matrix.MatrixGenerator.generate(matchScore, mismatchScore)
+    udf { (s1: String, s2: String) =>
+      val chunks = PassFun.recursivelySWAlignStrings(
         (if ( s1 != null ) s1.replaceAll("-", "\u2010") else ""),
         (if ( s2 != null ) s2.replaceAll("-", "\u2010") else ""),
         config.n, config.gap * config.gap,
@@ -1161,18 +1261,33 @@ transform($pageCol,
         .save(config.outputPath + "/context." + config.outputFormat)
     }
 
-    if (config.pairwise || config.aggregate) {
+    if ( config.pairwise ) {
       val alignments = extents.pairwiseAlignments(config, corpus)
-      if ( config.pairwise ) {
-        alignments.write.format(config.outputFormat)
-          .save(config.outputPath + "/align." + config.outputFormat)
-      }
+      alignments.write.format(config.outputFormat)
+        .save(config.outputPath + "/align." + config.outputFormat)
+    }
 
-      if ( config.aggregate ) {
-        extents.aggregateAlignments(config, corpus, extents)
-          .write.format(config.outputFormat)
-          .save(config.outputPath + "/aggregate." + config.outputFormat)
-      }
+    if ( config.aggregate ) {
+      extents.aggregateAlignments(config, corpus, extents)
+        .write.format(config.outputFormat)
+        .save(config.outputPath + "/aggregate." + config.outputFormat)
+
+      val aggregate = spark.read.json(config.outputPath + "/aggregate." + config.outputFormat)
+        .withColumn("pairID", explode('pairIDs)).drop("pairIDs")
+
+      val fields = aggregate.columns.filter { _ != "pairID" }.map(expr)
+
+      val alignStrings = makeStringAligner(config)
+      val swAligner = makeSWAligner(config)
+      aggregate.select('pairID, struct(fields:_*) as "info1")
+        .join(aggregate.select('pairID, struct(fields:_*) as "info2"), "pairID")
+        .filter($"info1.id" < $"info2.id")
+        .withColumn("alg", alignStrings($"info1.text", $"info2.text"))
+        .withColumn("swalg", swAligner($"info1.text", $"info2.text"))
+        .write.format(config.outputFormat)
+        .save(config.outputPath + "/aggregateAlignments." + config.outputFormat)
+
+      sys.exit(0)
     }
 
     if ( config.boilerplate || config.docwise ) {
