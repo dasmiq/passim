@@ -974,13 +974,12 @@ transform($pageCol,
                 var lengthFromBegin1 = nextSpan.begin1
                 var lengthFromBegin2 = nextSpan.begin2
 
-
                 //if the next pair is not adjacent to the current one in both books, we're done
                 // we're also done if the current span pair ends more than <gap length> tokens from 
                 // the the boundary in both texts or the next one starts more than <gap length> tokens from the boundary in both texts
-                if ((nextPos1 >= pos1+1 && nextPos2 > pos2 + 1) || (nextPos2 < pos2) || 
-                   (((lengthToEnd2>gap) && (lengthToEnd1>gap)) ||
-                   ((lengthFromBegin1>gap) && (lengthFromBegin2>gap)))) {
+                //It might be more efficient to ignore the gap length as an aggregate separator,
+                // to cut down on the number of documents.
+                if ((nextPos1 > pos1+1 && nextPos2 > pos2 + 1) || (nextPos2 < pos2)) {
                     finished = true
                     //check if we should look in the next chunk after this one in either text
                     if (lengthToEnd1<gap) {
@@ -1012,13 +1011,13 @@ transform($pageCol,
                 }
             }
             if (j == spans.length) {
-            	if (lengthToEnd1<gap) {
-                    aggregate(0) :+= aggregate(0).last + 1
-                }
-                if (lengthToEnd2<gap) {
-                    aggregate(1) :+= aggregate(1).last + 1
-                }
-                aggregatedPairs :+= aggregate
+              if (lengthToEnd1<gap) {
+                  aggregate(0) :+= aggregate(0).last + 1
+              }
+              if (lengthToEnd2<gap) {
+                  aggregate(1) :+= aggregate(1).last + 1
+              }
+              aggregatedPairs :+= aggregate
             }
         }
     }
