@@ -87,7 +87,7 @@ case class LinkedSpan(span: Span, links: ArrayBuffer[Long])
 
 case class ExtentPair(seq1: Int, seq2: Int, begin1: Int, begin2: Int, end1: Int, end2: Int, tok1: Int, tok2: Int)
 
-case class WitInfo(start: Int, length: Int, begin: Int, text: String)
+case class WitInfo(start: Int, length: Int, begin: Int, text: String, alg1: String, alg2: String)
 
 case class SpanPair(b1: Int, e1: Int, b2: Int, e2: Int)
 
@@ -685,7 +685,7 @@ transform($pageCol,
         var start = 0
         var b1 = 0
         var b2 = 0
-        val buf = ArrayBuffer[(Int, Double, Int, Int, String, String)]()
+        val buf = ArrayBuffer[(Int, Double, Int, Int, String, String, String, String)]()
         for ( end <- 1 until s2.size ) {
           if ( s2(end) == '\n' ) {
             val alg1 = s1.substring(start, end+1)
@@ -694,7 +694,7 @@ transform($pageCol,
             val t2 = alg2.replaceAll("-", "").replaceAll("\u2010", "-")
 
             val matches = alg1.zip(alg2).count(x => x._1 == x._2)
-            buf += ((t2.size - t1.size, matches * 1.0 / t2.size, b1, b2, t1, t2))
+            buf += ((t2.size - t1.size, matches * 1.0 / t2.size, b1, b2, t1, t2, alg1, alg2))
             start = end + 1
             b1 += t1.size
             b2 += t2.size
@@ -702,8 +702,8 @@ transform($pageCol,
         }
         val lines = buf.toArray
 
-        val pass = ArrayBuffer[(Span, Span, Array[(String, String)])]()
-        val pairs = ArrayBuffer[(String, String)]()
+        val pass = ArrayBuffer[(Span, Span, Array[(String, String, String, String)])]()
+        val pairs = ArrayBuffer[(String, String, String, String)]()
         var i = 0
         start = 0
         while ( i < lines.size ) {
@@ -714,7 +714,7 @@ transform($pageCol,
               && (lines(i+1)._3 - lines(i)._3) <= 20
               && (lines(i+1)._4 - lines(i)._4) <= 20 ) {
               // continue passage
-              pairs += ((lines(i)._5, lines(i)._6))
+              pairs += ((lines(i)._5, lines(i)._6, lines(i)._7, lines(i)._8))
             } else {
               if ( (i - start) >= config.minLines ) {
                 pass += ((Span(lines(start)._3, lines(i)._3),
@@ -725,7 +725,7 @@ transform($pageCol,
               pairs.clear
             }
           } else {
-            pairs += ((lines(i)._5, lines(i)._6))
+            pairs += ((lines(i)._5, lines(i)._6, lines(i)._7, lines(i)._8))
           }
           i += 1
         }
@@ -745,7 +745,7 @@ transform($pageCol,
           val s2 = p.getString(1)
           off2 += s2.length
           off1 += s1.length
-          WitInfo(off2 - s2.length, s2.length, off1 - s1.length, s1)
+          WitInfo(off2 - s2.length, s2.length, off1 - s1.length, s1, p.getString(2), p.getString(3))
         }
       }
       val alignStrings = makeStringAligner(config, openGap = 1)
@@ -776,7 +776,7 @@ transform($pageCol,
         .select('id2 as "id", 'id1 as "src", 'meta1 as "meta",
           explode(lineRecord('b1, 'b2, 'pairs)) as "wit")
         .select('id, $"wit.start", $"wit.length",
-          struct('meta, 'src as "id", $"wit.begin", $"wit.text") as "wit")
+          struct('meta, 'src as "id", $"wit.begin", $"wit.text", $"wit.alg1", $"wit.alg2") as "wit")
     }
     def aggregateAlignments(config: Config, corpus: DataFrame, extents: DataFrame): DataFrame = {
       import align.sparkSession.implicits._
