@@ -28,7 +28,8 @@ case class Config(version: String = BuildInfo.version,
   wordLength: Double = 2,
   pairwise: Boolean = false,
   aggregate: Boolean = false,
-  docwise: Boolean = false, names: Boolean = false, postings: Boolean = false,
+  docwise: Boolean = false, linewise: Boolean = false,
+  names: Boolean = false, postings: Boolean = false,
   id: String = "id", group: String = "series", text: String = "text",
   fields: String = "",  filterpairs: String = "gid < gid2",
   inputFormat: String = "json", outputFormat: String = "json",
@@ -331,6 +332,27 @@ object PassimApp {
           .withColumn("termCharEnd", col("_tokens")("termCharEnd"))
           .drop("_tokens")
       }
+    }
+    def pageBox(pageCol: String): DataFrame = {
+      val pageFields = df.select(expr(s"inline($pageCol)")).columns
+        .filter { _ != "regions" }.map { f => s"p.$f as $f" }.mkString(", ")
+      df.withColumn(pageCol,
+        expr(s"""
+transform($pageCol,
+          p -> struct($pageFields,
+                      array(aggregate(p.regions,
+                                      struct(p.regions[0].start as start,
+                                             p.regions[0].length as length,
+                                             struct(p.regions[0].coords.x as x,
+                                                    p.regions[0].coords.y as y,
+                                                    p.regions[0].coords.w as w,
+                                                    p.regions[0].coords.h as h) as coords),
+                                      (acc, r) -> struct(least(acc.start, r.start) as start,
+                                                         greatest(acc.start + acc.length, r.start + r.length) - least(acc.start, r.start) as length,
+                                                         struct(least(acc.coords.x, r.coords.x) as x,
+                                                                least(acc.coords.y, r.coords.y) as y,
+                                                                greatest(acc.coords.x + acc.coords.w, r.coords.x + r.coords.w) - least(acc.coords.x, r.coords.x) as w,
+                                                                greatest(acc.coords.y + acc.coords.h, r.coords.y + r.coords.h) - least(acc.coords.y, r.coords.y) as h) as coords))) as regions))"""))
     }
     def selectRegions(pageCol: String): DataFrame = {
       if ( df.columns.contains(pageCol) ) {
@@ -749,6 +771,8 @@ transform($pageCol,
         }
       }
       val alignStrings = makeStringAligner(config, openGap = 1)
+      val pageFields = corpus.select(expr(s"inline(pages)")).columns
+        .filter { _ != "regions" }.map { f => s"p.$f as $f" }.mkString(", ")
       val metaFields = ListBuffer[String]()
       if ( corpus.columns.contains("date") ) metaFields += "date"
       metaFields += (if ( corpus.columns.contains("gold") ) "gold" else "0 as gold")
@@ -760,8 +784,9 @@ transform($pageCol,
         .withColumn("end",
           lineStop('text,
             when('end < size('termCharBegin), 'termCharBegin('end)).otherwise(length('text))))
-        .withColumn("regions", expr(s"filter(pages[0].regions, r -> r.start < end AND (r.start + r.length) > begin)"))
-        .select('mid, struct('first, 'id, 'meta, 'regions, 'begin, 'end,
+        .withColumn("pages",
+          expr(s"filter(transform(pages, p -> struct($pageFields, filter(p.regions, r -> r.start < end AND (r.start + r.length) > begin) as regions)), p -> size(p.regions) > 0)"))
+        .select('mid, struct('first, 'id, 'meta, 'pages, 'begin, 'end,
           getPassage('text, 'begin, 'end) as "text") as "info")
         .groupBy("mid")
         .agg(sort_array(collect_list("info"), false) as "info") // "first" == true sorts first
@@ -769,17 +794,17 @@ transform($pageCol,
         .select('info, explode(alignedPassages($"alg.s1", $"alg.s2")) as "pass")
         .selectExpr("info[0].id as id1", "info[1].id as id2",
           "info[0].meta as meta1","info[1].meta as meta2",
-          "info[0].regions as regions1",
+          "info[0].pages as pages1",
           "pass._3 as pairs",
           "info[0].begin + pass._1.begin as b1",
           "info[0].begin + pass._1.end as e1",
           "info[1].begin + pass._2.begin as b2",
           "info[1].begin + pass._2.end as e2")
-        .select('id2 as "id", 'id1 as "src", 'meta1 as "meta", 'regions1 as "regions",
+        .select('id2 as "id", 'id1 as "src", 'meta1 as "meta", 'pages1 as "pages",
           explode(lineRecord('b1, 'b2, 'pairs)) as "wit")
         .select('id, $"wit.start", $"wit.length",
           struct('meta,
-            expr("filter(regions, r -> r.start < (wit.begin + length(wit.text)) AND (r.start + r.length) > wit.begin)") as "regions",
+            expr(s"filter(transform(pages, p -> struct($pageFields, filter(p.regions, r -> r.start < (wit.begin + length(wit.text)) AND (r.start + r.length) > wit.begin) as regions)), p -> size(p.regions) > 0)") as "pages",
             'src as "id", $"wit.begin", $"wit.text", $"wit.alg1", $"wit.alg2") as "wit")
     }
     def aggregateAlignments(config: Config, corpus: DataFrame, extents: DataFrame): DataFrame = {
@@ -1066,6 +1091,8 @@ transform($pageCol,
         c.copy(pairwise = true) } text("Output pairwise alignments")
       opt[Unit]('d', "docwise") action { (_, c) =>
         c.copy(docwise = true) } text("Output docwise alignments")
+      opt[Unit]("linewise") action { (_, c) =>
+        c.copy(linewise = true) } text("Output linewise alignments")
       opt[Unit]('N', "names") action { (_, c) =>
         c.copy(names = true) } text("Output names and exit")
       opt[Unit]('P', "postings") action { (_, c) =>
@@ -1259,11 +1286,13 @@ transform($pageCol,
       }
     }
 
-    if ( config.boilerplate || config.docwise ) {
+    if ( config.boilerplate || config.docwise || config.linewise) {
       if ( !hdfsExists(spark, passFname) ) {
         extents.boilerPassages(config, corpus).write.parquet(passFname)
       }
       val pass = spark.read.parquet(passFname)
+      val pageFields = pass.select(expr(s"inline(wit.pages)")).columns
+        .filter { _ != "regions" }.map { f => s"p.$f as $f" }.mkString(", ")
       if ( config.docwise ) {
         val textLines = udf { (text: String) =>
           val res = ListBuffer[LineInfo]()
@@ -1285,6 +1314,37 @@ transform($pageCol,
           .withColumn("lines",
             expr("transform(tlines, r -> struct(r.text as text, mvars[r.start] as wits))"))
           .drop("tlines", "mvars", "variants")
+          .write.format(config.outputFormat).save(outFname)
+      } else if ( config.linewise ) {
+        val gap = 4
+        val coreAlignment = udf { (alg1: String, alg2: String) =>
+          val re = s"\\-{$gap,}\\s*".r
+          (List((0,0)) ++
+            (re.findAllMatchIn(alg1).map { m => (m.start, m.toString.length) }.toList ++
+              re.findAllMatchIn(alg2).map { m => (m.start, m.toString.length) }.toList).sorted ++
+            List((alg1.length, 0)))
+            .sliding(2)
+            .map { p =>
+            val begin = p(0)._1 + p(0)._2
+            val end = p(1)._1
+            (alg1.substring(0, begin).replaceAll("-", "").length,
+              alg1.substring(begin, end).replaceAll("-", "").replaceAll("\u2010", "-"),
+              alg2.substring(0, begin).replaceAll("-", "").length,
+              alg2.substring(begin, end).replaceAll("-", "").replaceAll("\u2010", "-"))
+          }
+            .filter { p => p._2.length > gap && p._4.length > gap }
+            .toSeq
+
+        }
+        pass
+          .withColumn("core", coreAlignment($"wit.alg1", $"wit.alg2"))
+          .select('id, 'start + 'core(0)("_3") as "begin",
+            'core(0)("_4") as "text",
+            $"wit.id" as "wid", $"wit.begin" + 'core(0)("_1") as "wbegin",
+            'core(0)("_2") as "wtext",
+            $"wit.pages" as "wpages")
+          .withColumn("wpages", expr(s"filter(transform(wpages, p -> struct($pageFields, filter(p.regions, r -> r.start < (wbegin + length(wtext)) AND (r.start + r.length) > wbegin) as regions)), p -> size(p.regions) > 0)"))
+          .pageBox("wpages")
           .write.format(config.outputFormat).save(outFname)
       } else {
         boilerSplit(config, pass, raw).write.format(config.outputFormat).save(outFname)
