@@ -1342,13 +1342,18 @@ transform($pageCol,
 
         }
         pass
-          .withColumn("core", coreAlignment($"wit.alg1", $"wit.alg2"))
-          .select('id, 'start + 'core(0)("_3") as "begin",
-            'core(0)("_4") as "text",
-            $"wit.id" as "wid", $"wit.begin" + 'core(0)("_1") as "wbegin",
-            'core(0)("_2") as "wtext",
-            $"wit.pages" as "wpages")
-          .withColumn("wpages", expr(s"filter(transform(wpages, p -> struct($pageFields, filter(p.regions, r -> r.start < (wbegin + length(wtext)) AND (r.start + r.length) > wbegin) as regions)), p -> size(p.regions) > 0)"))
+          // .withColumn("core", coreAlignment($"wit.alg1", $"wit.alg2"))
+          // .select('id, 'start + 'core(0)("_3") as "begin",
+          //   'core(0)("_4") as "text",
+          //   $"wit.id" as "wid", $"wit.begin" + 'core(0)("_1") as "wbegin",
+          //   'core(0)("_2") as "wtext",
+          //   $"wit.pages" as "wpages")
+          // .withColumn("wpages", expr(s"filter(transform(wpages, p -> struct($pageFields, filter(p.regions, r -> r.start < (wbegin + length(wtext)) AND (r.start + r.length) > wbegin) as regions)), p -> size(p.regions) > 0)"))
+          .select('id, 'start as "begin",
+            translate($"wit.alg2", "\u2010-", "-") as "text",
+            $"wit.id" as "wid", $"wit.begin" as "wbegin", $"wit.text" as "wtext",
+            $"wit.alg2" as "talg", $"wit.alg1" as "walg",
+            $"wit.pages" as "wpages", $"wit.pages" as "wpagesTokens")
           .pageBox("wpages")
           .write.format(config.outputFormat).save(outFname)
       } else {
