@@ -58,7 +58,7 @@ of files containing JSON records.  The record for a single document
 with the required `id` and `text` fields, as well as a `series` field,
 would look like:
 ```
-{"id": "d1", "series": "abc", "text": "This is text that&apos;s interpreted as <code>XML</code>; the tags are ignored by default."}
+{"id": "d1", "series": "abc", "text": "This is text."}
 ```
 
 Note that this is must be a single line in the file.  This JSON record
@@ -75,7 +75,7 @@ included in the record for each document will be passed through into
 the output.  In particular, a `date` field, if present, will be used
 to sort passages within each cluster.
 
-Natural language text is redundant, and adding XML markup and JSON
+Natural language text is redundant, and adding markup and JSON
 field names increases the redundancy.  Spark and passim support
 several compression schemes.  For relatively small files, gzip is
 adequate; however, when the input files are large enough that the do
@@ -154,9 +154,6 @@ See the
 for further configuration options.
 
 ## <a name="locations"></a> Marking Locations inside Documents
-
-As mentioned above, the `text` field is interpreted as XML.  The
-parser expands character entities and ignores tags.
 
 Documents may document their extent on physical pages with the `pages` field.  This field is an array of `Page` regions with the following schema (here written in Scala):
 ```

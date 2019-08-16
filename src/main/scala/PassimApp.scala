@@ -312,7 +312,7 @@ object PassimApp {
   }
   implicit class TextTokenizer(df: DataFrame) {
     val tokenizeCol = udf {(text: String) =>
-      val tok = new passim.TagTokenizer()
+      val tok = new passim.PlainTokenizer()
 
       var d = new passim.Document("raw", text)
       tok.tokenize(d)
