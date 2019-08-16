@@ -794,17 +794,18 @@ transform($pageCol,
         .select('info, explode(alignedPassages($"alg.s1", $"alg.s2")) as "pass")
         .selectExpr("info[0].id as id1", "info[1].id as id2",
           "info[0].meta as meta1","info[1].meta as meta2",
-          "info[0].pages as pages1",
+          "info[0].pages as pages1", "info[1].pages as pages2",
           "pass._3 as pairs",
           "info[0].begin + pass._1.begin as b1",
           "info[0].begin + pass._1.end as e1",
           "info[1].begin + pass._2.begin as b2",
           "info[1].begin + pass._2.end as e2")
-        .select('id2 as "id", 'id1 as "src", 'meta1 as "meta", 'pages1 as "pages",
+        .select('id2 as "id", 'id1 as "src", 'meta1 as "meta", 'pages1, 'pages2,
           explode(lineRecord('b1, 'b2, 'pairs)) as "wit")
         .select('id, $"wit.start", $"wit.length",
+          expr(s"filter(transform(pages2, p -> struct($pageFields, filter(p.regions, r -> r.start < (wit.start + wit.length) AND (r.start + r.length) > wit.start) as regions)), p -> size(p.regions) > 0)") as "pages",
           struct('meta,
-            expr(s"filter(transform(pages, p -> struct($pageFields, filter(p.regions, r -> r.start < (wit.begin + length(wit.text)) AND (r.start + r.length) > wit.begin) as regions)), p -> size(p.regions) > 0)") as "pages",
+            expr(s"filter(transform(pages1, p -> struct($pageFields, filter(p.regions, r -> r.start < (wit.begin + length(wit.text)) AND (r.start + r.length) > wit.begin) as regions)), p -> size(p.regions) > 0)") as "pages",
             'src as "id", $"wit.begin", $"wit.text", $"wit.alg1", $"wit.alg2") as "wit")
     }
     def aggregateAlignments(config: Config, corpus: DataFrame, extents: DataFrame): DataFrame = {
@@ -1316,39 +1317,14 @@ transform($pageCol,
           .drop("tlines", "mvars", "variants")
           .write.format(config.outputFormat).save(outFname)
       } else if ( config.linewise ) {
-        val gap = 4
-        val coreAlignment = udf { (alg1: String, alg2: String) =>
-          val re = s"\\-{$gap,}\\s*".r
-          (List((0,0)) ++
-            (re.findAllMatchIn(alg1).map { m => (m.start, m.toString.length) }.toList ++
-              re.findAllMatchIn(alg2).map { m => (m.start, m.toString.length) }.toList).sorted ++
-            List((alg1.length, 0)))
-            .sliding(2)
-            .map { p =>
-            val begin = p(0)._1 + p(0)._2
-            val end = p(1)._1
-            (alg1.substring(0, begin).replaceAll("-", "").length,
-              alg1.substring(begin, end).replaceAll("-", "").replaceAll("\u2010", "-"),
-              alg2.substring(0, begin).replaceAll("-", "").length,
-              alg2.substring(begin, end).replaceAll("-", "").replaceAll("\u2010", "-"))
-          }
-            .filter { p => p._2.length > gap && p._4.length > gap }
-            .toSeq
-
-        }
         pass
-          // .withColumn("core", coreAlignment($"wit.alg1", $"wit.alg2"))
-          // .select('id, 'start + 'core(0)("_3") as "begin",
-          //   'core(0)("_4") as "text",
-          //   $"wit.id" as "wid", $"wit.begin" + 'core(0)("_1") as "wbegin",
-          //   'core(0)("_2") as "wtext",
-          //   $"wit.pages" as "wpages")
-          // .withColumn("wpages", expr(s"filter(transform(wpages, p -> struct($pageFields, filter(p.regions, r -> r.start < (wbegin + length(wtext)) AND (r.start + r.length) > wbegin) as regions)), p -> size(p.regions) > 0)"))
           .select('id, 'start as "begin",
             translate($"wit.alg2", "\u2010-", "-") as "text",
             $"wit.id" as "wid", $"wit.begin" as "wbegin", $"wit.text" as "wtext",
             $"wit.alg2" as "talg", $"wit.alg1" as "walg",
+            'pages as "tpages", 'pages as "tpagesTokens",
             $"wit.pages" as "wpages", $"wit.pages" as "wpagesTokens")
+          .pageBox("tpages")
           .pageBox("wpages")
           .write.format(config.outputFormat).save(outFname)
       } else {
