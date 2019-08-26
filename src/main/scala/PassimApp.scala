@@ -526,9 +526,11 @@ transform($pageCol,
 
     val joint = clusters
       .join(corpus.drop("terms"), "uid")
-      .withColumn("begin", 'termCharBegin('begin))
+      .withColumnRenamed("begin", "bw")
+      .withColumnRenamed("end", "ew")
+      .withColumn("begin", 'termCharBegin('bw))
       .withColumn("end",
-        when('end < size('termCharBegin), 'termCharBegin('end)).otherwise(length('text)))
+        when('ew < size('termCharBegin), 'termCharBegin('ew)).otherwise(length('text)))
       .drop("termCharBegin", "termCharEnd")
       .withColumn(config.text, getPassage(col(config.text), 'begin, 'end))
       .selectRegions("pages")
