@@ -155,8 +155,8 @@ object PassFun {
     var (res1, res2) = (idx1, idx2)
     val pad = " this text is long and should match "
     val ps = pad count { _ == ' ' }
-    val t1 = if ( anchor == "L" ) (pad + text1) else (text1 + pad)
-    val t2 = if ( anchor == "L" ) (pad + text2) else (text2 + pad)
+    val t1 = if ( anchor == "L" ) (pad + text1 + " ") else (" " + text1 + pad)
+    val t2 = if ( anchor == "L" ) (pad + text2 + " ") else (" " + text2 + pad)
     val alg = jaligner.SmithWatermanGotoh.align(new Sequence(t1), new Sequence(t2),
       matchMatrix, 5.0f, 0.5f)
     val s1 = alg.getSequence1()
@@ -167,13 +167,13 @@ object PassFun {
     if ( s1.size > 0 && s2.size > 0 && extra > 2 ) {
       if ( anchor == "L" ) {
         if ( alg.getStart1() == 0 && alg.getStart2() == 0 ) {
-          res1 += s1.count(_ == ' ') - (if (s1(s1.size - 1) == ' ') 1 else 0) - ps + 1
-          res2 += s2.count(_ == ' ') - (if (s2(s2.size - 1) == ' ') 1 else 0) - ps + 1
+          res1 += s1.count(_ == ' ') - ps
+          res2 += s2.count(_ == ' ') - ps
         }
       } else if ( anchor == "R" ) {
         if ( alg.getStart1() + len1 >= t1.size && alg.getStart2() + len2 >= t2.size ) {
-          res1 -= s1.count(_ == ' ') - (if (s1(0) == ' ') 1 else 0) - ps + 1
-          res2 -= s2.count(_ == ' ') - (if (s2(0) == ' ') 1 else 0) - ps + 1
+          res1 -= s1.count(_ == ' ') - ps
+          res2 -= s2.count(_ == ' ') - ps
         }
       }
     }
