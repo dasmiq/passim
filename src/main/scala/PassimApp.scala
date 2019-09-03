@@ -84,6 +84,8 @@ case class PassAlign(id1: String, id2: String,
 
 case class AlignedStrings(s1: String, s2: String, matches: Int, score: Float)
 
+case class AlignedStringsWithOffsets(s1: String, s2: String, b1: Int, b2: Int, e1: Int, e2: Int, matches: Int, score: Float)
+
 case class NewDoc(id: String, text: String, pages: Seq[Page], aligned: Boolean)
 
 case class LinkedSpan(span: Span, links: ArrayBuffer[Long])
@@ -634,7 +636,8 @@ transform($pageCol,
         (if ( s2 != null ) s2.replaceAll("-", "\u2010") else ""),
         config.n, config.gap * config.gap,
         matchMatrix, openGap, contGap)
-      AlignedStrings(chunks.map(_.s1).mkString, chunks.map(_.s2).mkString,
+
+		AlignedStrings(chunks.map(_.s1).mkString, chunks.map(_.s2).mkString,
         chunks.map(_.matches).sum, chunks.map(_.score).sum)
     }
   }
@@ -649,8 +652,27 @@ transform($pageCol,
         (if ( s2 != null ) s2.replaceAll("-", "\u2010") else ""),
         config.n, config.gap * config.gap,
         matchMatrix, openGap, contGap)
-      AlignedStrings(chunks.map(_.s1).mkString, chunks.map(_.s2).mkString,
+
+      //compute the begin and endpoints of the alignment (in characters)
+      // sometimes the alignment returns an empty sequence, so we need to check that hasn't
+      // hapened before trying to calculate endpoints.
+
+      if (chunks.length > 0) {
+        val firstChunk = chunks(0)
+        val b1 = firstChunk.b1
+        val b2 = firstChunk.b2
+        val e1 = b1 + chunks.map(_.s1).mkString.replace("-","").length()
+        val e2 = b2 + chunks.map(_.s2).mkString.replace("-","").length()
+        AlignedStringsWithOffsets(chunks.map(_.s1).mkString, chunks.map(_.s2).mkString, b1, b2, e1, e2,
         chunks.map(_.matches).sum, chunks.map(_.score).sum)
+      } else {
+      	val b1 = 0
+        val b2 = 0
+        val e1 = 0
+        val e2 = 0
+        AlignedStringsWithOffsets(chunks.map(_.s1).mkString, chunks.map(_.s2).mkString, b1, b2, e1, e2,
+        chunks.map(_.matches).sum, chunks.map(_.score).sum)
+      }
     }
   }
 
@@ -891,7 +913,7 @@ transform($pageCol,
       //we will now deduplicate the aggregated docuemnts
       val dedupedlicatedDocs = allDocs.groupBy("seriesStr","seqsList")
                                   .agg(first("seriesStr") as "series",first("seqsList") as "seqs",
-                                  	   collect_list("pairID") as "pairIDs")
+                                       collect_list("pairID") as "pairIDs")
                                   .select("series","seqs","pairIDs")
                                   .withColumn("docID",makeId(col("series"),col("seqs")))
 
@@ -902,7 +924,7 @@ transform($pageCol,
        .drop("t_seq","t_series")
        .groupBy("series","docID")
        .agg(collect_list("text") as "text",
-           collect_list("seq") as "seqs")
+            collect_list("seq") as "seqs")
        .select("docID","seqs","text")
 
       //we will finally add the texts to the dataframe of aggregate documents
@@ -931,9 +953,6 @@ transform($pageCol,
 
     var castSpans = spans.map(PassimApp.rowToExtentPair)
     //now we will aggregate the seq pairs into spans of adjacent extents
-    //
-    // outermost list
-    //   one entry per group of consecutive chunks between the pair of texts
     var aggregatedPairs = Array[Array[Array[Int]]]()
     var usedInAggregate = Array[Int]()
     //for each pair in the set of extent pairs...
@@ -975,10 +994,9 @@ transform($pageCol,
                 var lengthFromBegin2 = nextSpan.begin2
 
                 //if the next pair is not adjacent to the current one in both books, we're done
-                // we're also done if the current span pair ends more than <gap length> tokens from 
-                // the the boundary in both texts or the next one starts more than <gap length> tokens from the boundary in both texts
-                //It might be more efficient to ignore the gap length as an aggregate separator,
-                // to cut down on the number of documents.
+                // that second clause might not actually be needed? It might be actively causing problems.
+                // investigate if we notice odd choices of what to combine or not combine when aggregating
+                // at the chunk level
                 if ((nextPos1 > pos1+1 && nextPos2 > pos2 + 1) || (nextPos2 < pos2)) {
                     finished = true
                     //check if we should look in the next chunk after this one in either text
@@ -1035,6 +1053,34 @@ transform($pageCol,
     val fs = hdfsPath.getFileSystem(spark.sparkContext.hadoopConfiguration)
     val qualified = hdfsPath.makeQualified(fs.getUri, fs.getWorkingDirectory)
     fs.exists(qualified)
+  }
+  //calculates the offset for each seq in a series to determine the series level starting point
+  // of each seq
+  val calculateOffsets = udf { (docs: Seq[Row]) => 
+    var offsets = Array(0)
+    for (index <- docs.indices) {
+        if (index>0) {
+            offsets = offsets :+ (offsets.last + (docs(index-1)(2).asInstanceOf[Int]))
+        }
+    }
+    offsets
+  }
+  //collects all the texts for a given series. This could probably be done more simply with map
+  val concatStrings = udf { (texts: Seq[Row]) =>
+        var allTexts = ""
+        for (index <- texts.indices) {
+            allTexts = allTexts.concat(texts(index)(1).asInstanceOf[String])
+        }
+        allTexts
+  }
+  //calculates the offset for each seq in a series to determine the series level starting point
+  // of each seq
+  val getSeqs = udf { (docs: Seq[Row]) => 
+    var seqs = Array[Int]()
+    for (index <- docs.indices) {
+      seqs = seqs :+ (docs(index)(0).asInstanceOf[Int])
+    }
+    seqs
   }
 
   def main(args: Array[String]) {
@@ -1274,17 +1320,62 @@ transform($pageCol,
       val aggregate = spark.read.json(config.outputPath + "/aggregate." + config.outputFormat)
         .withColumn("pairID", explode('pairIDs)).drop("pairIDs")
 
+      //collect the documents for a given series, so we can compute the series-level offsets of each
+      // document. Also fix some type weirdness. Seq should be an int not a long
+      val seriesLevelCorpus = corpus.withColumn("len",length(col("text"))).withColumn("seq",col("seq").cast(IntegerType))
+                                    .groupBy("series").agg(sort_array(collect_list(struct("seq", "text", "len"))).alias("orderedTexts"))
+                                    .withColumn("seqOffsets",calculateOffsets(col("orderedTexts")))
+                                    .withColumn("seqs",getSeqs(col("orderedTexts")))
+                                    .withColumn("text",concatStrings(col("orderedTexts")))
+                                    .drop("orderedTexts")
+
+      //seriesLevelCorpus.write.json(config.outputPath+"/aggSeries.json")
+      
+      //create a dataframe of (series,seq,offset) triples so the endpoints of alignments
+      // can be properly set
+      //the column renaming simplifies the joins, since it makes the column names unambiguous.
+      // there's probably a better way to do things, but I do not know it
+      val seqOffsets = seriesLevelCorpus.select("series","seqs","seqOffsets")
+                         .withColumn("offsetsWithSeq",arrays_zip(col("seqs"),col("seqOffsets")))
+                         .drop("seqs","seqOffsets")
+                         .withColumn("offsetWithSeq",explode(col("offsetsWithSeq")))
+                         .withColumn("offset",col("offsetWithSeq.seqOffsets"))
+                         .withColumn("seq",col("offsetWithSeq.seqs"))
+                         .select("series","seq","offset")
+                         .withColumnRenamed("series","_series").withColumnRenamed("seq","_seq")
+      
       val fields = aggregate.columns.filter { _ != "pairID" }.map(expr)
 
-      val alignStrings = makeStringAligner(config)
       val swAligner = makeSWAligner(config)
       aggregate.select('pairID, struct(fields:_*) as "info1")
         .join(aggregate.select('pairID, struct(fields:_*) as "info2"), "pairID")
         .filter($"info1.id" < $"info2.id")
-        .withColumn("alg", alignStrings($"info1.text", $"info2.text"))
         .withColumn("swalg", swAligner($"info1.text", $"info2.text"))
+        //how do you extract the columns succinctly?????
+        .select(col("info1.id").alias("id1"), col("info1.seqs").alias("seqs1"), col("info1.series").alias("series1"),  
+                col("info2.id").alias("id2"), col("info2.seqs").alias("seqs2"), col("info2.series").alias("series2"), 
+                col("swalg.b1").alias("b1"), col("swalg.b2").alias("b2"), col("swalg.e1").alias("e1"), 
+                col("swalg.e2").alias("e2"), col("swalg.matches").alias("matches"), 
+                col("swalg.s1").alias("s1"), col("swalg.s2").alias("s2"), col("swalg.score").alias("score"))
+        //add the series level character offsets and set the id to that of
+        // the book the text is taken from
+        .withColumn("beginSeq1",element_at(col("seqs1"),1))
+        .withColumn("beginSeq2",element_at(col("seqs2"),1))
+        //add the offsets to the start points to get the offsets into the entire book
+        .join(seqOffsets,(col("series1")===seqOffsets("_series")) && (col("beginSeq1")===seqOffsets("_seq")))
+        .withColumnRenamed("offset","offset1").drop("_series","_seq")
+        .join(seqOffsets,(col("series2")===seqOffsets("_series")) && (col("beginSeq2")===seqOffsets("_seq")))
+        .withColumnRenamed("offset","offset2").drop("_series","_seq")
+        .withColumn("b1",col("b1")+col("offset1")).withColumn("b2",col("b2")+col("offset2"))
+        .withColumn("e1",col("e1")+col("offset1")).withColumn("e2",col("e2")+col("offset2"))
+        //update the ids to just be the book ids
+        .withColumn("id1",col("series1"))
+        .withColumn("id2",col("series2"))
+        //remove unneeded fields
+        .drop("beginSeq1","beginSeq2","offset1","offset2")
         .write.format(config.outputFormat)
         .save(config.outputPath + "/aggregateAlignments." + config.outputFormat)
+
 
       sys.exit(0)
     }
@@ -1382,53 +1473,5 @@ transform($pageCol,
     }
 
     spark.stop()
-
-    //if the aggregate option was passed in, we must now call main on the aggregated documents
-    // inheriting the config from the current run
-    if ( config.aggregate ) {
-      var command = ""
-      
-      //tildes are used to divide arguments, as there's a comma in the --filterpairs argument
-      command = command.concat("-n~".concat(config.n.toString))
-      command = command.concat("~-l~".concat(config.minDF.toString))
-      command = command.concat("~-u~".concat(config.maxDF.toString))
-      command = command.concat("~-m~".concat(config.minRep.toString))
-      command = command.concat("~-a~".concat(config.minAlg.toString))
-      command = command.concat("~-c~".concat(config.context.toString))
-      command = command.concat("~-o~".concat(config.relOver.toString))
-      command = command.concat("~-M~".concat(config.mergeDiverge.toString))
-      command = command.concat("~-r~".concat(config.maxRep.toString))
-      command = command.concat("~-g~".concat(config.gap.toString))
-      command = command.concat("~-i~".concat("id"))
-      command = command.concat("~-t~".concat("text"))
-      command = command.concat("~-s~".concat("series"))
-
-      if (config.pairwise) {
-        command = command.concat("~--pairwise")
-      }
-
-      if (config.docwise) {
-        command = command.concat("~--docwise")
-      }
-
-      if (config.fields != "") {
-        command = command.concat("~--fields~".concat(config.fields.concat(";pairIDs")))
-      } else {
-      	command = command.concat("~--fields~".concat(config.fields.concat("pairIDs")))
-      }
-
-      //figure out how to restrict our search to doc pairs that share a pairID
-      command = command.concat("~--filterpairs~".concat(config.filterpairs.concat(" AND (size(array_intersect(pairIDs,pairIDs2))>0)")))
-
-      command = command.concat("~--input-format~".concat(config.outputFormat))
-      command = command.concat("~--output-format~".concat(config.outputFormat))
-      command = command.concat("~-w~".concat(config.wordLength.toString))
-
-      //add the input and output paths
-      command = command.concat("~"+config.outputPath+"/aggregate." + config.outputFormat)
-      command = command.concat("~"+config.outputPath+"/aggregateAlignments")
-
-      main(command.split("~"))
-    }
   }
 }
