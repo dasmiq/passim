@@ -1065,6 +1065,16 @@ transform($pageCol,
     }
     offsets
   }
+  //does the same, but at the token level
+  val calculateTokenOffsets = udf { (docs: Seq[Row]) => 
+    var offsets = Array(0)
+    for (index <- docs.indices) {
+        if (index>0) {
+            offsets = offsets :+ (offsets.last + (docs(index-1)(3).asInstanceOf[Int]))
+        }
+    }
+    offsets
+  }
   //collects all the texts for a given series. This could probably be done more simply with map
   val concatStrings = udf { (texts: Seq[Row]) =>
         var allTexts = ""
@@ -1081,6 +1091,15 @@ transform($pageCol,
       seqs = seqs :+ (docs(index)(0).asInstanceOf[Int])
     }
     seqs
+  }
+
+  //given a aligned sequence and an end index, this function counts the number of spaces prior
+  // to that end point, ignoring gaps in the alignment.
+  // This is used to get a quick estimate of the start token index of an alignment.
+  // It migth be wrong, but it will be wrong consistently so it should work out alright. 
+  //It's better than trying to reverse engineer the tokenization
+  val countSpaces = udf { (text: String,endpoint: Int) =>
+    text.replace("-","").slice(0,endpoint).count(_ == ' ')
   }
 
   def main(args: Array[String]) {
@@ -1323,26 +1342,30 @@ transform($pageCol,
       //collect the documents for a given series, so we can compute the series-level offsets of each
       // document. Also fix some type weirdness. Seq should be an int not a long
       val seriesLevelCorpus = corpus.withColumn("len",length(col("text"))).withColumn("seq",col("seq").cast(IntegerType))
-                                    .groupBy("series").agg(sort_array(collect_list(struct("seq", "text", "len"))).alias("orderedTexts"))
+                                    .withColumn("tok",size(col("terms")).cast(IntegerType))
+                                    .groupBy("series").agg(sort_array(collect_list(struct("seq", "text", "len","tok"))).alias("orderedTexts"))
                                     .withColumn("seqOffsets",calculateOffsets(col("orderedTexts")))
+                                    .withColumn("tokOffsets",calculateTokenOffsets(col("orderedTexts")))
                                     .withColumn("seqs",getSeqs(col("orderedTexts")))
                                     .withColumn("text",concatStrings(col("orderedTexts")))
                                     .drop("orderedTexts")
 
+      //corpus.withColumn("tok",size(col("terms")).cast(IntegerType)).select("id","series","tok","seq","text").orderBy("series","seq").write.json(config.outputPath+"/corpus.json")
       //seriesLevelCorpus.write.json(config.outputPath+"/aggSeries.json")
       
       //create a dataframe of (series,seq,offset) triples so the endpoints of alignments
       // can be properly set
       //the column renaming simplifies the joins, since it makes the column names unambiguous.
       // there's probably a better way to do things, but I do not know it
-      val seqOffsets = seriesLevelCorpus.select("series","seqs","seqOffsets")
-                         .withColumn("offsetsWithSeq",arrays_zip(col("seqs"),col("seqOffsets")))
-                         .drop("seqs","seqOffsets")
+      val seqOffsets = seriesLevelCorpus.select("series","seqs","seqOffsets","tokOffsets")
+                         .withColumn("offsetsWithSeq",arrays_zip(col("seqs"),col("seqOffsets"),col("tokOffsets")))
+                         .drop("seqs","seqOffsets","tokOffsets")
                          .withColumn("offsetWithSeq",explode(col("offsetsWithSeq")))
                          .withColumn("offset",col("offsetWithSeq.seqOffsets"))
                          .withColumn("seq",col("offsetWithSeq.seqs"))
-                         .select("series","seq","offset")
-                         .withColumnRenamed("series","_series").withColumnRenamed("seq","_seq")
+                         .withColumn("tok",col("offsetWithSeq.tokOffsets"))
+                         .select("series","seq","offset","tok")
+                         .withColumnRenamed("series","_series").withColumnRenamed("seq","_seq").withColumnRenamed("tok","_tok")
       
       val fields = aggregate.columns.filter { _ != "pairID" }.map(expr)
 
@@ -1352,7 +1375,7 @@ transform($pageCol,
         .filter($"info1.id" < $"info2.id")
         .withColumn("swalg", swAligner($"info1.text", $"info2.text"))
         //how do you extract the columns succinctly?????
-        .select(col("info1.id").alias("id1"), col("info1.seqs").alias("seqs1"), col("info1.series").alias("series1"),  
+        .select(col("info1.text").alias("text1"),col("info2.text").alias("text2"),col("info1.id").alias("id1"), col("info1.seqs").alias("seqs1"), col("info1.series").alias("series1"),  
                 col("info2.id").alias("id2"), col("info2.seqs").alias("seqs2"), col("info2.series").alias("series2"), 
                 col("swalg.b1").alias("b1"), col("swalg.b2").alias("b2"), col("swalg.e1").alias("e1"), 
                 col("swalg.e2").alias("e2"), col("swalg.matches").alias("matches"), 
@@ -1363,11 +1386,16 @@ transform($pageCol,
         .withColumn("beginSeq2",element_at(col("seqs2"),1))
         //add the offsets to the start points to get the offsets into the entire book
         .join(seqOffsets,(col("series1")===seqOffsets("_series")) && (col("beginSeq1")===seqOffsets("_seq")))
-        .withColumnRenamed("offset","offset1").drop("_series","_seq")
+        .withColumnRenamed("offset","offset1").withColumnRenamed("_tok","tokOffset1").drop("_series","_seq")
         .join(seqOffsets,(col("series2")===seqOffsets("_series")) && (col("beginSeq2")===seqOffsets("_seq")))
-        .withColumnRenamed("offset","offset2").drop("_series","_seq")
+        .withColumnRenamed("offset","offset2").withColumnRenamed("_tok","tokOffset2").drop("_series","_seq")
+        .withColumn("bw1",countSpaces(col("text1"),col("b1"))+col("tokOffset1"))
+        .withColumn("bw2",countSpaces(col("text2"),col("b2"))+col("tokOffset2"))
+        .withColumn("ew1",countSpaces(col("text1"),col("e1"))+col("tokOffset1"))
+        .withColumn("ew2",countSpaces(col("text2"),col("e2"))+col("tokOffset2"))
         .withColumn("b1",col("b1")+col("offset1")).withColumn("b2",col("b2")+col("offset2"))
         .withColumn("e1",col("e1")+col("offset1")).withColumn("e2",col("e2")+col("offset2"))
+        .drop("text1","text2")
         //update the ids to just be the book ids
         .withColumn("id1",col("series1"))
         .withColumn("id2",col("series2"))
