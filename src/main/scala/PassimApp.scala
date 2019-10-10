@@ -650,8 +650,9 @@ transform($pageCol,
       val chunks = PassFun.recursivelySWAlignStrings(
         (if ( s1 != null ) s1.replaceAll("-", "\u2010") else ""),
         (if ( s2 != null ) s2.replaceAll("-", "\u2010") else ""),
-        config.n, config.gap * config.gap,
+        (config.n*config.wordLength).toInt, config.gap * config.gap,
         matchMatrix, openGap, contGap)
+      //multiply n by average word length to use longer character ngrams as anchor points for alignment
 
       //compute the begin and endpoints of the alignment (in characters)
       // sometimes the alignment returns an empty sequence, so we need to check that hasn't
@@ -844,7 +845,6 @@ transform($pageCol,
     }
     def aggregateAlignments(config: Config, corpus: DataFrame, extents: DataFrame): DataFrame = {
       import align.sparkSession.implicits._
-      val alignStrings = makeStringAligner(config)
       val neededCols = corpus.select("uid", "seq", config.id, config.group)
       var texts = corpus.select(config.group, "seq","text").withColumnRenamed(config.group,"t_series").withColumnRenamed("seq","t_seq")
 
@@ -1393,6 +1393,10 @@ transform($pageCol,
         .withColumn("bw2",countSpaces(col("text2"),col("b2"))+col("tokOffset2"))
         .withColumn("ew1",countSpaces(col("text1"),col("e1"))+col("tokOffset1"))
         .withColumn("ew2",countSpaces(col("text2"),col("e2"))+col("tokOffset2"))
+        .withColumn("len1",length(col("text1")))
+        .withColumn("len2",length(col("text2")))
+        .withColumn("bDoc1",col("b1")).withColumn("bDoc2",col("b2"))
+        .withColumn("eDoc1",col("e1")).withColumn("eDoc2",col("e2"))
         .withColumn("b1",col("b1")+col("offset1")).withColumn("b2",col("b2")+col("offset2"))
         .withColumn("e1",col("e1")+col("offset1")).withColumn("e2",col("e2")+col("offset2"))
         .drop("text1","text2")
