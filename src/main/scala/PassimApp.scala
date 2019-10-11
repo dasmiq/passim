@@ -1029,17 +1029,68 @@ transform($pageCol,
                 }
             }
             if (j == spans.length) {
-              if (lengthToEnd1<gap) {
+              if (lengthToEnd1 < gap) {
                   aggregate(0) :+= aggregate(0).last + 1
               }
-              if (lengthToEnd2<gap) {
+              if (aggregate(1).last < spans.length-1 && lengthToEnd2<gap) {
                   aggregate(1) :+= aggregate(1).last + 1
               }
               aggregatedPairs :+= aggregate
             }
         }
     }
-    aggregatedPairs
+
+    //now we will merge pairs of adjacent seqs where both sets
+    // of seq numbers abut or overlap on the same side
+    var aggregatedPairsMerged = Array[Array[Array[Int]]]()
+    var usedInMerge = Array[Int]()
+    for (i <- aggregatedPairs.indices) {
+        if (!(usedInMerge contains i)) {
+        	//copy the current pair we're trying to merge into, so we don't modify the original array
+            usedInMerge :+= i
+            var currentPair = aggregatedPairs(i).clone
+
+            //find, if it exists, the next par of spans that overlaps with this pair
+            var j = i+1
+            while (j < aggregatedPairs.length) {
+            	//get the overlap in each text between the pairs of aligned seqs
+                var otherPair = aggregatedPairs(j)
+                var overlap = Array(currentPair(0).intersect(otherPair(0)),currentPair(1).intersect(otherPair(1)))
+                    //abut in text 2
+                if (((overlap(0).length > 0) && (currentPair(1).last == otherPair(1)(0)-1)) || 
+                    //abut in text 1
+                    ((overlap(1).length > 0) && (currentPair(0).last == otherPair(0)(0)-1)) || 
+                    //overlap in both
+                    ((overlap(0).length > 0) && (overlap(1).length > 0))) {
+                    //if there is overlap and the missing spans are later (or earlier) in both texts,
+                    // merge the two spans by adding the missing seq numbers to the span we're merging into
+                    var missingFrom1 = otherPair(0).diff(currentPair(0)).sorted
+                    var missingFrom2 = otherPair(1).diff(currentPair(1)).sorted
+
+                    if ((missingFrom1.length==0) || (missingFrom2.length==0) || 
+                    	//both missing sequences are from before the aligned sections
+                        ((missingFrom1.last < currentPair(0)(0)) && (missingFrom2.last < currentPair(1)(0))) || 
+                        //both missing sequences are from after
+                        ((missingFrom1(0) > currentPair(0).last) && (missingFrom2(0) > currentPair(1).last))) {
+                        
+                        currentPair(0) = (currentPair(0) ++ missingFrom1).sorted
+                        currentPair(1) = (currentPair(1) ++ missingFrom2).sorted
+                        usedInMerge :+= j
+                    }
+                    
+                    j += 1
+                } else {
+                    j += 1
+                }
+            }
+            aggregatedPairsMerged :+= currentPair
+        }
+    
+
+
+    }
+
+    aggregatedPairsMerged
   }
   val makeId = udf { (series: String,seqs: Seq[Int]) => (series+"_"+seqs(0).toString+"-"+seqs.last.toString) }
   val hashId = udf { (id: String) => hashString(id) }
