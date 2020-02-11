@@ -172,7 +172,7 @@ This ensures that documents from the same series are not aligned and, further, e
 
 As an example, consider aligning only document pairs where the "left-hand" document predates the "right-hand" document by 0 to 30 days.  To perform efficient date arithmetic, we use Apache Spark's built-in `date` function to convert a string `date` field to an integer:
 ```
---fields 'date(date) as day' --filterpairs 'day <= day2 AND day2 - day <= 30 AND uid <> uid2'
+--fields 'date(date) as day' --filterpairs 'day <= day2 AND (day2 - day) <= 30 AND uid <> uid2'
 ```
 Since the dates may be equal, we also include the constraint that the hashed document ids (`uid`) be different.  Had we not done this, the output would also have included alignments of every document with itself.  The `uid` field as a hash of the `id` field is always available.  Note also the SQL inequality operator `<>`.
 
