@@ -153,7 +153,7 @@ See the
 [Spark documentation](https://spark.apache.org/docs/latest/index.html)
 for further configuration options.
 
-### Pruning the Alignments
+### Pruning Alignments
 
 The documents input to passim are indexed to determine which pairs should be aligned.  Often, document metadata can provide a priori constraints on which documents should be aligned.  If there were no constraints, every pair of documents in the input would be aligned, in both directions.  By default, however, documents with the same `series` value will not be aliged.  These constraints on alignments are expressed by two arguments to passim: `--fields` and `--filterpairs`.
 
@@ -175,6 +175,16 @@ As an example, consider aligning only document pairs where the "left-hand" docum
 --fields 'date(date) as day' --filterpairs 'day <= day2 AND (day2 - day) <= 30 AND uid <> uid2'
 ```
 Since the dates may be equal, we also include the constraint that the hashed document ids (`uid`) be different.  Had we not done this, the output would also have included alignments of every document with itself.  The `uid` field as a hash of the `id` field is always available.  Note also the SQL inequality operator `<>`.
+
+### Producing Aligned Output
+
+For the purposes of collating related texts or aligning different transcriptions of the same text, one can produce output using the `--docwise` or `--linewise` flags.  Each output record in `out.json` or `out.parquet` will then contain a document or line from the right-hand, "target" text, along with information about corresponding passages in the left-hand, "witness" or "source" text.
+
+In the case of `--docwise` output. each output document contains an array of target line records, and each line record contains zero or more passages from the left-hand side that are aligned to that target line.  Note that we specify "passages" from the left-hand side because the line breaks in the witness, if any, may not correspond to line breaks in the target texts.  Both the target line and witness passage data may contain information about image coordinates, when available.
+
+For `--linewise` output, each output document contains a single newline-delimited line from a target document.  This line is identified by the input document `id` and a character offset `begin` into the input text.  The corresponding witness passage is identified with `wid` and `wbegin`.
+
+In both of these output variants, target lines and witness passages are presented in their original textual form and in their aligned form, with hyphens to pad insertions and deletions.
 
 ## <a name="locations"></a> Marking Locations inside Documents
 
