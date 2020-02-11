@@ -78,7 +78,7 @@ to sort passages within each cluster.
 Natural language text is redundant, and adding markup and JSON
 field names increases the redundancy.  Spark and passim support
 several compression schemes.  For relatively small files, gzip is
-adequate; however, when the input files are large enough that the do
+adequate; however, when the input files are large enough that they do
 not comfortably fit in memory, bzip2 is preferable since programs can
 split it into blocks before decompressing.
 
@@ -143,7 +143,7 @@ Parameter | Default value | Description
 
 Pass parameters to the underlying Spark processes using the
 `SPARK_SUBMIT_ARGS` environment variable.  For example, to run passim
-on a local machine with 10 cores and 200GB of memory, do:
+on a local machine with 10 cores and 200GB of memory, run the following command:
 
 ```
 $ SPARK_SUBMIT_ARGS='--master local[10] --driver-memory 200G --executor-memory 200G' passim input.json output
@@ -152,6 +152,29 @@ $ SPARK_SUBMIT_ARGS='--master local[10] --driver-memory 200G --executor-memory 2
 See the
 [Spark documentation](https://spark.apache.org/docs/latest/index.html)
 for further configuration options.
+
+### Pruning the Alignments
+
+The documents input to passim are indexed to determine which pairs should be aligned.  Often, document metadata can provide a priori constraints on which documents should be aligned.  If there were no constraints, every pair of documents in the input would be aligned, in both directions.  By default, however, documents with the same `series` value will not be aliged.  These constraints on alignments are expressed by two arguments to passim: `--fields` and `--filterpairs`.
+
+The `--fields` argument tells passim which fields in the input records to index when determining which documents to align.  Fields has the syntax of SQL `FROM` clause as implemented by Apache Spark, with the exception that multiple fields are separated by semicolons.  By default, the value of the fields argument is:
+```
+--fields 'hashId(id) as uid;hashId(series) as gid'
+```
+
+Since document and series identifiers can be long strings, passim runs more efficiently if they are hashed to long integers by the (builtin) `hashId` function.
+
+The `--filterpairs` argument is an SQL expression that specifies which pairs of documents are candidates for comparison.  A candidate pair consists of a "left-hand" document, whose field names are identical to those in the input, and a "right-hand" document, whose field names have a "2" appended to them.  The default value for the filterpairs argument is:
+```
+--filterpairs 'gid < gid2'
+```
+This ensures that documents from the same series are not aligned and, further, ensures that any given pair of documents is aligned in only one direction, as determined by the lexicographic ordering of the hashes of their series IDs.
+
+As an example, consider aligning only document pairs where the "left-hand" document predates the "right-hand" document by 0 to 30 days.  To perform efficient date arithmetic, we use Apache Spark's built-in `date` function to convert a string `date` field to an integer:
+```
+--fields 'date(date) as day' --filterpairs 'day <= day2 AND day2 - day <= 30 AND uid <> uid2'
+```
+Since the dates may be equal, we also include the constraint that the hashed document ids (`uid`) be different.  Had we not done this, the output would also have included alignments of every document with itself.  The `uid` field as a hash of the `id` field is always available.  Note also the SQL inequality operator `<>`.
 
 ## <a name="locations"></a> Marking Locations inside Documents
 
