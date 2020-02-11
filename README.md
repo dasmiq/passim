@@ -100,9 +100,9 @@ compressed.
 $ passim input.json,directory-of-json-files,some*.json.bz2 output
 ```
 
-Output is to a directory that, on completion, will contain an
+Output is written to a directory that, on completion, will contain an
 `out.json` directory with `part-*` files rather than a single file.
-This allows multiple workers to efficiently write it (and read it back
+This allows multiple workers to write it efficiently (and read it back
 in) in parallel.  In addition, the output directory should contain the
 parameters used to invoke passim in `conf` and the intermediate
 cluster membership data in `clusters.parquet`.
@@ -132,7 +132,7 @@ alignments between all matching passages, invoke passim with the
 `--pairwise` flag.  These alignments will be in the `align.json` or
 `align.parquet`, depending on which output format you choose.
 
-Some useful parameters are:
+Some other useful parameters are:
 
 Parameter | Default value | Description
 --------- | ------------- | -----------
