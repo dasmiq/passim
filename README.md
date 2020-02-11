@@ -164,7 +164,7 @@ The `--fields` argument tells passim which fields in the input records to index 
 
 Since document and series identifiers can be long strings, passim runs more efficiently if they are hashed to long integers by the (builtin) `hashId` function.
 
-The `--filterpairs` argument is an SQL expression that specifies which pairs of documents are candidates for comparison.  A candidate pair consists of a "left-hand" document, whose field names are identical to those in the input, and a "right-hand" document, whose field names have a "2" appended to them.  The default value for the filterpairs argument is:
+The `--filterpairs` argument is an SQL expression that specifies which pairs of documents are candidates for comparison.  A candidate pair consists of a "left-hand" document, whose field names are identical to those in the input, and a "right-hand" document, whose field names have a "2" appended to them.  This is similar to the left- and right-handed sides of a SQL JOIN; in fact, passim is effectively performing a (massively pruned) self-join on the table of input documents.  The default value for the filterpairs argument is:
 ```
 --filterpairs 'gid < gid2'
 ```
