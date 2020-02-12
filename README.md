@@ -184,7 +184,19 @@ In the case of `--docwise` output. each output document contains an array of tar
 
 For `--linewise` output, each output document contains a single newline-delimited line from a target document.  This line is identified by the input document `id` and a character offset `begin` into the input text.  The corresponding witness passage is identified with `wid` and `wbegin`.
 
-In both of these output variants, target lines and witness passages are presented in their original textual form and in their aligned form, with hyphens to pad insertions and deletions.
+In both of these output variants, target lines and witness passages are presented in their original textual form and in their aligned form, with hyphens to pad insertions and deletions.  An example of a target line aligned to a single witness passage is:
+```
+{
+  "id": "scheffel_ekkehard_1855#f0261z751",
+  "begin": 721,
+  "text": "Grammatik iſt ein hohes Weib, anders erſcheint ſie Holzhackern, an-\n",
+  "wid": "scheffel_ekkehard_1855/0261",
+  "wbegin": 739,
+  "wtext": "Grammatik iſt ein hohes Weib, anders erſcheint ſie HolzhaFern , an=\n",
+  "talg": "Grammatik iſt ein hohes Weib, anders erſcheint ſie Holzhackern-, an‐\n",
+  "walg": "Grammatik iſt ein hohes Weib, anders erſcheint ſie Holzha-Fern , an=\n"
+}
+```
 
 ## <a name="locations"></a> Marking Locations inside Documents
 
