@@ -661,7 +661,7 @@ transform($pageCol,
 
       val corpusFields = ListBuffer(expr("uid"), expr(config.id + " as id"),
         expr(config.text + " as text"), expr("termCharBegin"), expr("termCharEnd"))
-      val algFields = ListBuffer("uid", "id" ,"bw", "ew", "b", "e", "len", "tok", "text")
+      val algFields = ListBuffer("first", "uid", "id", "bw", "ew", "b", "e", "len", "tok", "text")
       if ( corpus.columns.contains("pages") ) {
         corpusFields += expr("pages")
         algFields += "pages"
@@ -686,11 +686,9 @@ transform($pageCol,
         .withColumn("tok", size('termCharBegin))
         .withColumnRenamed("begin", "b")
         .withColumnRenamed("end", "e")
-        .select('mid, 'first, struct(algFields.map(expr):_*) as "info")
+        .select('mid, struct(algFields.map(expr):_*) as "info")
         .groupBy("mid")
-        .agg(first("first") as "sorted", first("info") as "info1", last("info") as "info2")
-        .select(when('sorted, 'info1).otherwise('info2) as "info1",
-          when('sorted, 'info2).otherwise('info1) as "info2")
+        .agg(max("info") as "info1", min("info") as "info2")
         .withColumn("alg", alignStrings($"info1.text", $"info2.text"))
         .select($"info1.*", $"info2.*", $"alg.*")
         .toDF(algFinal:_*)
@@ -702,7 +700,7 @@ transform($pageCol,
 
       fullalign
         .select((cols.filter(_ endsWith "1") ++ cols.filter(_ endsWith "2") ++ Seq("matches", "score")).map(col):_*)
-        .sort('id1, 'id2, 'b1, 'b2)
+        // .sort('id1, 'id2, 'b1, 'b2)
     }
     def boilerPassages(config: Config, corpus: DataFrame): DataFrame = {
       import align.sparkSession.implicits._
@@ -1174,7 +1172,7 @@ transform($pageCol,
     spark.conf.set("spark.sql.shuffle.partitions", corpus.rdd.getNumPartitions * 3)
 
     if ( config.names ) {
-      corpus.select('uid, col(config.id), col(groupCol), size('terms) as "nterms")
+      corpus.select('uid, 'gid, col(config.id), col(groupCol), size('terms) as "nterms")
         .write.save(config.outputPath + "/names.parquet")
       sys.exit(0)
     }
