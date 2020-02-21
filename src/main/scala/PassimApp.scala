@@ -1387,7 +1387,7 @@ transform($pageCol,
         .write.format(config.outputFormat)
         .save(config.outputPath + "/aggregate." + config.outputFormat)
 
-      val aggregate = spark.read.json(config.outputPath + "/aggregate." + config.outputFormat)
+      val aggregate = spark.read.format(config.outputFormat).load(config.outputPath + "/aggregate." + config.outputFormat)
         .withColumn("pairID", explode('pairIDs)).drop("pairIDs")
 
       //collect the documents for a given series, so we can compute the series-level offsets of each
