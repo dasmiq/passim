@@ -1452,6 +1452,8 @@ transform($pageCol,
         .withColumn("e1",col("e1")+col("offset1")).withColumn("e2",col("e2")+col("offset2"))
         .drop("text1","text2")
         //update the ids to just be the book ids
+        .withColumn("idDoc1",col("id1"))
+        .withColumn("idDoc2",col("id2"))
         .withColumn("id1",col("series1"))
         .withColumn("id2",col("series2"))
         //remove unneeded fields
