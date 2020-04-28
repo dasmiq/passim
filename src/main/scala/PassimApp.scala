@@ -1274,20 +1274,20 @@ transform($pageCol,
 
     if ( config.context > 0 ) {
       extents.withContext(config, corpus)
-        .write.format(config.outputFormat)
+        .write.mode("ignore").format(config.outputFormat)
         .save(config.outputPath + "/context." + config.outputFormat)
     }
 
     if (config.pairwise || config.aggregate) {
       val alignments = extents.pairwiseAlignments(config, corpus)
       if ( config.pairwise ) {
-        alignments.write.format(config.outputFormat)
+        alignments.write.mode("ignore").format(config.outputFormat)
           .save(config.outputPath + "/align." + config.outputFormat)
       }
 
       if ( config.aggregate ) {
         extents.aggregateAlignments(config, corpus, extents)
-          .write.format(config.outputFormat)
+          .write.mode("ignore").format(config.outputFormat)
           .save(config.outputPath + "/aggregate." + config.outputFormat)
       }
     }
@@ -1297,8 +1297,6 @@ transform($pageCol,
         extents.boilerPassages(config, corpus).write.parquet(passFname)
       }
       val pass = spark.read.parquet(passFname)
-      val pageFields = pass.select(expr(s"inline(wit.pages)")).columns
-        .filter { _ != "regions" }.map { f => s"p.$f as $f" }.mkString(", ")
       if ( config.docwise ) {
         val textLines = udf { (text: String) =>
           val res = ListBuffer[LineInfo]()
@@ -1338,55 +1336,49 @@ transform($pageCol,
       sys.exit(0)
     }
 
-    if ( !hdfsExists(spark, passFname) ) {
-      extents.mergePassages(config).write.parquet(passFname)
+    extents.mergePassages(config).write.mode("ignore").parquet(passFname)
+
+    val pass = spark.read.parquet(passFname)
+
+    if ( !config.labelPropagation ) {
+      spark.conf.set("spark.sql.shuffle.partitions", spark.sparkContext.defaultParallelism)
     }
 
-    if ( !hdfsExists(spark, clusterFname) ) {
-      val pass = spark.read.parquet(passFname)
+    val passGraph = GraphFrame(
+      pass.select('nid as "id", 'uid, 'gid, 'begin, 'end),
+      pass.select('nid, explode('edges) as "eid")
+        .groupBy("eid").agg(min("nid") as "src", max("nid") as "dst"))
 
-      if ( !config.labelPropagation ) {
-        spark.conf.set("spark.sql.shuffle.partitions", spark.sparkContext.defaultParallelism)
-      }
-
-      val passGraph = GraphFrame(
-        pass.select('nid as "id", 'uid, 'gid, 'begin, 'end),
-        pass.select('nid, explode('edges) as "eid")
-          .groupBy("eid").agg(min("nid") as "src", max("nid") as "dst"))
-
-      val groups = if ( config.labelPropagation ) {
-        passGraph.labelPropagation.maxIter(11).run().withColumnRenamed("label", "cluster")
-      } else {
-        spark.sparkContext.setCheckpointDir(config.outputPath + "/tmp")
-        passGraph.connectedComponents.run().withColumnRenamed("component", "cluster")
-      }
-
-      val merge_spans = udf { (spans: Seq[Row]) =>
-        PassFun.mergeSpansLR(0, spans.map { s => (Span(s.getInt(0), s.getInt(1)), 0L) })
-          .map { _._1 }
-      }
-
-      val clusters =
-        groups.groupBy("cluster", "uid")
-          .agg(merge_spans(collect_list(struct("begin", "end"))) as "spans")
-          .select('cluster, 'uid, explode('spans) as "span")
-          .select('cluster, 'uid, $"span.*")
-      clusters.cache()
-
-      clusters.join(clusters.groupBy("cluster").agg(count("uid") as "size"), "cluster")
-        .select('uid, 'cluster, 'size, 'begin, 'end)
-        .write.parquet(clusterFname)
-
-      clusters.unpersist()
-      if ( !config.labelPropagation ) {
-        spark.conf.set("spark.sql.shuffle.partitions", corpus.rdd.getNumPartitions * 3)
-      }
+    val groups = if ( config.labelPropagation ) {
+      passGraph.labelPropagation.maxIter(11).run().withColumnRenamed("label", "cluster")
+    } else {
+      spark.sparkContext.setCheckpointDir(config.outputPath + "/tmp")
+      passGraph.connectedComponents.run().withColumnRenamed("component", "cluster")
     }
 
-    if ( !hdfsExists(spark, outFname) ) {
-      clusterJoin(config, spark.read.parquet(clusterFname), corpus)
-        .write.format(config.outputFormat).save(outFname)
+    val merge_spans = udf { (spans: Seq[Row]) =>
+      PassFun.mergeSpansLR(0, spans.map { s => (Span(s.getInt(0), s.getInt(1)), 0L) })
+        .map { _._1 }
     }
+
+    val clusters =
+      groups.groupBy("cluster", "uid")
+        .agg(merge_spans(collect_list(struct("begin", "end"))) as "spans")
+        .select('cluster, 'uid, explode('spans) as "span")
+        .select('cluster, 'uid, $"span.*")
+    clusters.cache()
+
+    clusters.join(clusters.groupBy("cluster").agg(count("uid") as "size"), "cluster")
+      .select('uid, 'cluster, 'size, 'begin, 'end)
+      .write.mode("ignore").parquet(clusterFname)
+
+    clusters.unpersist()
+    if ( !config.labelPropagation ) {
+      spark.conf.set("spark.sql.shuffle.partitions", corpus.rdd.getNumPartitions * 3)
+    }
+
+    clusterJoin(config, spark.read.parquet(clusterFname), corpus)
+      .write.mode("ignore").format(config.outputFormat).save(outFname)
 
     spark.stop()
 
