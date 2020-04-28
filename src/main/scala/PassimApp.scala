@@ -1186,28 +1186,26 @@ transform($pageCol,
     if ( config.aggregate && !indexFields.contains(config.group)) indexFields ++= ListBuffer(config.group)
     val termCorpus = corpus.select(indexFields.toList.map(expr):_*)
 
-    if ( !hdfsExists(spark, dfpostFname) ) {
-      val getPostings = makeIndexer(config.n, config.wordLength)
+    val getPostings = makeIndexer(config.n, config.wordLength)
 
-      val postings = termCorpus
-        .withColumn("post", explode(getPostings('terms)))
-        .drop("terms")
-        .withColumn("feat", 'post("feat"))
-        .withColumn("tf", 'post("tf"))
-        .withColumn("post", 'post("post"))
-        .filter { 'tf === 1 }
-        .drop("tf")
+    val posts = termCorpus
+      .withColumn("post", explode(getPostings('terms)))
+      .drop("terms")
+      .withColumn("feat", 'post("feat"))
+      .withColumn("tf", 'post("tf"))
+      .withColumn("post", 'post("post"))
+      .filter { 'tf === 1 }
+      .drop("tf")
 
-      val df = postings.groupBy("feat").count.select('feat, 'count.cast("int") as "df")
-        .filter { 'df >= config.minDF && 'df <= config.maxDF }
+    val df = posts.groupBy("feat").count.select('feat, 'count.cast("int") as "df")
+      .filter { 'df >= config.minDF && 'df <= config.maxDF }
 
-      postings.join(df, "feat").write.save(dfpostFname)
-    }
+    posts.join(df, "feat").write.mode("ignore").save(dfpostFname)
+
     if ( config.postings ) sys.exit(0)
 
-    if ( !hdfsExists(spark, pairsFname) ) {
-      val getPairs =
-        udf { (uid: Long, uid2: Long, post: Seq[Int], post2: Seq[Int], df: Seq[Int]) =>
+    val getPairs =
+      udf { (uid: Long, uid2: Long, post: Seq[Int], post2: Seq[Int], df: Seq[Int]) =>
         val matches = PassFun.increasingMatches((post, post2, df).zipped.toSeq)
         if ( matches.size >= config.minRep ) {
           PassFun.gappedMatches(config.n, config.gap, config.minAlg, matches)
@@ -1216,59 +1214,55 @@ transform($pageCol,
         } else Seq()
       }
 
-      val dfpost = spark.read.load(dfpostFname)
+    val dfpost = spark.read.load(dfpostFname)
 
-      dfpost
-        .join(dfpost.toDF(dfpost.columns.map { f => if ( f == "feat" ) f else f + "2" }:_*),
-          "feat")
-        .filter(config.filterpairs)
-        .select("uid", "uid2", "post", "post2", "df")
-        .groupBy("uid", "uid2")
-        .agg(collect_list("post") as "post", collect_list("post2") as "post2",
-          collect_list("df") as "df")
-        .filter(size('post) >= config.minRep)
-        .select(explode(getPairs('uid, 'uid2, 'post, 'post2, 'df)) as "pair",
-          monotonically_increasing_id() as "mid") // Unique IDs serve as edge IDs in connected component graph
-        .select(explode('pair) as "pass", 'mid)
-        .select($"pass.*", 'mid)
-        .write.parquet(pairsFname) // But we need to cache so IDs don't get reassigned.
+    dfpost
+      .join(dfpost.toDF(dfpost.columns.map { f => if ( f == "feat" ) f else f + "2" }:_*),
+        "feat")
+      .filter(config.filterpairs)
+      .select("uid", "uid2", "post", "post2", "df")
+      .groupBy("uid", "uid2")
+      .agg(collect_list("post") as "post", collect_list("post2") as "post2",
+        collect_list("df") as "df")
+      .filter(size('post) >= config.minRep)
+      .select(explode(getPairs('uid, 'uid2, 'post, 'post2, 'df)) as "pair",
+        monotonically_increasing_id() as "mid") // Unique IDs serve as edge IDs in connected component graph
+      .select(explode('pair) as "pass", 'mid)
+      .select($"pass.*", 'mid)
+      .write.mode("ignore").parquet(pairsFname) // We need to cache so IDs don't get reassigned.
+
+    val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
+    val alignEdge = udf {
+      (idx1: Int, idx2: Int, text1: String, text2: String, anchor: String) =>
+      PassFun.alignEdge(matchMatrix, idx1, idx2, text1, text2, anchor)
     }
 
-    if ( !hdfsExists(spark, extentsFname) ) {
-      val pairs = spark.read.parquet(pairsFname)
+    val extentFields = ListBuffer("uid", "gid", "first", "size(terms) as tok")
+    extentFields += (if ( termCorpus.columns.contains("ref") ) "ref" else "0 as ref")
 
-      val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
-      val alignEdge = udf {
-        (idx1: Int, idx2: Int, text1: String, text2: String, anchor: String) =>
-        PassFun.alignEdge(matchMatrix, idx1, idx2, text1, text2, anchor)
-      }
-
-      val extentFields = ListBuffer("uid", "gid", "first", "size(terms) as tok")
-      extentFields += (if ( termCorpus.columns.contains("ref") ) "ref" else "0 as ref")
-
-      val extent: Int = config.gap * 2/3
-      pairs.join(termCorpus, "uid")
-        .select('mid, 'begin, 'end,
-          struct(extentFields.toList.map(expr):_*) as "info",
-          termSpan('begin - extent, 'begin, 'terms) as "prefix",
-          termSpan('end, 'end + extent, 'terms) as "suffix")
-        .groupBy("mid")
-        .agg(first("info") as "info", last("info") as "info2",
-          alignEdge(first("begin"), last("begin"),
-            first("prefix"), last("prefix"), lit("R")) as "begin",
-          alignEdge(first("end"), last("end"),
-            first("suffix"), last("suffix"), lit("L")) as "end")
-        .filter { ($"end._1" - $"begin._1") >= config.minAlg &&
-          ($"end._2" - $"begin._2") >= config.minAlg }
-        .select(explode(array(struct('mid, $"info.*",
-          ($"end._2" - $"begin._2") as "olen",
-          $"begin._1" as "begin", $"end._1" as "end"),
-          struct('mid, $"info2.*",
-            ($"end._1" - $"begin._1") as "olen",
-            $"begin._2" as "begin", $"end._2" as "end"))) as "pair")
-        .select($"pair.*")
-        .write.parquet(extentsFname)
-    }
+    val extent: Int = config.gap * 2/3
+    spark.read.parquet(pairsFname)
+      .join(termCorpus, "uid")
+      .select('mid, 'begin, 'end,
+        struct(extentFields.toList.map(expr):_*) as "info",
+        termSpan('begin - extent, 'begin, 'terms) as "prefix",
+        termSpan('end, 'end + extent, 'terms) as "suffix")
+      .groupBy("mid")
+      .agg(first("info") as "info", last("info") as "info2",
+        alignEdge(first("begin"), last("begin"),
+          first("prefix"), last("prefix"), lit("R")) as "begin",
+        alignEdge(first("end"), last("end"),
+          first("suffix"), last("suffix"), lit("L")) as "end")
+      .filter { ($"end._1" - $"begin._1") >= config.minAlg &&
+        ($"end._2" - $"begin._2") >= config.minAlg }
+      .select(explode(array(struct('mid, $"info.*",
+        ($"end._2" - $"begin._2") as "olen",
+        $"begin._1" as "begin", $"end._1" as "end"),
+        struct('mid, $"info2.*",
+          ($"end._1" - $"begin._1") as "olen",
+          $"begin._2" as "begin", $"end._2" as "end"))) as "pair")
+      .select($"pair.*")
+      .write.mode("ignore").parquet(extentsFname)
 
     val extents = spark.read.parquet(extentsFname)
 
@@ -1293,9 +1287,7 @@ transform($pageCol,
     }
 
     if ( config.boilerplate || config.docwise || config.linewise) {
-      if ( !hdfsExists(spark, passFname) ) {
-        extents.boilerPassages(config, corpus).write.parquet(passFname)
-      }
+      extents.boilerPassages(config, corpus).write.mode("ignore").parquet(passFname)
       val pass = spark.read.parquet(passFname)
       if ( config.docwise ) {
         val textLines = udf { (text: String) =>
