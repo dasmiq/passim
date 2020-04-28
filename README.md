@@ -97,7 +97,7 @@ Multiple input paths should be separated by commas.  Files may also be
 compressed.
 
 ```
-$ passim input.json,directory-of-json-files,some*.json.bz2 output
+$ passim "{input.json,directory-of-json-files,some*.json.bz2}" output
 ```
 
 Output is written to a directory that, on completion, will contain an
