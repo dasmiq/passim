@@ -665,12 +665,11 @@ transform($pageCol,
     def pairwiseAlignments(config: Config, corpus: DataFrame): DataFrame = {
       import align.sparkSession.implicits._
       val alignStrings = makeStringAligner(config)
-      val meta = corpus.drop("uid", "text", "terms", "termCharBegin", "termCharEnd",
-        "regions", "pages", "locs")
+      val meta = corpus.drop("uid", "text", "regions", "pages", "locs")
 
       val corpusFields = ListBuffer(expr("uid"), expr(config.id + " as id"),
-        expr(config.text + " as text"), expr("termCharBegin"), expr("termCharEnd"))
-      val algFields = ListBuffer("first", "uid", "id", "bw", "ew", "b", "e", "len", "tok", "text")
+        expr(config.text + " as text"))
+      val algFields = ListBuffer("first", "uid", "id", "begin", "end", "len", "text")
       if ( corpus.columns.contains("pages") ) {
         corpusFields += expr("pages")
         algFields += "pages"
@@ -683,18 +682,10 @@ transform($pageCol,
 
       val fullalign = align.drop("gid")
         .join(corpus.select(corpusFields:_*), "uid")
-        .withColumn("bw", 'begin)
-        .withColumn("ew", 'end)
-        .withColumn("begin", 'termCharBegin('bw))
-        .withColumn("end",
-          when('ew < size('termCharBegin), 'termCharBegin('ew)).otherwise(length('text)))
         .selectRegions("pages")
         .selectLocs("locs")
         .withColumn("len", length('text))
         .withColumn("text", getPassage('text, 'begin, 'end))
-        .withColumn("tok", size('termCharBegin))
-        .withColumnRenamed("begin", "b")
-        .withColumnRenamed("end", "e")
         .select('mid, struct(algFields.map(expr):_*) as "info")
         .groupBy("mid")
         .agg(max("info") as "info1", min("info") as "info2")
@@ -1179,7 +1170,6 @@ transform($pageCol,
     val corpus = raw.na.drop(Seq(config.id, config.text))
       .withColumn("uid", hashId(col(config.id)))
       .withColumn("gid", hashId(col(groupCol)))
-      .tokenize(config.text)
 
     spark.conf.set("spark.sql.shuffle.partitions", corpus.rdd.getNumPartitions * 3)
 
