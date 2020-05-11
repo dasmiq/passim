@@ -10,7 +10,7 @@ import org.apache.spark.storage.StorageLevel
 import org.apache.hadoop.fs.{FileSystem,Path}
 
 import collection.JavaConversions._
-import scala.collection.mutable.{ArrayBuffer, ListBuffer}
+import scala.collection.mutable.{ArrayBuffer, ListBuffer, StringBuilder}
 import scala.util.Try
 
 import java.security.MessageDigest
@@ -156,9 +156,8 @@ object PassFun {
     idx1: Int, idx2: Int, text1: String, text2: String, anchor: String) = {
     var (res1, res2) = (idx1, idx2)
     val pad = " this text is long and should match "
-    val ps = pad count { _ == ' ' }
-    val t1 = if ( anchor == "L" ) (pad + text1 + " ") else (" " + text1 + pad)
-    val t2 = if ( anchor == "L" ) (pad + text2 + " ") else (" " + text2 + pad)
+    val t1 = if ( anchor == "L" ) (pad + text1) else (text1 + pad)
+    val t2 = if ( anchor == "L" ) (pad + text2) else (text2 + pad)
     val alg = jaligner.SmithWatermanGotoh.align(new Sequence(t1), new Sequence(t2),
       matchMatrix, 5.0f, 0.5f)
     val s1 = alg.getSequence1()
@@ -169,13 +168,13 @@ object PassFun {
     if ( s1.size > 0 && s2.size > 0 && extra > 2 ) {
       if ( anchor == "L" ) {
         if ( alg.getStart1() == 0 && alg.getStart2() == 0 ) {
-          res1 += s1.count(_ == ' ') - ps
-          res2 += s2.count(_ == ' ') - ps
+          res1 += len1 - pad.size
+          res2 += len2 - pad.size
         }
       } else if ( anchor == "R" ) {
         if ( alg.getStart1() + len1 >= t1.size && alg.getStart2() + len2 >= t2.size ) {
-          res1 -= s1.count(_ == ' ') - ps
-          res2 -= s2.count(_ == ' ') - ps
+          res1 -= len1 - pad.size
+          res2 -= len2 - pad.size
         }
       }
     }
@@ -396,18 +395,28 @@ transform($pageCol,
   }
 
   def makeIndexer(n: Int, wordLength: Double) = {
-    val minFeatLen: Double = wordLength * n
-    udf { (terms: Seq[String]) =>
-      terms.sliding(n)
-        .zipWithIndex
-        .filter { _._1.map(_.size).sum >= minFeatLen }
-        .map { case (s, pos) => (hashString(s.mkString("~")), pos) }
-        .toArray
-        .groupBy(_._1)
-      // Store the count and first posting; could store
-      // some other fixed number of postings.
-        .map { case (feat, post) => Post(feat, post.size, post(0)._2) }
-        .toSeq
+    val minFeatLen: Int = (wordLength * n).ceil.toInt
+    udf { (text: String) =>
+      val res = new ListBuffer[Post]
+      val tf = new scala.collection.mutable.HashMap[Long, Int].withDefaultValue(0)
+      for ( i <- 0 until text.length ) {
+        if ( text(i).isLetterOrDigit ) {
+          val buf = new StringBuilder
+          var j = i + 1
+          while ( j < text.length && buf.size < minFeatLen ) {
+            if ( text(j).isLetterOrDigit ) {
+              buf += text(j)
+            }
+            j += 1
+          }
+          if ( buf.length >= minFeatLen ) {
+            val key = hashString(buf.toString)
+            tf(key) += 1
+            res += Post(key, tf(key), i)
+          }
+        }
+      }
+      res.toSeq
     }
   }
 
@@ -1019,7 +1028,10 @@ transform($pageCol,
     terms.slice(Math.max(0, Math.min(terms.size, begin)),
       Math.max(0, Math.min(terms.size, end))).mkString(" ")
   }
-  val getPassage = udf { (text: String, begin: Int, end: Int) => text.substring(begin, end) }
+  val getPassage = udf { (text: String, begin: Int, end: Int) =>
+    text.substring(Math.max(0, Math.min(text.length, begin)),
+      Math.max(0, Math.min(text.length, end)))
+  }
   val lineStart = udf { (text: String, begin: Int) =>
     var start = begin
     while ( start > 0 && (begin - start) < 20 && text.charAt(start - 1) != '\n' ) {
@@ -1177,7 +1189,7 @@ transform($pageCol,
       sys.exit(0)
     }
 
-    val indexFields = ListBuffer("uid", "gid", "terms")
+    val indexFields = ListBuffer("uid", "gid", config.text)
     if ( config.fields != "" ) indexFields ++= config.fields.split(";")
     if ( config.aggregate && !indexFields.contains("seq")) indexFields ++= ListBuffer("seq")
     if ( config.aggregate && !indexFields.contains(config.id)) indexFields ++= ListBuffer(config.id)
@@ -1187,8 +1199,8 @@ transform($pageCol,
     val getPostings = makeIndexer(config.n, config.wordLength)
 
     val posts = termCorpus
-      .withColumn("post", explode(getPostings('terms)))
-      .drop("terms")
+      .withColumn("post", explode(getPostings(col(config.text))))
+      .drop(config.text)
       .withColumn("feat", 'post("feat"))
       .withColumn("tf", 'post("tf"))
       .withColumn("post", 'post("post"))
@@ -1235,16 +1247,17 @@ transform($pageCol,
       PassFun.alignEdge(matchMatrix, idx1, idx2, text1, text2, anchor)
     }
 
-    val extentFields = ListBuffer("uid", "gid", "first", "size(terms) as tok")
+    val extentFields = ListBuffer("uid", "gid", "first")
     extentFields += (if ( termCorpus.columns.contains("ref") ) "ref" else "0 as ref")
 
-    val extent: Int = config.gap * 2/3
+    val extent: Int = (config.gap * config.wordLength * 2/3).toInt
     spark.read.parquet(pairsFname)
       .join(termCorpus, "uid")
       .select('mid, 'begin, 'end,
         struct(extentFields.toList.map(expr):_*) as "info",
-        termSpan('begin - extent, 'begin, 'terms) as "prefix",
-        termSpan('end, 'end + extent, 'terms) as "suffix")
+        getPassage(col(config.text), 'begin - extent, 'begin) as "prefix",
+        getPassage(col(config.text), 'begin, 'end) as "alg",
+        getPassage(col(config.text), 'end, 'end + extent) as "suffix")
       .groupBy("mid")
       .agg(first("info") as "info", last("info") as "info2",
         alignEdge(first("begin"), last("begin"),
