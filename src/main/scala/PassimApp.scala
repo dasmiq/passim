@@ -542,13 +542,7 @@ transform($pageCol,
     val dateSort = if ( cols.contains("date") ) "date" else config.id
 
     val joint = clusters
-      .join(corpus.drop("terms"), "uid")
-      .withColumnRenamed("begin", "bw")
-      .withColumnRenamed("end", "ew")
-      .withColumn("begin", 'termCharBegin('bw))
-      .withColumn("end",
-        when('ew < size('termCharBegin), 'termCharBegin('ew)).otherwise(length('text)))
-      .drop("termCharBegin", "termCharEnd")
+      .join(corpus, "uid")
       .withColumn(config.text, getPassage(col(config.text), 'begin, 'end))
       .selectRegions("pages")
       .selectLocs("locs")
@@ -578,16 +572,11 @@ transform($pageCol,
     def withContext(config: Config, corpus: DataFrame): DataFrame = {
       import pass.sparkSession.implicits._
       pass
-        .join(corpus.drop("gid", "terms", "regions", "pages", "locs"), "uid")
-        .withColumn("bw", 'begin)
-        .withColumn("ew", 'end)
-        .withColumn("begin", 'termCharBegin('bw))
-        .withColumn("end",
-          when('ew < size('termCharBegin), 'termCharBegin('ew)).otherwise(length('text)))
+        .join(corpus.drop("gid", "regions", "pages", "locs"), "uid")
         .withColumn("s", getPassage('text, 'begin, 'end))
-        .withColumn("before", getPassage('text, when('bw - config.context <= 0, 0).otherwise('termCharBegin('bw - config.context)), 'begin))
-        .withColumn("after", getPassage('text, 'end, when('ew + config.context >= size('termCharEnd), length('text)).otherwise('termCharEnd('ew + config.context))))
-        .drop("text", "termCharBegin", "termCharEnd")
+        .withColumn("before", getPassage('text, when('begin - config.context <= 0, 0).otherwise('bw - config.context), 'begin))
+        .withColumn("after", getPassage('text, 'end, when('end + config.context >= length('text), length('text)).otherwise('end + config.context)))
+        .drop("text")
         .withColumnRenamed("s", "text")
     }
   }
