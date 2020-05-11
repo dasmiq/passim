@@ -771,6 +771,25 @@ transform($pageCol,
           WitInfo(off2 - s2.length, s2.length, off1 - s1.length, s1, p.getString(2), p.getString(3))
         }
       }
+      val pageSelect = udf {
+        (pages: Seq[Row], begin: Int, end: Int) =>
+        val pp = if ( pages == null ) {
+          Seq[Page]()
+        } else {
+          Try(pages.map(PassimApp.rowToPage)).getOrElse(Seq[Page]())
+        }
+        if ( pp.size == 0 ) {
+          Seq[Page]()
+        } else {
+          val page = pp(0)
+          Seq(Page(page.id, page.seq, page.width, page.height, -10, page.regions))
+          // if ( reg.size > 100 ) {
+          //   Seq(pp(0).copy(regions = (reg.slice(94, 99))))
+          // } else {
+          //   Seq[Page]()
+          // }
+        }
+      }
       val alignStrings = makeStringAligner(config, openGap = 1)
       val pageFields = corpus.select(expr(s"inline(pages)")).columns
         .filter { _ != "regions" }.map { f => s"p.$f as $f" }.mkString(", ")
@@ -785,9 +804,10 @@ transform($pageCol,
         .withColumn("end",
           lineStop('text,
             when('end < size('termCharBegin), 'termCharBegin('end)).otherwise(length('text))))
-        .withColumn("pages",
-          expr(s"filter(transform(pages, p -> struct($pageFields, filter(p.regions, r -> r.start < end AND (r.start + r.length) > begin) as regions)), p -> size(p.regions) > 0)"))
-        .select('mid, struct('first, 'id, 'meta, 'pages, 'begin, 'end,
+        // .withColumn("pages",
+        //   expr(s"filter(transform(pages, p -> struct($pageFields, filter(p.regions, r -> r.start < end AND (r.start + r.length) > begin) as regions)), p -> size(p.regions) > 0)"))
+        .select('mid, struct('first, 'id, 'meta, pageSelect('pages, 'begin, 'end) as "pages",
+          'begin, 'end,
           getPassage('text, 'begin, 'end) as "text") as "info")
         .groupBy("mid")
         .agg(sort_array(collect_list("info"), false) as "info") // "first" == true sorts first
