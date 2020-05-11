@@ -780,11 +780,9 @@ transform($pageCol,
       align.drop("gid")
         .join(corpus.select('uid, col(config.id) as "id", col(config.text) as "text",
           struct(metaFields.toList.map(expr):_*) as "meta",
-          'termCharBegin, 'termCharEnd, 'pages), "uid")
-        .withColumn("begin", lineStart('text, 'termCharBegin('begin)))
-        .withColumn("end",
-          lineStop('text,
-            when('end < size('termCharBegin), 'termCharBegin('end)).otherwise(length('text))))
+          'pages), "uid")
+        .withColumn("begin", lineStart('text, 'begin))
+        .withColumn("end", lineStop('text, 'end))
         .withColumn("pages",
           expr(s"filter(transform(pages, p -> struct($pageFields, filter(p.regions, r -> r.start < end AND (r.start + r.length) > begin) as regions)), p -> size(p.regions) > 0)"))
         .select('mid, struct('first, 'id, 'meta, 'pages, 'begin, 'end,
