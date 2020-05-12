@@ -22,6 +22,7 @@ import org.graphframes._
 case class Config(version: String = BuildInfo.version,
   boilerplate: Boolean = false,
   labelPropagation: Boolean = false,
+  floatingNgrams: Boolean = false,
   n: Int = 5, minDF: Int = 2, maxDF: Int = 100, minRep: Int = 5, minAlg: Int = 20,
   gap: Int = 100, relOver: Double = 0.8, mergeDiverge: Double = 0.3, maxRep: Int = 10,
   minLines: Int = 5,
@@ -394,18 +395,19 @@ transform($pageCol,
     }
   }
 
-  def makeIndexer(n: Int, wordLength: Double) = {
+  def makeIndexer(n: Int, wordLength: Double, floatingNgrams: Boolean) = {
     val minFeatLen: Int = (wordLength * n).ceil.toInt
     udf { (text: String) =>
       val res = new ListBuffer[Post]
       val tf = new scala.collection.mutable.HashMap[Long, Int].withDefaultValue(0)
       for ( i <- 0 until text.length ) {
-        if ( text(i).isLetterOrDigit ) {
+        if ( text(i).isLetterOrDigit
+          && (floatingNgrams || (i == 0) || !text(i-1).isLetterOrDigit) ) {
           val buf = new StringBuilder
           var j = i + 1
           while ( j < text.length && buf.size < minFeatLen ) {
             if ( text(j).isLetterOrDigit ) {
-              buf += text(j)
+              buf += text(j) // TODO: I forgot about case!
             }
             j += 1
           }
@@ -1058,6 +1060,8 @@ transform($pageCol,
         c.copy(boilerplate = true) } text("Detect boilerplate within groups.")
       opt[Unit]("labelPropagation") action { (_, c) =>
         c.copy(labelPropagation = true) } text("Cluster with label propagation.")
+      opt[Unit]("floating-ngrams") action { (_, c) =>
+        c.copy(floatingNgrams = true) } text("Allow ngrams to float from word boundaries.")
       opt[Int]('n', "n") action { (x, c) => c.copy(n = x) } validate { x =>
         if ( x > 0 ) success else failure("n-gram order must be > 0")
       } text("index n-gram features; default=5")
@@ -1173,7 +1177,7 @@ transform($pageCol,
     if ( config.aggregate && !indexFields.contains(config.group)) indexFields ++= ListBuffer(config.group)
     val termCorpus = corpus.select(indexFields.toList.map(expr):_*)
 
-    val getPostings = makeIndexer(config.n, config.wordLength)
+    val getPostings = makeIndexer(config.n, config.wordLength, config.floatingNgrams)
 
     val posts = termCorpus
       .withColumn("post", explode(getPostings(col(config.text))))
