@@ -313,27 +313,6 @@ object PassimApp {
     }
   }
   implicit class TextTokenizer(df: DataFrame) {
-    val tokenizeCol = udf {(text: String) =>
-      val tok = new passim.PlainTokenizer()
-
-      var d = new passim.Document("raw", text)
-      tok.tokenize(d)
-
-      TokText(d.terms.toSeq.toArray,
-        d.termCharBegin.map(_.toInt).toArray,
-        d.termCharEnd.map(_.toInt).toArray)
-    }
-    def tokenize(colName: String): DataFrame = {
-      if ( df.columns.contains("terms") ) {
-        df
-      } else {
-        df.withColumn("_tokens", tokenizeCol(col(colName)))
-          .withColumn("terms", col("_tokens")("terms"))
-          .withColumn("termCharBegin", col("_tokens")("termCharBegin"))
-          .withColumn("termCharEnd", col("_tokens")("termCharEnd"))
-          .drop("_tokens")
-      }
-    }
     def pageBox(pageCol: String): DataFrame = {
       val pageFields = df.select(expr(s"inline($pageCol)")).columns
         .filter { _ != "regions" }.map { f => s"p.$f as $f" }.mkString(", ")
@@ -407,7 +386,7 @@ transform($pageCol,
           var j = i + 1
           while ( j < text.length && buf.size < minFeatLen ) {
             if ( text(j).isLetterOrDigit ) {
-              buf += text(j) // TODO: I forgot about case!
+              buf += text(j).toLower
             }
             j += 1
           }
