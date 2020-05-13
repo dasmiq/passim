@@ -132,14 +132,17 @@ alignments between all matching passages, invoke passim with the
 `--pairwise` flag.  These alignments will be in the `align.json` or
 `align.parquet`, depending on which output format you choose.
 
+By default, passim starts indexing character n-grams at word boundaries.  If your text is very noisy, you can index other n-grams, starting at the middle of words, with the `--floating-ngrams` flag.
+
 Some other useful parameters are:
 
 Parameter | Default value | Description
 --------- | ------------- | -----------
 `--n` | 5 | N-gram order for text-reuse detection
 `--max-series` | 100 | Maximum document frequency of n-grams used.
-`--min-match` | 5 | Minimum number of matching n-grams between two documents.
-`--relative-overlap` | 0.5 | Proportion that two different aligned passages from the same document must overlap to be clustered together, as measured on the longer passage.
+`-m` or `--min-match` | 5 | Minimum number of matching n-grams between two documents.
+`-o` or `--relative-overlap` | 0.5 | Proportion that two different aligned passages from the same document must overlap to be clustered together, as measured on the longer passage.
+`-w` or `--word-length` | 2.0 | Minimum average word length
 
 Pass parameters to the underlying Spark processes using the
 `SPARK_SUBMIT_ARGS` environment variable.  For example, to run passim
