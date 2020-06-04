@@ -1316,7 +1316,7 @@ transform($pageCol,
           .withColumn("tlines", textLines('text))
           .withColumn("mvars", map_from_arrays($"variants.start", $"variants.wits"))
           .withColumn("lines",
-            expr("transform(tlines, r -> struct(r.text as text, mvars[r.start] as wits))"))
+            expr("transform(tlines, r -> struct(r.start as begin, r.text as text, mvars[r.start] as wits))"))
           .drop("tlines", "mvars", "variants")
           .write.format(config.outputFormat).save(outFname)
       } else if ( config.linewise ) {
