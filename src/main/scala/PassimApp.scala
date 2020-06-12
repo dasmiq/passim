@@ -34,6 +34,7 @@ case class Config(version: String = BuildInfo.version,
   names: Boolean = false, postings: Boolean = false,
   id: String = "id", group: String = "series", text: String = "text",
   fields: String = "",  filterpairs: String = "gid < gid2",
+  metaFields: String = "pages;date;gold",
   inputFormat: String = "json", outputFormat: String = "json",
   schemaPath: String = "",
   inputPaths: String = "", outputPath: String = "")
@@ -742,20 +743,19 @@ transform($pageCol,
         }
       }
       val alignStrings = makeStringAligner(config, openGap = 1)
-      val pageFields = corpus.select(expr(s"inline(pages)")).columns
-        .filter { _ != "regions" }.map { f => s"p.$f as $f" }.mkString(", ")
+      // val pageFields = corpus.select(expr(s"inline(pages)")).columns
+      //   .filter { _ != "regions" }.map { f => s"p.$f as $f" }.mkString(", ")
       val metaFields = ListBuffer[String]()
-      if ( corpus.columns.contains("date") ) metaFields += "date"
-      metaFields += (if ( corpus.columns.contains("gold") ) "gold" else "0 as gold")
+      metaFields ++= config.metaFields.split(";")
+        .filter { f => f.contains(' ') || corpus.columns.contains(f) }
       align.drop("gid")
         .join(corpus.select('uid, col(config.id) as "id", col(config.text) as "text",
-          struct(metaFields.toList.map(expr):_*) as "meta",
-          'pages), "uid")
+          struct(metaFields.toList.map(expr):_*) as "meta"), "uid")
         .withColumn("begin", lineStart('text, 'begin))
         .withColumn("end", lineStop('text, 'end))
-        .withColumn("pages",
-          expr(s"filter(transform(pages, p -> struct($pageFields, filter(p.regions, r -> r.start < end AND (r.start + r.length) > begin) as regions)), p -> size(p.regions) > 0)"))
-        .select('mid, struct('first, 'id, 'meta, 'pages, 'begin, 'end,
+        // .withColumn("pages",
+        //   expr(s"filter(transform(pages, p -> struct($pageFields, filter(p.regions, r -> r.start < end AND (r.start + r.length) > begin) as regions)), p -> size(p.regions) > 0)"))
+        .select('mid, struct('first, 'id, 'meta, 'begin, 'end,
           getPassage('text, 'begin, 'end) as "text") as "info")
         .groupBy("mid")
         .agg(sort_array(collect_list("info"), false) as "info") // "first" == true sorts first
@@ -763,18 +763,17 @@ transform($pageCol,
         .select('info, explode(alignedPassages($"alg.s1", $"alg.s2")) as "pass")
         .selectExpr("info[0].id as id1", "info[1].id as id2",
           "info[0].meta as meta1","info[1].meta as meta2",
-          "info[0].pages as pages1", "info[1].pages as pages2",
           "pass._3 as pairs",
           "info[0].begin + pass._1.begin as b1",
           "info[0].begin + pass._1.end as e1",
           "info[1].begin + pass._2.begin as b2",
           "info[1].begin + pass._2.end as e2")
-        .select('id2 as "id", 'id1 as "src", 'meta1 as "meta", 'pages1, 'pages2,
+        .select('id2 as "id", 'id1 as "src", 'meta1 as "meta",
           explode(lineRecord('b1, 'b2, 'pairs)) as "wit")
         .select('id, $"wit.start", $"wit.length",
-          expr(s"filter(transform(pages2, p -> struct($pageFields, filter(p.regions, r -> r.start < (wit.start + wit.length) AND (r.start + r.length) > wit.start) as regions)), p -> size(p.regions) > 0)") as "pages",
+          // expr(s"filter(transform(pages2, p -> struct($pageFields, filter(p.regions, r -> r.start < (wit.start + wit.length) AND (r.start + r.length) > wit.start) as regions)), p -> size(p.regions) > 0)") as "pages",
           struct('meta,
-            expr(s"filter(transform(pages1, p -> struct($pageFields, filter(p.regions, r -> r.start < (wit.begin + length(wit.text)) AND (r.start + r.length) > wit.begin) as regions)), p -> size(p.regions) > 0)") as "pages",
+            // expr(s"filter(transform(pages1, p -> struct($pageFields, filter(p.regions, r -> r.start < (wit.begin + length(wit.text)) AND (r.start + r.length) > wit.begin) as regions)), p -> size(p.regions) > 0)") as "pages",
             'src as "id", $"wit.begin", $"wit.text", $"wit.alg1", $"wit.alg2") as "wit")
     }
     def aggregateAlignments(config: Config, corpus: DataFrame, extents: DataFrame): DataFrame = {
@@ -1084,6 +1083,8 @@ transform($pageCol,
         c.copy(filterpairs = x) } text("Constraint on posting pairs; default=gid < gid2")
       opt[String]("fields") action { (x, c) =>
         c.copy(fields = x) } text("Semicolon-delimited list of fields to index")
+      opt[String]("metaFields") action { (x, c) =>
+        c.copy(metaFields = x) } text("Semicolon-delimited list of fields in alignments")
       opt[String]("input-format") action { (x, c) =>
         c.copy(inputFormat = x) } text("Input format; default=json")
       opt[String]("schema-path") action { (x, c) =>
