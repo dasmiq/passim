@@ -25,6 +25,7 @@ case class Config(version: String = BuildInfo.version,
   floatingNgrams: Boolean = false,
   n: Int = 5, minDF: Int = 2, maxDF: Int = 100, minRep: Int = 5, minAlg: Int = 20,
   gap: Int = 100, relOver: Double = 0.8, mergeDiverge: Double = 0.3, maxRep: Int = 10,
+  openGap: Float = 5.0f, contGap: Float = 0.5f,
   minLines: Int = 5,
   context: Int = 0,
   wordLength: Double = 2,
@@ -154,15 +155,16 @@ object PassFun {
   // TODO: The right thing to do is to force the alignment to go
   // through the right or left corner, but for now we hack it by
   // padding the left or right edge with duplicate text.
-  def alignEdge(matchMatrix: jaligner.matrix.Matrix,
-    idx1: Int, idx2: Int, text1: String, text2: String, anchor: String) = {
+  def alignEdge(idx1: Int, idx2: Int, text1: String, text2: String, anchor: String,
+    openGap: Float = 5.0f, contGap: Float = 0.5f) = {
+    val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
     var (res1, res2) = (idx1, idx2)
     val pad = " this text is long and should match "
     val t1 = if ( anchor == "L" ) (pad + text1) else (text1 + pad)
     val t2 = if ( anchor == "L" ) (pad + text2) else (text2 + pad)
     val alg = jaligner.SmithWatermanGotoh.align(new Sequence(t1.replaceAll("-", "\u2010")),
       new Sequence(t2.replaceAll("-", "\u2010")),
-      matchMatrix, 5.0f, 0.5f)
+      matchMatrix, openGap, contGap)
     val s1 = alg.getSequence1()
     val s2 = alg.getSequence2()
     val len1 = s1.size - s1.count(_ == '-')
@@ -1064,6 +1066,10 @@ transform($pageCol,
         c.copy(mergeDiverge = x) } text("Maximum length divergence for merging extents; default=0.3")
       opt[Int]('r', "max-repeat") action { (x, c) =>
         c.copy(maxRep = x) } text("Maximum repeat of one series in a cluster; default=10")
+      opt[Double]("openGap") action { (x, c) =>
+        c.copy(openGap = x.toFloat) } text("Cost of opening an alignment gap; default=5.0")
+      opt[Double]("contGap") action { (x, c) =>
+        c.copy(contGap = x.toFloat) } text("Cost of continuing an alignment gap; default=0.5")
       opt[Unit]('p', "pairwise") action { (_, c) =>
         c.copy(pairwise = true) } text("Output pairwise alignments")
       opt[Unit]('d', "docwise") action { (_, c) =>
@@ -1203,10 +1209,9 @@ transform($pageCol,
       .select($"pass.*", 'mid)
       .write.mode("ignore").parquet(pairsFname) // We need to cache so IDs don't get reassigned.
 
-    val matchMatrix = jaligner.matrix.MatrixGenerator.generate(2, -1)
     val alignEdge = udf {
       (idx1: Int, idx2: Int, text1: String, text2: String, anchor: String) =>
-      PassFun.alignEdge(matchMatrix, idx1, idx2, text1, text2, anchor)
+      PassFun.alignEdge(idx1, idx2, text1, text2, anchor, config.openGap, config.contGap)
     }
 
     val extentFields = ListBuffer("uid", "gid", "first")
