@@ -700,16 +700,16 @@ transform($pageCol,
         var b1 = 0
         var b2 = 0
         val buf = ArrayBuffer[(Int, Double, Int, Int, String, String, String, String)]()
-        for ( end <- 1 until s2.size ) {
-          if ( s2(end) == '\n' ) {
-            val alg1 = s1.substring(start, end+1)
-            val alg2 = s2.substring(start, end+1)
+        for ( end <- 1 to s2.size ) {
+          if ( end == s2.size || s2(end-1) == '\n' ) {
+            val alg1 = s1.substring(start, end)
+            val alg2 = s2.substring(start, end)
             val t1 = alg1.replaceAll("-", "").replaceAll("\u2010", "-")
             val t2 = alg2.replaceAll("-", "").replaceAll("\u2010", "-")
 
             val matches = alg1.zip(alg2).count(x => x._1 == x._2)
             buf += ((t2.size - t1.size, matches * 1.0 / t2.size, b1, b2, t1, t2, alg1, alg2))
-            start = end + 1
+            start = end
             b1 += t1.size
             b2 += t2.size
           }
