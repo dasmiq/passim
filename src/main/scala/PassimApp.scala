@@ -338,6 +338,23 @@ transform($pageCol,
                                                                 greatest(acc.coords.x + acc.coords.w, r.coords.x + r.coords.w) - least(acc.coords.x, r.coords.x) as w,
                                                                 greatest(acc.coords.y + acc.coords.h, r.coords.y + r.coords.h) - least(acc.coords.y, r.coords.y) as h) as coords))) as regions))"""))
     }
+    def filterRegions(structCol: String, pageCol: String, begin: String, end: String): DataFrame = {
+      if ( structCol == "" && df.columns.contains(pageCol) ) {
+        val pageFields = df.select(expr(s"inline($pageCol)")).columns
+          .filter { _ != "regions" }.map { f => s"p.$f as $f" }.mkString(", ")
+        df.withColumn(pageCol,
+          expr(s"filter(transform($pageCol, p -> struct($pageFields, filter(p.regions, r -> r.start < $end AND (r.start + r.length) > $begin) as regions)), p -> size(p.regions) > 0)"))
+      } else if ( df.columns.contains(structCol)
+        && df.schema(structCol).dataType.asInstanceOf[StructType].map(_.name).contains(pageCol) ) {
+        val ff = df.schema(structCol).dataType.asInstanceOf[StructType].map(_.name).filter { _ != pageCol }.map { structCol + "." + _ + "," }.mkString(" ")
+        val pageFields = df.select(expr(s"inline($structCol.$pageCol)")).columns
+          .filter { _ != "regions" }.map { f => s"p.$f as $f" }.mkString(", ")
+        df.withColumn(structCol,
+          expr(s"struct($ff filter(transform($structCol.$pageCol, p -> struct($pageFields, filter(p.regions, r -> r.start < $end AND (r.start + r.length) > $begin) as regions)), p -> size(p.regions) > 0) as $pageCol)"))
+      } else {
+        df
+      }
+    }
     def selectRegions(pageCol: String): DataFrame = {
       if ( df.columns.contains(pageCol) ) {
         // Do these transformations in SQL to avoid Java's persnicketiness about int/long casting
@@ -746,20 +763,19 @@ transform($pageCol,
         }
       }
       val alignStrings = makeStringAligner(config, openGap = 1)
-      // val pageFields = corpus.select(expr(s"inline(pages)")).columns
-      //   .filter { _ != "regions" }.map { f => s"p.$f as $f" }.mkString(", ")
-      val metaFields = ListBuffer[String]()
+      val metaFields = ListBuffer("uid", config.id + " as id", config.text + " as text")
       metaFields ++= config.metaFields.split(";")
         .filter { f => f.contains(' ') || corpus.columns.contains(f) }
-      align.drop("gid")
-        .join(corpus.select('uid, col(config.id) as "id", col(config.text) as "text",
-          struct(metaFields.toList.map(expr):_*) as "meta"), "uid")
+      val side = align.select('mid, 'first, 'uid, 'begin, 'end)
+        .join(corpus.selectExpr(metaFields.toList:_*), "uid")
         .withColumn("begin", lineStart('text, 'begin))
         .withColumn("end", lineStop('text, 'end))
-        // .withColumn("pages",
-        //   expr(s"filter(transform(pages, p -> struct($pageFields, filter(p.regions, r -> r.start < end AND (r.start + r.length) > begin) as regions)), p -> size(p.regions) > 0)"))
-        .select('mid, struct('first, 'id, 'meta, 'begin, 'end,
-          getPassage('text, 'begin, 'end) as "text") as "info")
+        .filterRegions("", "pages", "begin", "end")
+
+      val ff = "struct(" + side.columns.filter { f => !Seq("first", "id", "uid", "begin", "end", "text", "mid").contains(f) }.mkString(",") + ")"
+
+      side.select('mid, struct('first, 'id, 'begin, 'end, expr(ff) as "meta",
+        getPassage('text, 'begin, 'end) as "text") as "info")
         .groupBy("mid")
         .agg(sort_array(collect_list("info"), false) as "info") // "first" == true sorts first
         .withColumn("alg", alignStrings('info(0)("text"), 'info(1)("text")))
@@ -771,13 +787,13 @@ transform($pageCol,
           "info[0].begin + pass._1.end as e1",
           "info[1].begin + pass._2.begin as b2",
           "info[1].begin + pass._2.end as e2")
-        .select('id2 as "id", 'id1 as "src", 'meta1 as "meta",
+        .select('id2 as "id", 'id1 as "src", 'meta1, 'meta2,
           explode(lineRecord('b1, 'b2, 'pairs)) as "wit")
-        .select('id, $"wit.start", $"wit.length",
-          // expr(s"filter(transform(pages2, p -> struct($pageFields, filter(p.regions, r -> r.start < (wit.start + wit.length) AND (r.start + r.length) > wit.start) as regions)), p -> size(p.regions) > 0)") as "pages",
-          struct('meta,
-            // expr(s"filter(transform(pages1, p -> struct($pageFields, filter(p.regions, r -> r.start < (wit.begin + length(wit.text)) AND (r.start + r.length) > wit.begin) as regions)), p -> size(p.regions) > 0)") as "pages",
+        .select('id, $"wit.start", $"wit.length", $"meta2.*",
+          struct($"meta1.*",
             'src as "id", $"wit.begin", $"wit.text", $"wit.alg1", $"wit.alg2") as "wit")
+        .filterRegions("", "pages", "start", "(start + length)")
+        .filterRegions("wit", "pages", "wit.begin", "(wit.begin + length(wit.text))")
     }
     def aggregateAlignments(config: Config, corpus: DataFrame, extents: DataFrame): DataFrame = {
       import align.sparkSession.implicits._
