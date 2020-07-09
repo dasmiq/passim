@@ -171,7 +171,25 @@ public final class NeedlemanWunschGotoh {
 			for (int j = 1, l = k + 1; j < n; j++, l++) { // for all columns
 
 			    // similarityScore = matrix[a1[i - 1]][a2[j - 1]];
-				similarityScore = a1[i - 1] == a2[j - 1] ? 2 : -1;
+			    // similarityScore = a1[i - 1] == a2[j - 1] ? 2 : -1;
+			    if ( a1[i - 1] == a2[j - 1] ) {
+			    	similarityScore = 2;
+			    } else if ( a1[i - 1] == '\n' ) {
+			    	if ( a2[j - 1] == ' ' ) {
+			    	    similarityScore = 1;
+			    	} else {
+			    	    similarityScore = -5;
+			    	}
+			    } else if ( a2[j - 1] == '\n' ) {
+			    	if ( a1[i - 1] == ' ' ) {
+			    	    similarityScore = 1;
+			    	} else {
+			    	    similarityScore = -5;
+			    	}
+			    } else {
+			    	similarityScore = -1;
+			    }
+			   
 
 				f = vDiagonal + similarityScore;// from diagonal
 
