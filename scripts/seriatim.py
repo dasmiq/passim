@@ -117,6 +117,9 @@ if __name__ == '__main__':
 
     print(config)
 
+    dfpostFname = os.path.join(config.outputPath, 'dfpost.parquet')
+    srcFname = os.path.join(config.outputPath, 'src.parquet')
+
     spark = SparkSession.builder.appName('Passim Alignment').getOrCreate()
 
     vit_src = udf(lambda post, meta: vitSrc(post, meta, config.n),
@@ -128,6 +131,14 @@ if __name__ == '__main__':
                       StructField('end', IntegerType())])))
 
     raw = spark.read.load(config.inputPath).drop('feat', 'df2')
+
+    dfpost = spark.read.load(dfpostFname)
+
+    spark.conf.set('spark.sql.shuffle.partitions', dfpost.rdd.getNumPartitions())
+
+    raw = dfpost.join(dfpost.toDF(*[f + ('2' if f != 'feat' else '') for f in dfpost.columns]),
+                      'feat'
+               ).filter(config.filterpairs).drop('feat', 'df2')
 
     postFields = ['df', 'post', 'post2']
     docFields = [f for f in raw.columns if f not in postFields]
@@ -146,6 +157,6 @@ if __name__ == '__main__':
       ).agg(sort_array(collect_list(struct('post2', 'df', 'alg'))).alias('post'),
             map_from_entries(flatten(collect_set('meta'))).alias('meta')
       ).withColumn('src', vit_src('post', 'meta')
-      ).write.json(config.outputPath)
+      ).write.parquet(srcFname)
 
     spark.stop()
