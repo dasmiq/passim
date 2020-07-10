@@ -1,12 +1,13 @@
+import argparse
 import json, os, sys
 from math import ceil, log, inf
 from pyspark.sql import SparkSession, Row
 from pyspark.sql.functions import col, explode, size, udf, struct, length, collect_list, collect_set, sort_array, when, expr, explode, slice, map_from_entries, flatten
-from pyspark.sql.types import ArrayType, StringType, LongType
+from pyspark.sql.types import *
 
 from dataclasses import dataclass
 
-def vitSrc(gid2, pos, meta, minmatch):
+def vitSrc(pos, meta, n):
     @dataclass(frozen=True)
     class BP:
         lab: int
@@ -19,17 +20,8 @@ def vitSrc(gid2, pos, meta, minmatch):
         pos: int
         score: float
 
-    docs = dict()
-    docs[0] = 0
-    for p in pos:
-        inseries = any([meta[m.uid].gid == gid2 for m in p.alg])
-        for m in p.alg:
-            if inseries and meta[m.uid].gid == gid2:
-                docs[m.uid] = docs.get(m.uid, 0) + 1
-
     ## b70 docs: 21918104; 237921873725 characters
     N = 21918104
-    n = 5
     pcopy = 0.8
     pcont = 0.999956
     V = 256
@@ -45,8 +37,6 @@ def vitSrc(gid2, pos, meta, minmatch):
     pargmax = 0
     last = 0
     for p in pos:
-        if not any([docs.get(m.uid, 0) >= minmatch for m in p.alg]):
-            continue
         npos = p.post2 + n
         stride = npos - last
         ## Spans can only begin or end at matches
@@ -56,8 +46,6 @@ def vitSrc(gid2, pos, meta, minmatch):
         bp[BP(0, npos, 0)] = BP(0, same.pos2, 0)
         # print(prev[0], file=sys.stderr)
         for m in p.alg:
-            if docs.get(m.uid, 0) >= minmatch:
-                continue
             same = prev.get(m.uid, Score(0, 0, -inf))
             gap = min(0, m.post - same.pos)
             gap2 = min(0, p.post2 - same.pos2)
@@ -84,25 +72,62 @@ def vitSrc(gid2, pos, meta, minmatch):
         # print("%d: " % npos, prev, file=sys.stderr)
         #print(bp, file=sys.stderr)
 
-    res = list()
+    matches = list()
     cur = BP(0, last, 0)
     while cur.pos2 > 0:
-        res.append(str(cur))
+        matches.append(cur)
         cur = bp[cur]
-    res.reverse()
-    return res
+    matches.reverse()
+
+    ## Merge matches into spans
+    spans = list()
+    i = 0
+    while i < len(matches):
+        if matches[i].lab != 0:
+            start = matches[i]
+            j = i
+            while j < len(matches):
+                if matches[j].lab == 0:
+                    if ((j+1) < len(matches) and matches[j+1].lab == matches[i].lab and
+                        ## Allow singleton retrograde alignments
+                        (matches[j+1].pos >= matches[i].pos
+                         or matches[j+1].pos2 - n - matches[j].pos2 < 20)):
+                        1
+                    else:
+                        spans.append((matches[i].lab, matches[i].pos2 - n, matches[j-1].pos2,
+                                      matches[i].pos - n, matches[j-1].pos))
+                        break
+                j += 1
+            i = j
+        i += 1
+
+    return spans
 
 if __name__ == '__main__':
-    if len(sys.argv) != 3:
-        print('Usage: %s <input> <output>' % sys.argv[0], file=sys.stderr)
-        exit(-1)
+    parser = argparse.ArgumentParser(description='Passim Alignment')
+    parser.add_argument('-m', '--min-match', type=int, metavar='N', default=5,
+                        help='Minimum number of n-gram matches between documents')
+    parser.add_argument('-n', '--n', type=int, metavar='n', default=5,
+                        help='n-gram order')
+    parser.add_argument('-f', '--filterpairs', type=str, default='gid < gid2',
+                        help='SQL constraint on posting pairs; default=gid < gid2')
+    parser.add_argument('inputPath', metavar='<path>', help='input data')
+    parser.add_argument('outputPath', metavar='<path>', help='output')
+    config = parser.parse_args()
+
+    print(config)
+
     spark = SparkSession.builder.appName('Passim Alignment').getOrCreate()
 
-    minmatch = 5
-    vit_src = udf(lambda gid2, post, meta: vitSrc(gid2, post, meta, minmatch),
-                  ArrayType(StringType()))
+    vit_src = udf(lambda post, meta: vitSrc(post, meta, config.n),
+                  ArrayType(StructType([
+                      StructField('uid', LongType()),
+                      StructField('begin2', IntegerType()),
+                      StructField('end2', IntegerType()),
+                      StructField('begin', IntegerType()),
+                      StructField('end', IntegerType())])))
 
-    raw = spark.read.load(sys.argv[1]).drop('feat', 'df2')
+    raw = spark.read.load(config.inputPath).drop('feat', 'df2')
 
     postFields = ['df', 'post', 'post2']
     docFields = [f for f in raw.columns if f not in postFields]
@@ -111,7 +136,7 @@ if __name__ == '__main__':
 
     raw.groupBy(*docFields
       ).agg(collect_list(struct(*postFields)).alias('post')
-      ).filter(size('post') >= 5
+      ).filter(size('post') >= config.min_match
       ).withColumn('post', explode('post')
       ).select(*docFields, col('post.*')
       ).groupBy(*f2, 'post2', 'df'
@@ -120,7 +145,7 @@ if __name__ == '__main__':
       ).groupBy(*f2
       ).agg(sort_array(collect_list(struct('post2', 'df', 'alg'))).alias('post'),
             map_from_entries(flatten(collect_set('meta'))).alias('meta')
-      ).withColumn('src', vit_src('gid2', 'post', 'meta')
-      ).write.save(sys.argv[2])
+      ).withColumn('src', vit_src('post', 'meta')
+      ).write.json(config.outputPath)
 
     spark.stop()
