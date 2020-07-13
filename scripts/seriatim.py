@@ -2,7 +2,7 @@ import argparse
 import json, os, sys
 from math import ceil, log, inf
 from pyspark.sql import SparkSession, Row
-from pyspark.sql.functions import col, explode, size, udf, struct, length, collect_list, collect_set, sort_array, when, expr, explode, slice, map_from_entries, flatten, xxhash64
+from pyspark.sql.functions import col, explode, size, udf, struct, length, collect_list, collect_set, sort_array, when, expr, explode, slice, map_from_entries, flatten, xxhash64, monotonically_increasing_id, lit, array, arrays_zip
 from pyspark.sql.types import *
 
 from dataclasses import dataclass
@@ -23,7 +23,7 @@ def getPostings(text, n, floating_ngrams):
                 posts.append((buf, i))
     return [(key, tf[key], i) for key, i in posts]
 
-def vitSrc(pos, meta, n):
+def vitSrc(pos, meta, n, max_gap, min_align):
     @dataclass(frozen=True)
     class BP:
         lab: int
@@ -39,7 +39,7 @@ def vitSrc(pos, meta, n):
     ## b70 docs: 21918104; 237921873725 characters
     N = 100 # 21918104
     pcopy = 0.8
-    pcont = 0.999956
+    pcont = 0.98
     V = 256
     lpcopy = log(pcopy)
     lpmiss = log(1 - pcopy) - log(2 * V)
@@ -72,7 +72,7 @@ def vitSrc(pos, meta, n):
             cont = same.score + gap2 * lpcont + minerr * lpmiss + (overlap - minsub) * lpcopy
             switch = bg + lpswitch + log(0.001)
             score = stride * (lpcont + lpcopy)
-            if (m.post + n) < same.pos or (switch > cont and stride > n and p.post2 > n):
+            if gap2 > max_gap or (m.post + n) < same.pos or (switch > cont and stride > n and p.post2 > n):
                 score += switch
                 bp[BP(m.uid, npos, m.post + n)] = BP(0, last, 0)
             else:
@@ -112,8 +112,9 @@ def vitSrc(pos, meta, n):
                          or matches[j+1].pos2 - n - matches[j].pos2 < 20)):
                         1
                     else:
-                        spans.append((matches[i].lab, matches[i].pos2 - n, matches[j-1].pos2,
-                                      matches[i].pos - n, matches[j-1].pos))
+                        if (matches[j-1].pos2 - matches[i].pos2 + n) >= min_align:
+                            spans.append((matches[i].lab, matches[i].pos2 - n, matches[j-1].pos2,
+                                          matches[i].pos - n, matches[j-1].pos))
                         break
                 j += 1
             i = j
@@ -129,15 +130,19 @@ if __name__ == '__main__':
     parser.add_argument('-t', '--text', type=str, default='text',
                         help='Field for document text')
     parser.add_argument('-l', '--minDF', type=int, default=2,
-                        help='Lower limit on document frequency')
+                        help='Lower limit on document frequency', metavar='N')
     parser.add_argument('-u', '--maxDF', type=int, default=100,
-                        help='Upper limit on document frequency')
+                        help='Upper limit on document frequency', metavar='N')
     parser.add_argument('-m', '--min-match', type=int, metavar='N', default=5,
                         help='Minimum number of n-gram matches between documents')
-    parser.add_argument('-n', '--n', type=int, metavar='n', default=5,
-                        help='n-gram order')
-    parser.add_argument('--floating-ngrams',
-                        help='Allow n-grams to float from word boundaries.')
+    parser.add_argument('-n', '--n', type=int, default=20,
+                        help='n-gram order', metavar='N')
+    parser.add_argument('--floating-ngrams', action='store_true',
+                        help='Allow n-grams to float from word boundaries')
+    parser.add_argument('-g', '--gap', type=int, default=600,
+                        help='Minimum size of gap that separates passages', metavar='N')
+    parser.add_argument('-a', '--min-align', type=int, default=50,
+                         help='Minimum length of alignment', metavar='N')
     parser.add_argument('--fields', type=str, nargs='+', default=[],
                         help='List of fileds to index')
     parser.add_argument('-f', '--filterpairs', type=str, default='uid < uid2',
@@ -156,7 +161,7 @@ if __name__ == '__main__':
 
     dfpostFname = os.path.join(config.outputPath, 'dfpost.parquet')
     srcFname = os.path.join(config.outputPath, 'src.parquet')
-
+    outFname = os.path.join(config.outputPath, 'out.' + config.output_format)
 
     corpus = spark.read.option('mergeSchema',
                                'true').format(config.input_format).load(config.inputPath
@@ -164,6 +169,8 @@ if __name__ == '__main__':
                                ).withColumn('uid', xxhash64(config.id))
 
     termCorpus = corpus.selectExpr('uid', config.text, *config.fields)
+
+    spark.conf.set('spark.sql.shuffle.partitions', corpus.rdd.getNumPartitions() * 3)
 
     get_postings = udf(lambda text: getPostings(text, config.n, config.floating_ngrams),
                        ArrayType(StructType([
@@ -182,9 +189,8 @@ if __name__ == '__main__':
              ).filter( (col('df') >= config.minDF) & (col('df') <= config.maxDF) )
 
     posts.join(df, 'feat').write.mode('ignore').save(dfpostFname)
-    # exit(0)
     
-    vit_src = udf(lambda post, meta: vitSrc(post, meta, config.n),
+    vit_src = udf(lambda post, meta: vitSrc(post, meta, config.n, config.gap, config.min_align),
                   ArrayType(StructType([
                       StructField('uid', LongType()),
                       StructField('begin2', IntegerType()),
@@ -194,31 +200,44 @@ if __name__ == '__main__':
 
     dfpost = spark.read.load(dfpostFname)
 
-    # spark.conf.set('spark.sql.shuffle.partitions', dfpost.rdd.getNumPartitions())
-
-    raw = dfpost.join(dfpost.toDF(*[f + ('2' if f != 'feat' else '') for f in dfpost.columns]),
-                      'feat'
-               ).filter(config.filterpairs).drop('feat', 'df2')
-
-    postFields = ['df', 'post', 'post2']
-    docFields = [f for f in raw.columns if f not in postFields]
-    f1 = [f for f in docFields if not f.endswith('2')]
-    f2 = [f for f in docFields if f.endswith('2')]
+    f1 = [f for f in dfpost.columns if f not in ['feat', 'df', 'post']]
+    f2 = [f + '2' for f in f1]
 
     spark.conf.set('spark.sql.mapKeyDedupPolicy', 'LAST_WIN')
     
-    raw.groupBy(*docFields
-      ).agg(collect_list(struct(*postFields)).alias('post')
-      ).filter(size('post') >= config.min_match
-      ).withColumn('post', explode('post')
-      ).select(*docFields, col('post.*')
-      ).groupBy(*f2, 'post2', 'df'
-      ).agg(collect_list(struct('uid', 'post')).alias('alg'),
-            collect_set(struct('uid', struct(*[f for f in f1 if f != 'uid']))).alias('meta')
-      ).groupBy(*f2
-      ).agg(sort_array(collect_list(struct('post2', 'df', 'alg'))).alias('post'),
-            map_from_entries(flatten(collect_set('meta'))).alias('meta')
-      ).withColumn('src', vit_src('post', 'meta')
-      ).write.json(srcFname)
+    dfpost.join(dfpost.toDF(*[f + ('2' if f != 'feat' else '') for f in dfpost.columns]),
+                'feat'
+         ).filter(config.filterpairs
+         ).drop('feat', 'df2'
+         ).groupBy(*f1, *f2
+         ).agg(collect_list(struct('df', 'post', 'post2')).alias('post')
+         ).filter(size('post') >= config.min_match
+         ).withColumn('post', explode('post')
+         ).select(*f1, *f2, col('post.*')
+         ).groupBy(*f2, 'post2', 'df'
+         ).agg(collect_list(struct('uid', 'post')).alias('alg'),
+               collect_set(struct('uid', struct(*[f for f in f1 if f != 'uid']))).alias('meta')
+         ).groupBy(*f2
+         ).agg(sort_array(collect_list(struct('post2', 'df', 'alg'))).alias('post'),
+               map_from_entries(flatten(collect_set('meta'))).alias('meta')
+         ).withColumn('src', vit_src('post', 'meta')
+         ).write.mode('ignore').parquet(srcFname)
+
+    srcmap = spark.read.load(srcFname)
+
+    ## Should get uid data from meta
+    srcmap.withColumn('src', arrays_zip(col('src'),
+                                        expr('transform(src, s -> meta[s.uid])'))
+         ).drop('post', 'meta', 'info'
+         ).select(*f2, explode('src').alias('src')
+         ).select(*f2, col('src.src.*'), col('src.1.*')
+         ).join(termCorpus.select('uid', col(config.text).alias('text')), 'uid'
+         ).withColumn('text', col('text').substr(col('begin') + 1, col('end') - col('begin'))
+         ).join(termCorpus.select(col('uid').alias('uid2'), col(config.text).alias('text2')),
+                'uid2'
+         ).withColumn('text2',
+                      col('text2').substr(col('begin2') + 1, col('end2') - col('begin2'))
+         ).write.json(outFname)
+
 
     spark.stop()
