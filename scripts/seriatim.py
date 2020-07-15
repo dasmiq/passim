@@ -23,7 +23,7 @@ def getPostings(text, n, floating_ngrams):
                 posts.append((buf, i))
     return [(key, tf[key], i) for key, i in posts]
 
-def vitSrc(pos, meta, n, max_gap, min_align):
+def vitSrc(pos, n, max_gap, min_align):
     @dataclass(frozen=True)
     class BP:
         lab: int
@@ -47,6 +47,7 @@ def vitSrc(pos, meta, n, max_gap, min_align):
     lpcont = log(pcont)
     lpswitch = log(1 - pcont)
 
+    ## Should probably just use start points in dynamic program
     bp = dict()
     prev = {0: Score(0, 0, 0.0)}
     pmax = 0
@@ -190,7 +191,7 @@ if __name__ == '__main__':
 
     posts.join(df, 'feat').write.mode('ignore').save(dfpostFname)
     
-    vit_src = udf(lambda post, meta: vitSrc(post, meta, config.n, config.gap, config.min_align),
+    vit_src = udf(lambda post: vitSrc(post, config.n, config.gap, config.min_align),
                   ArrayType(StructType([
                       StructField('uid', LongType()),
                       StructField('begin2', IntegerType()),
@@ -220,7 +221,7 @@ if __name__ == '__main__':
          ).groupBy(*f2
          ).agg(sort_array(collect_list(struct('post2', 'df', 'alg'))).alias('post'),
                map_from_entries(flatten(collect_set('meta'))).alias('meta')
-         ).withColumn('src', vit_src('post', 'meta')
+         ).withColumn('src', vit_src('post')
          ).write.mode('ignore').parquet(srcFname)
 
     srcmap = spark.read.load(srcFname)
