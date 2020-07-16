@@ -23,6 +23,117 @@ def getPostings(text, n, floating_ngrams):
                 posts.append((buf, i))
     return [(key, tf[key], i) for key, i in posts]
 
+def vitSrc2(pos, n, max_gap, min_align):
+    @dataclass(frozen=True)
+    class BP:
+        lab: int
+        pos2: int
+        pos: int
+
+    @dataclass(frozen=True)
+    class Score:
+        pos2: int
+        pos: int
+        score: float
+
+    doc = dict()
+    for p in pos:
+        for m in p.alg:
+            doc[m.uid] = doc.get(m.uid, 0) + 1
+
+    ## b70 docs: 21918104; 237921873725 characters
+    N = 100 # 21918104
+    pcopy = 0.8
+    pcont = 0.998
+    V = 256
+    lpcopy = log(pcopy)
+    lpmiss = log(1 - pcopy) - log(2 * V)
+    lpstop = log((1 + pcopy) / 2)
+    lpcont = log(pcont)
+    lpswitch = log(1 - pcont)
+
+    ## Spans can only begin or end at matches
+    ## Should probably just use start points in dynamic program
+    bp = dict()
+    prev = {}
+    bgscore = [Score(0, 0, 0.0)]
+    last = 0
+    for p in pos:
+        npos = p.post2
+        stride = npos - last
+        i = len(bgscore) - 1
+        while i >= 0 and bgscore[i].pos2 > npos:
+            i -= 1
+        bglast = bgscore[i]
+        bg = bglast.score + (p.post2 - bglast.pos2) * (lpcont + -log(V))
+        # prev[0] = Score(npos + n, 0, bg + log(p.df) - log(N))
+        prev[0] = Score(npos + n, 0, bg + n * (lpcont + -log(V)))
+        bp[BP(0, npos + n, 0)] = BP(0, bglast.pos2, 0)
+        # print(prev[0], file=sys.stderr)
+        for m in p.alg:
+            if doc.get(m.uid, 0) < 5:
+                continue
+            same = prev.get(m.uid, Score(0, 0, -inf))
+            gap = max(0, m.post - same.pos - n)
+            gap2 = max(0, p.post2 - same.pos2 - n)
+            # Show we treat gaps on the source side the same? What about retrogrades?
+            overlap = min(gap, gap2)
+            minsub = ceil(overlap / n)
+            minerr = minsub + gap2 - overlap # abs(gap2 - gap)
+            cont = same.score + gap2 * lpcont + minerr * lpmiss + (overlap - minsub) * lpcopy \
+                + min(n, npos - same.pos2) * (lpcont + lpcopy)
+            switch = bg + lpswitch + log(0.001) + n * (lpcont + lpcopy)
+            if (gap2 > max_gap or m.post < same.pos or switch > cont) and stride > n:
+                score = switch
+                bp[BP(m.uid, npos, m.post)] = BP(0, bglast.pos2, 0)
+            else:
+                score = cont
+                bp[BP(m.uid, npos, m.post)] = BP(m.uid, same.pos2, same.pos)
+            prev[m.uid] = Score(npos, m.post, score)
+            stop = score + lpstop + lpswitch
+            if stop > prev[0].score:
+                prev[0] = Score(npos + n, 0, stop)
+                # print("# Stop %d @ %d: " % (m.uid, npos) + str(prev), file=sys.stderr)
+                bp[BP(0, npos + n, 0)] = BP(m.uid, npos, m.post)
+        last = npos
+        bgscore.append(prev[0])
+        # print("%d: " % npos, prev, file=sys.stderr)
+        # print(bp, file=sys.stderr)
+
+    matches = list()
+    cur = BP(0, last + n, 0)
+    while cur.pos2 > 0:
+        matches.append(cur)
+        cur = bp[cur]
+    matches.reverse()
+
+    # return [(m.lab, m.pos2, m.pos2 + n, m.pos, m.pos + n) for m in matches]
+
+    ## Merge matches into spans
+    spans = list()
+    i = 0
+    while i < len(matches):
+        if matches[i].lab != 0:
+            start = matches[i]
+            j = i
+            while j < len(matches):
+                if matches[j].lab == 0:
+                    if ((j+1) < len(matches) and matches[j+1].lab == matches[i].lab and
+                        ## Allow singleton retrograde alignments
+                        (matches[j+1].pos >= matches[i].pos
+                         and (matches[j+1].pos2 - matches[j].pos2) < max_gap)):
+                        j += 1
+                    else:
+                        if (matches[j-1].pos2 - matches[i].pos2 + n) >= min_align:
+                            spans.append((matches[i].lab, matches[i].pos2, matches[j-1].pos2 + n,
+                                          matches[i].pos, matches[j-1].pos + n))
+                        break
+                j += 1
+            i = j
+        i += 1
+
+    return spans
+
 def vitSrc(pos, n, max_gap, min_align):
     @dataclass(frozen=True)
     class BP:
@@ -39,7 +150,7 @@ def vitSrc(pos, n, max_gap, min_align):
     ## b70 docs: 21918104; 237921873725 characters
     N = 100 # 21918104
     pcopy = 0.8
-    pcont = 0.98
+    pcont = 0.998
     V = 256
     lpcopy = log(pcopy)
     lpmiss = log(1 - pcopy) - log(2 * V)
@@ -50,8 +161,6 @@ def vitSrc(pos, n, max_gap, min_align):
     ## Should probably just use start points in dynamic program
     bp = dict()
     prev = {0: Score(0, 0, 0.0)}
-    pmax = 0
-    pargmax = 0
     last = 0
     for p in pos:
         npos = p.post2 + n
@@ -70,14 +179,14 @@ def vitSrc(pos, n, max_gap, min_align):
             overlap = min(gap, gap2)
             minsub = ceil(overlap / n)
             minerr = minsub + abs(gap2 - gap) #gap2 - overlap
-            cont = same.score + gap2 * lpcont + minerr * lpmiss + (overlap - minsub) * lpcopy
-            switch = bg + lpswitch + log(0.001)
-            score = stride * (lpcont + lpcopy)
-            if gap2 > max_gap or (m.post + n) < same.pos or (switch > cont and stride > n and p.post2 > n):
-                score += switch
+            cont = same.score + gap2 * lpcont + minerr * lpmiss + (overlap - minsub) * lpcopy \
+                + min(n, stride) * (lpcont + lpcopy)
+            switch = bg + lpswitch + log(0.001) + n * (lpcont + lpcopy)
+            if (gap2 > max_gap or (m.post + n) < same.pos or switch > cont) and stride > n and p.post2 > n:
+                score = switch
                 bp[BP(m.uid, npos, m.post + n)] = BP(0, last, 0)
             else:
-                score += cont
+                score = cont
                 bp[BP(m.uid, npos, m.post + n)] = BP(m.uid, same.pos2, same.pos)
             prev[m.uid] = Score(npos, m.post + n, score)
             stop = score + lpstop + lpswitch
@@ -160,38 +269,38 @@ if __name__ == '__main__':
 
     spark = SparkSession.builder.appName('Passim Alignment').getOrCreate()
 
-    dfpostFname = os.path.join(config.outputPath, 'dfpost.parquet')
-    srcFname = os.path.join(config.outputPath, 'src.parquet')
-    outFname = os.path.join(config.outputPath, 'out.' + config.output_format)
+    # dfpostFname = os.path.join(config.outputPath, 'dfpost.parquet')
+    # srcFname = os.path.join(config.outputPath, 'src.parquet')
+    # outFname = os.path.join(config.outputPath, 'out.' + config.output_format)
 
-    corpus = spark.read.option('mergeSchema',
-                               'true').format(config.input_format).load(config.inputPath
-                               ).na.drop(subset=[config.id, config.text]
-                               ).withColumn('uid', xxhash64(config.id))
+    # corpus = spark.read.option('mergeSchema',
+    #                            'true').format(config.input_format).load(config.inputPath
+    #                            ).na.drop(subset=[config.id, config.text]
+    #                            ).withColumn('uid', xxhash64(config.id))
 
-    termCorpus = corpus.selectExpr('uid', config.text, *config.fields)
+    # termCorpus = corpus.selectExpr('uid', config.text, *config.fields)
 
-    spark.conf.set('spark.sql.shuffle.partitions', corpus.rdd.getNumPartitions() * 3)
+    # spark.conf.set('spark.sql.shuffle.partitions', corpus.rdd.getNumPartitions() * 3)
 
-    get_postings = udf(lambda text: getPostings(text, config.n, config.floating_ngrams),
-                       ArrayType(StructType([
-                           StructField('feat', StringType()),
-                           StructField('tf', IntegerType()),
-                           StructField('post', IntegerType())])))
+    # get_postings = udf(lambda text: getPostings(text, config.n, config.floating_ngrams),
+    #                    ArrayType(StructType([
+    #                        StructField('feat', StringType()),
+    #                        StructField('tf', IntegerType()),
+    #                        StructField('post', IntegerType())])))
 
-    posts = termCorpus.withColumn('post', explode(get_postings(config.text))
-                     ).select(*[col(f) for f in termCorpus.columns], col('post.*')
-                     ).drop(config.text
-                     ).withColumn('feat', xxhash64('feat')
-                     ).filter(col('tf') == 1
-                     ).drop('tf')
+    # posts = termCorpus.withColumn('post', explode(get_postings(config.text))
+    #                  ).select(*[col(f) for f in termCorpus.columns], col('post.*')
+    #                  ).drop(config.text
+    #                  ).withColumn('feat', xxhash64('feat')
+    #                  ).filter(col('tf') == 1
+    #                  ).drop('tf')
 
-    df = posts.groupBy('feat').count().select('feat', col('count').cast('int').alias('df')
-             ).filter( (col('df') >= config.minDF) & (col('df') <= config.maxDF) )
+    # df = posts.groupBy('feat').count().select('feat', col('count').cast('int').alias('df')
+    #          ).filter( (col('df') >= config.minDF) & (col('df') <= config.maxDF) )
 
-    posts.join(df, 'feat').write.mode('ignore').save(dfpostFname)
+    # posts.join(df, 'feat').write.mode('ignore').save(dfpostFname)
     
-    vit_src = udf(lambda post: vitSrc(post, config.n, config.gap, config.min_align),
+    vit_src = udf(lambda post: vitSrc2(post, config.n, config.gap, config.min_align),
                   ArrayType(StructType([
                       StructField('uid', LongType()),
                       StructField('begin2', IntegerType()),
@@ -199,46 +308,48 @@ if __name__ == '__main__':
                       StructField('begin', IntegerType()),
                       StructField('end', IntegerType())])))
 
-    dfpost = spark.read.load(dfpostFname)
+    # dfpost = spark.read.load(dfpostFname)
 
-    f1 = [f for f in dfpost.columns if f not in ['feat', 'df', 'post']]
-    f2 = [f + '2' for f in f1]
+    # f1 = [f for f in dfpost.columns if f not in ['feat', 'df', 'post']]
+    # f2 = [f + '2' for f in f1]
 
-    spark.conf.set('spark.sql.mapKeyDedupPolicy', 'LAST_WIN')
+    # spark.conf.set('spark.sql.mapKeyDedupPolicy', 'LAST_WIN')
     
-    dfpost.join(dfpost.toDF(*[f + ('2' if f != 'feat' else '') for f in dfpost.columns]),
-                'feat'
-         ).filter(config.filterpairs
-         ).drop('feat', 'df2'
-         ).groupBy(*f1, *f2
-         ).agg(collect_list(struct('df', 'post', 'post2')).alias('post')
-         ).filter(size('post') >= config.min_match
-         ).withColumn('post', explode('post')
-         ).select(*f1, *f2, col('post.*')
-         ).groupBy(*f2, 'post2', 'df'
-         ).agg(collect_list(struct('uid', 'post')).alias('alg'),
-               collect_set(struct('uid', struct(*[f for f in f1 if f != 'uid']))).alias('meta')
-         ).groupBy(*f2
-         ).agg(sort_array(collect_list(struct('post2', 'df', 'alg'))).alias('post'),
-               map_from_entries(flatten(collect_set('meta'))).alias('meta')
-         ).withColumn('src', vit_src('post')
-         ).write.mode('ignore').parquet(srcFname)
+    # dfpost.join(dfpost.toDF(*[f + ('2' if f != 'feat' else '') for f in dfpost.columns]),
+    #             'feat'
+    #      ).filter(config.filterpairs
+    #      ).drop('feat', 'df2'
+    #      ).groupBy(*f1, *f2
+    #      ).agg(collect_list(struct('df', 'post', 'post2')).alias('post')
+    #      ).filter(size('post') >= config.min_match
+    #      ).withColumn('post', explode('post')
+    #      ).select(*f1, *f2, col('post.*')
+    #      ).groupBy(*f2, 'post2', 'df'
+    #      ).agg(collect_list(struct('uid', 'post')).alias('alg'),
+    #            collect_set(struct('uid', struct(*[f for f in f1 if f != 'uid']))).alias('meta')
+    #      ).groupBy(*f2
+    #      ).agg(sort_array(collect_list(struct('post2', 'df', 'alg'))).alias('post'),
+    #            map_from_entries(flatten(collect_set('meta'))).alias('meta')
+    spark.read.json(config.inputPath
+        ).withColumn('src', vit_src('post')
+        ).write.json(config.outputPath)
+         # ).write.mode('ignore').parquet(srcFname)
 
-    srcmap = spark.read.load(srcFname)
+    # srcmap = spark.read.load(srcFname)
 
-    ## Should get uid data from meta
-    srcmap.withColumn('src', arrays_zip(col('src'),
-                                        expr('transform(src, s -> meta[s.uid])'))
-         ).drop('post', 'meta', 'info'
-         ).select(*f2, explode('src').alias('src')
-         ).select(*f2, col('src.src.*'), col('src.1.*')
-         ).join(termCorpus.select('uid', col(config.text).alias('text')), 'uid'
-         ).withColumn('text', col('text').substr(col('begin') + 1, col('end') - col('begin'))
-         ).join(termCorpus.select(col('uid').alias('uid2'), col(config.text).alias('text2')),
-                'uid2'
-         ).withColumn('text2',
-                      col('text2').substr(col('begin2') + 1, col('end2') - col('begin2'))
-         ).write.json(outFname)
+    # ## Should get uid data from meta
+    # srcmap.withColumn('src', arrays_zip(col('src'),
+    #                                     expr('transform(src, s -> meta[s.uid])'))
+    #      ).drop('post', 'meta', 'info'
+    #      ).select(*f2, explode('src').alias('src')
+    #      ).select(*f2, col('src.src.*'), col('src.1.*')
+    #      ).join(termCorpus.select('uid', col(config.text).alias('text')), 'uid'
+    #      ).withColumn('text', col('text').substr(col('begin') + 1, col('end') - col('begin'))
+    #      ).join(termCorpus.select(col('uid').alias('uid2'), col(config.text).alias('text2')),
+    #             'uid2'
+    #      ).withColumn('text2',
+    #                   col('text2').substr(col('begin2') + 1, col('end2') - col('begin2'))
+    #      ).write.json(outFname)
 
 
     spark.stop()
