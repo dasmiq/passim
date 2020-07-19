@@ -1298,7 +1298,8 @@ transform($pageCol,
           .agg(sort_array(collect_list("wit")) as "wits")
           .groupBy("id")
           .agg(collect_list(struct("start", "length", "wits")) as "variants")
-          .join(raw, Seq("id"), (if ( config.linewise ) "inner" else "right_outer"))
+          .join(corpus.drop("uid", "gid"),
+            Seq("id"), (if ( config.linewise ) "inner" else "right_outer"))
           .withColumn("tlines", textLines('text))
           .withColumn("mvars", map_from_arrays($"variants.start", $"variants.wits"))
           .withColumn("lines",
