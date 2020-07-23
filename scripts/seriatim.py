@@ -1,4 +1,5 @@
 import argparse
+import heapq as hq
 import json, os, sys
 from math import ceil, log, inf
 from pyspark.sql import SparkSession, Row
@@ -79,11 +80,11 @@ def vitSrc(pos, n, max_gap, min_align, min_match):
             # Show we treat gaps on the source side the same? What about retrogrades?
             overlap = min(gap, gap2)
             minsub = ceil(overlap / n)
-            minerr = minsub + gap2 - overlap # abs(gap2 - gap)
+            minerr = minsub + gap2 - overlap #abs(gap2 - gap)
             cont = same.score + gap2 * lpcont + minerr * lpmiss + (overlap - minsub) * lpcopy \
                 + min(n, npos - same.pos2) * (lpcont + lpcopy)
             switch = bg + lpswitch + log(0.001) + n * (lpcont + lpcopy)
-            if (gap2 > max_gap or m.post < same.pos or switch > cont) and stride > n:
+            if (gap2 > max_gap or gap > max_gap or m.post < same.pos or switch > cont) and stride > n:
                 score = switch
                 bp[BP(m.uid, npos, m.post)] = BP(0, bglast.pos2, 0)
             else:
@@ -118,7 +119,7 @@ def vitSrc(pos, n, max_gap, min_align, min_match):
             j = i
             while j < len(matches):
                 if matches[j].lab == 0:
-                    if ((j+1) < len(matches) and matches[j+1].lab == matches[i].lab and
+                    if False and ((j+1) < len(matches) and matches[j+1].lab == matches[i].lab and
                         ## Allow singleton retrograde alignments
                         (matches[j+1].pos >= matches[i].pos
                          and (matches[j+1].pos2 - matches[j].pos2) < max_gap)):
@@ -133,6 +134,75 @@ def vitSrc(pos, n, max_gap, min_align, min_match):
         i += 1
 
     return spans
+
+def spanEdge(src, max_gap):
+    res = list()
+    for i, s in enumerate(src):
+        lend = src[i-1].end2 if i > 0 else 0
+        left2 = max(lend, s.begin2 - max_gap)
+        rend = src[i+1].begin2 if (i + 1) < len(src) else s.end2 + max_gap
+        right2 = min(rend, s.end2 + max_gap)
+        left = max(0, s.begin - (s.begin2 - left2 + 10))
+        right = s.end + 2 * (right2 - s.end2)
+        res.append((s.uid, left2, s.begin2, s.end2, right2, left, s.begin, s.end, right))
+    return res
+
+def anchorAlign(s1, s2, side):
+    if side == 'left':
+        s1 = s1[::-1]
+        s2 = s2[::-1]
+
+    width = 10
+    V = 256
+    logV = log(V)
+    pcopy = 0.8
+    lpcopy = log(pcopy)
+    lpedit = log(1 - pcopy) - log(2 * V)
+    lpstop = log((1 + pcopy) / 2)
+    pfinal = 0.01
+    lpfinal = log(pfinal)
+    lppad = log(1 - pfinal) - log(V)
+
+    #print(len(s1), s1)
+    #print(len(s2), s2)
+    #return "done!"
+
+    chart = {}
+    pq = [(0, (0, 0, 0, 0))]
+    while len(pq) > 0:
+        #print(pq)
+        top = hq.heappop(pq)
+        #print(top)
+        (score, item) = top
+        (s, t, e1, e2) = item
+        if s == len(s1) and t == len(s2):
+            break
+        ## Finish
+        cand = [(score - (lpstop + 2 * lpfinal + lppad * (len(s2) - t)),
+                  (len(s1), len(s2), s, t))]
+        if s < len(s1):         # delete
+            cand.append((score - lpedit, (s + 1, t, e1, e2)))
+            if t < len(s2):
+                if s1[s].lower() == s2[t].lower() or (s1[s].isspace() and s2[t].isspace()): #copy
+                    cand.append((score - lpcopy, (s + 1, t + 1, e1, e2)))
+                else:
+                    cand.append((score - lpedit, (s + 1, t + 1, e1, e2)))
+        if t < len(s2):         # insert
+            cand.append((score - lpedit, (s, t + 1, e1, e1)))
+        for c in cand:
+            (score, item) = c
+            if item[2] == 0 and abs(item[0] - item[1]) > width:
+                continue
+            if chart.get(item, inf) > score:
+                chart[item] = score
+                hq.heappush(pq, c)
+                
+    (score, (s, t, e1, e2)) = top
+    # It might be worth deleting small numbers of characters trailing (leading) a newline.
+    if side == 'left':
+        return (s1[e1-1::-1], s2[e2-1::-1])
+    else:
+        return (s1[0:e1], s2[0:e2])
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Passim Alignment',
@@ -172,6 +242,7 @@ if __name__ == '__main__':
     spark = SparkSession.builder.appName('Passim Alignment').getOrCreate()
 
     dfpostFname = os.path.join(config.outputPath, 'dfpost.parquet')
+    pairsFname = os.path.join(config.outputPath, 'pairs.parquet')
     srcFname = os.path.join(config.outputPath, 'src.parquet')
     outFname = os.path.join(config.outputPath, 'out.' + config.output_format)
 
@@ -202,15 +273,6 @@ if __name__ == '__main__':
 
     posts.join(df, 'feat').write.mode('ignore').save(dfpostFname)
     
-    vit_src = udf(lambda post: vitSrc(post,
-                                      config.n, config.gap, config.min_align, config.min_match),
-                  ArrayType(StructType([
-                      StructField('uid', LongType()),
-                      StructField('begin2', IntegerType()),
-                      StructField('end2', IntegerType()),
-                      StructField('begin', IntegerType()),
-                      StructField('end', IntegerType())])))
-
     dfpost = spark.read.load(dfpostFname)
 
     f1 = [f for f in dfpost.columns if f not in ['feat', 'df', 'post']]
@@ -222,28 +284,77 @@ if __name__ == '__main__':
                 'feat'
          ).filter(config.filterpairs
          ).drop('feat', 'df2'
+         ).groupBy(*f2, *f1
+         ).agg(collect_list(struct('post', 'post2', 'df')).alias('plist')
+         ).filter(size('plist') >= config.min_match
+         ).withColumn('post', explode('plist')
+         ).select(*f2, *f1, col('post.*')
          ).groupBy(*f2, 'post2', 'df'
          ).agg(collect_list(struct('uid', 'post')).alias('alg'),
                collect_set(struct('uid', struct(*[f for f in f1 if f != 'uid']))).alias('meta')
          ).groupBy(*f2
          ).agg(sort_array(collect_list(struct('post2', 'df', 'alg'))).alias('post'),
                map_from_entries(flatten(collect_set('meta'))).alias('meta')
-         ).withColumn('src', vit_src('post')
-         ).write.mode('ignore').parquet(srcFname)
+         ).write.mode('ignore').parquet(pairsFname)
+    
+    pairs = spark.read.load(pairsFname)
+    
+    vit_src = udf(lambda post: vitSrc(post,
+                                      config.n, config.gap, config.min_align, config.min_match),
+                  ArrayType(StructType([
+                      StructField('uid', LongType()),
+                      StructField('begin2', IntegerType()),
+                      StructField('end2', IntegerType()),
+                      StructField('begin', IntegerType()),
+                      StructField('end', IntegerType())])))
+
+    pairs.withColumn('src', vit_src('post')).write.mode('ignore').parquet(srcFname)
 
     srcmap = spark.read.load(srcFname)
 
-    srcmap.withColumn('src', arrays_zip(col('src'),
+    # f2 = [f for f in srcmap.columns if f.endswith('2')]
+    # f1 = [f.replace('2', '') for f in f2]
+
+    span_edge = udf(lambda src: spanEdge(src, 200), # config.gap
+                    ArrayType(StructType([
+                        StructField('uid', LongType()),
+                        StructField('left2', IntegerType()),
+                        StructField('begin2', IntegerType()),
+                        StructField('end2', IntegerType()),
+                        StructField('right2', IntegerType()),
+                        StructField('left', IntegerType()),
+                        StructField('begin', IntegerType()),
+                        StructField('end', IntegerType()),
+                        StructField('right', IntegerType())])))
+
+    anchor_align = udf(lambda s1, s2, side: anchorAlign(s1, s2, side),
+                       StructType([
+                           StructField('s1', StringType()),
+                           StructField('s2', StringType())]))
+
+    # We align edges independently, but we could also consider
+    # aligning gaps between target spans jointly so that they don't
+    # overlap.
+    srcmap.withColumn('src', arrays_zip(span_edge('src'),
                                         expr('transform(src, s -> meta[s.uid])'))
          ).drop('post', 'meta', 'info'
          ).select(*f2, explode('src').alias('src')
-         ).select(*f2, col('src.src.*'), col('src.1.*')
+         ).select(*f2, col('src.0.*'), col('src.1.*')
          ).join(termCorpus.select('uid', col(config.text).alias('text')), 'uid'
-         ).withColumn('text', col('text').substr(col('begin') + 1, col('end') - col('begin'))
+         ).withColumn('prefix', col('text').substr(col('left') + 1, col('begin') - col('left'))
+         ).withColumn('suffix', col('text').substr(col('end') - config.n + 1,
+                                                   col('right') - col('end') + config.n)
+         ).withColumn('text', col('text').substr(col('begin') + 1,
+                                                 col('end') - col('begin') - config.n)
          ).join(termCorpus.select(col('uid').alias('uid2'), col(config.text).alias('text2')),
                 'uid2'
+         ).withColumn('prefix2', col('text2').substr(col('left2') + 1, col('begin2') - col('left2'))
+         ).withColumn('suffix2', col('text2').substr(col('end2') - config.n + 1,
+                                                     col('right2') - col('end2') + config.n)
          ).withColumn('text2',
-                      col('text2').substr(col('begin2') + 1, col('end2') - col('begin2'))
+                      col('text2').substr(col('begin2') + 1, col('end2') - col('begin2') - config.n)
+         ).withColumn('lalg', anchor_align('prefix', 'prefix2', lit('left'))
+         ).withColumn('ralg', anchor_align('suffix', 'suffix2', lit('right'))
          ).write.json(outFname)
 
     spark.stop()
