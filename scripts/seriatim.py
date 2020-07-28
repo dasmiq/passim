@@ -3,7 +3,7 @@ import heapq as hq
 import json, os, sys
 from math import ceil, log, inf
 from pyspark.sql import SparkSession, Row
-from pyspark.sql.functions import col, explode, size, udf, struct, length, collect_list, collect_set, sort_array, when, expr, explode, slice, map_from_entries, flatten, xxhash64, monotonically_increasing_id, lit, array, arrays_zip
+from pyspark.sql.functions import col, explode, size, udf, struct, length, collect_list, collect_set, sort_array, when, expr, explode, slice, map_from_entries, flatten, xxhash64, monotonically_increasing_id, lit, array, arrays_zip, concat
 from pyspark.sql.types import *
 
 from dataclasses import dataclass
@@ -80,11 +80,13 @@ def vitSrc(pos, n, max_gap, min_align, min_match):
             # Show we treat gaps on the source side the same? What about retrogrades?
             overlap = min(gap, gap2)
             minsub = ceil(overlap / n)
-            minerr = minsub + gap2 - overlap #abs(gap2 - gap)
+            minerr = minsub + gap2 - overlap
+            # minerr = minsub + abs(gap2 - gap)
             cont = same.score + gap2 * lpcont + minerr * lpmiss + (overlap - minsub) * lpcopy \
                 + min(n, npos - same.pos2) * (lpcont + lpcopy)
             switch = bg + lpswitch + log(0.001) + n * (lpcont + lpcopy)
-            if (gap2 > max_gap or gap > max_gap or m.post < same.pos or switch > cont) and stride > n:
+            if (m.post < same.pos or gap2 > max_gap or gap > max_gap
+                or (switch > cont and stride > n)):
                 score = switch
                 bp[BP(m.uid, npos, m.post)] = BP(0, bglast.pos2, 0)
             else:
@@ -142,8 +144,8 @@ def spanEdge(src, max_gap):
         left2 = max(lend, s.begin2 - max_gap)
         rend = src[i+1].begin2 if (i + 1) < len(src) else s.end2 + max_gap
         right2 = min(rend, s.end2 + max_gap)
-        left = max(0, s.begin - (s.begin2 - left2 + 10))
-        right = s.end + 2 * (right2 - s.end2)
+        left = max(0, s.begin - (s.begin2 - left2 + 20))
+        right = s.end + 20 + (right2 - s.end2)
         res.append((s.uid, left2, s.begin2, s.end2, right2, left, s.begin, s.end, right))
     return res
 
@@ -244,6 +246,7 @@ if __name__ == '__main__':
     dfpostFname = os.path.join(config.outputPath, 'dfpost.parquet')
     pairsFname = os.path.join(config.outputPath, 'pairs.parquet')
     srcFname = os.path.join(config.outputPath, 'src.parquet')
+    extentsFname = os.path.join(config.outputPath, 'extents.parquet')
     outFname = os.path.join(config.outputPath, 'out.' + config.output_format)
 
     corpus = spark.read.option('mergeSchema',
@@ -301,12 +304,7 @@ if __name__ == '__main__':
     
     vit_src = udf(lambda post: vitSrc(post,
                                       config.n, config.gap, config.min_align, config.min_match),
-                  ArrayType(StructType([
-                      StructField('uid', LongType()),
-                      StructField('begin2', IntegerType()),
-                      StructField('end2', IntegerType()),
-                      StructField('begin', IntegerType()),
-                      StructField('end', IntegerType())])))
+                  'array<struct<uid: bigint, begin2: int, end2: int, begin: int, end: int>>')
 
     pairs.withColumn('src', vit_src('post')).write.mode('ignore').parquet(srcFname)
 
@@ -316,45 +314,55 @@ if __name__ == '__main__':
     # f1 = [f.replace('2', '') for f in f2]
 
     span_edge = udf(lambda src: spanEdge(src, 200), # config.gap
-                    ArrayType(StructType([
-                        StructField('uid', LongType()),
-                        StructField('left2', IntegerType()),
-                        StructField('begin2', IntegerType()),
-                        StructField('end2', IntegerType()),
-                        StructField('right2', IntegerType()),
-                        StructField('left', IntegerType()),
-                        StructField('begin', IntegerType()),
-                        StructField('end', IntegerType()),
-                        StructField('right', IntegerType())])))
+                    'array<struct<uid: bigint, left2: int, begin2: int, end2: int, right2: int,'
+                    + ' left: int, begin: int, end: int, right: int>>')
+
+    grab_spans = udf(lambda src, text: ((text[s.left:s.begin],
+                                         text[s.begin:(s.end - config.n)],
+                                         text[(s.end - config.n):s.right]) for s in src),
+                     'array<struct<prefix: string, text: string, suffix: string>>')
+
+    grab_spans2 = udf(lambda src, text: ((text[s.left2:s.begin2],
+                                          text[s.begin2:(s.end2 - config.n)],
+                                          text[(s.end2 - config.n):s.right2]) for s in src),
+                     'array<struct<prefix2: string, text2: string, suffix2: string>>')
 
     anchor_align = udf(lambda s1, s2, side: anchorAlign(s1, s2, side),
-                       StructType([
-                           StructField('s1', StringType()),
-                           StructField('s2', StringType())]))
+                       'struct<s1: string, s2: string>')
 
     # We align edges independently, but we could also consider
     # aligning gaps between target spans jointly so that they don't
     # overlap.
-    srcmap.withColumn('src', arrays_zip(span_edge('src'),
-                                        expr('transform(src, s -> meta[s.uid])'))
-         ).drop('post', 'meta', 'info'
-         ).select(*f2, explode('src').alias('src')
-         ).select(*f2, col('src.0.*'), col('src.1.*')
-         ).join(termCorpus.select('uid', col(config.text).alias('text')), 'uid'
-         ).withColumn('prefix', col('text').substr(col('left') + 1, col('begin') - col('left'))
-         ).withColumn('suffix', col('text').substr(col('end') - config.n + 1,
-                                                   col('right') - col('end') + config.n)
-         ).withColumn('text', col('text').substr(col('begin') + 1,
-                                                 col('end') - col('begin') - config.n)
+
+    spanFields = ['left', 'begin', 'end', 'right']
+    spanFields += [f + '2' for f in spanFields]
+
+    srcmap.withColumn('src', span_edge('src')
+         ).drop('post'
          ).join(termCorpus.select(col('uid').alias('uid2'), col(config.text).alias('text2')),
                 'uid2'
-         ).withColumn('prefix2', col('text2').substr(col('left2') + 1, col('begin2') - col('left2'))
-         ).withColumn('suffix2', col('text2').substr(col('end2') - config.n + 1,
-                                                     col('right2') - col('end2') + config.n)
-         ).withColumn('text2',
-                      col('text2').substr(col('begin2') + 1, col('end2') - col('begin2') - config.n)
+         ).withColumn('text2', grab_spans2('src', 'text2')
+         ).withColumn('src', arrays_zip('src', 'text2')
+         ).drop('meta', 'text2'
+         ).select(*f2, explode('src').alias('src')
+         ).select(*f2, col('src.src.*'), col('src.text2.*')
+         ).groupBy('uid'
+         ).agg(collect_list(struct(*f2, *spanFields, 'prefix2', 'text2', 'suffix2')).alias('src')
+         ).join(termCorpus.withColumnRenamed(config.text, 'text'), 'uid'
+         ).withColumn('text', grab_spans('src', 'text')
+         ).withColumn('src', arrays_zip('src', 'text')
+         ).drop('text'
+         ).select(*f1, explode('src').alias('src')
+         ).select(*f1, col('src.src.*'), col('src.text.*')
          ).withColumn('lalg', anchor_align('prefix', 'prefix2', lit('left'))
          ).withColumn('ralg', anchor_align('suffix', 'suffix2', lit('right'))
-         ).write.json(outFname)
-
+         # ).withColumn('text', concat(col('lalg.s1'), col('text'), col('ralg.s1'))
+         # ).withColumn('text2', concat(col('lalg.s2'), col('text2'), col('ralg.s2'))
+         ).withColumn('begin', col('begin') - length('lalg.s1')
+         ).withColumn('end', col('end') + length('ralg.s1') - config.n
+         ).withColumn('begin2', col('begin2') - length('lalg.s2')
+         ).withColumn('end2', col('end2') + length('ralg.s2') - config.n
+         # ).drop('lalg', 'ralg'
+         ).write.mode('ignore').parquet(extentsFname)
+         
     spark.stop()
