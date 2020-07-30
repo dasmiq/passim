@@ -1,6 +1,7 @@
 import argparse
 import heapq as hq
 import json, os, sys
+from collections import Counter
 from math import ceil, log, inf
 from pyspark.sql import SparkSession, Row
 from pyspark.sql.functions import col, explode, size, udf, struct, length, collect_list, collect_set, sort_array, when, expr, explode, slice, map_from_entries, flatten, xxhash64, monotonically_increasing_id, lit, array, arrays_zip, concat
@@ -11,18 +12,22 @@ from dataclasses import dataclass
 def getPostings(text, n, floating_ngrams):
     tf = dict()
     posts = list()
+    prev = ''
     for i, c in enumerate(text):
-        if c.isalnum() and ( floating_ngrams or i == 0 or not text[i-1].isalnum() ):
+        if c.isalnum() and ( floating_ngrams or i == 0 or not prev.isalnum() ):
+            # buf = ''.join(islice((s for s in islice(text, i, len(text)) if s.isalnum()), n)).lower()
             j = i + 1
-            buf = ''
-            while j < len(text) and len(buf) < n:
+            chars = 1
+            while j < len(text) and chars < n:
                 if text[j].isalnum():
-                    buf += text[j].lower()
+                    chars += 1
                 j += 1
+            buf = ''.join([s for s in text[i:j] if s.isalnum()]).lower()
             if len(buf) >= n:
                 tf[buf] = tf.get(buf, 0) + 1
                 posts.append((buf, i))
-    return [(key, tf[key], i) for key, i in posts]
+        prev = c
+    return [(key, i) for key, i in posts if tf[key] == 1]
 
 def vitSrc(pos, n, max_gap, min_align, min_match):
     @dataclass(frozen=True)
@@ -255,21 +260,17 @@ if __name__ == '__main__':
                                ).withColumn('uid', xxhash64(config.id))
 
     termCorpus = corpus.selectExpr('uid', config.text, *config.fields)
+    f1 = [f for f in termCorpus.columns if f != config.text]
+    f2 = [f + '2' for f in f1]
 
     spark.conf.set('spark.sql.shuffle.partitions', corpus.rdd.getNumPartitions() * 3)
 
     get_postings = udf(lambda text: getPostings(text, config.n, config.floating_ngrams),
-                       ArrayType(StructType([
-                           StructField('feat', StringType()),
-                           StructField('tf', IntegerType()),
-                           StructField('post', IntegerType())])))
-
-    posts = termCorpus.withColumn('post', explode(get_postings(config.text))
-                     ).select(*[col(f) for f in termCorpus.columns], col('post.*')
-                     ).drop(config.text
-                     ).withColumn('feat', xxhash64('feat')
-                     ).filter(col('tf') == 1
-                     ).drop('tf')
+                       'array<struct<feat: string, post: int>>')
+    
+    posts = termCorpus.select(*f1, explode(get_postings(config.text)).alias('post')
+                     ).select(*f1, col('post.*')
+                     ).withColumn('feat', xxhash64('feat'))
 
     df = posts.groupBy('feat').count().select('feat', col('count').cast('int').alias('df')
              ).filter( (col('df') >= config.minDF) & (col('df') <= config.maxDF) )
@@ -278,27 +279,30 @@ if __name__ == '__main__':
     
     dfpost = spark.read.load(dfpostFname)
 
-    f1 = [f for f in dfpost.columns if f not in ['feat', 'df', 'post']]
-    f2 = [f + '2' for f in f1]
+    count_sources = udf(lambda post: dict(Counter(item.uid for s in post for item in s.alg)),
+                        'map<bigint, int>')
 
-    spark.conf.set('spark.sql.mapKeyDedupPolicy', 'LAST_WIN')
-    
-    dfpost.join(dfpost.toDF(*[f + ('2' if f != 'feat' else '') for f in dfpost.columns]),
-                'feat'
-         ).filter(config.filterpairs
-         ).drop('feat', 'df2'
-         ).groupBy(*f2, *f1
-         ).agg(collect_list(struct('post', 'post2', 'df')).alias('plist')
-         ).filter(size('plist') >= config.min_match
-         ).withColumn('post', explode('plist')
-         ).select(*f2, *f1, col('post.*')
-         ).groupBy(*f2, 'post2', 'df'
-         ).agg(collect_list(struct('uid', 'post')).alias('alg'),
-               collect_set(struct('uid', struct(*[f for f in f1 if f != 'uid']))).alias('meta')
-         ).groupBy(*f2
-         ).agg(sort_array(collect_list(struct('post2', 'df', 'alg'))).alias('post'),
-               map_from_entries(flatten(collect_set('meta'))).alias('meta')
-         ).write.mode('ignore').parquet(pairsFname)
+    apos = dfpost.join(dfpost.toDF(*[f + ('2' if f != 'feat' else '') for f in dfpost.columns]),
+                       'feat'
+                ).filter(config.filterpairs
+                ).drop('feat', 'df2'
+                ).groupBy(*f2, 'post2', 'df'
+                ).agg(collect_list(struct(*f1, 'post')).alias('alg'))
+
+    if 'gid' in f1:
+        apos = apos.withColumn('alg', expr('CASE WHEN forall(alg, a -> a.gid <> gid2)' +
+                                           ' THEN alg ELSE filter(alg, a -> a.gid = gid2) END'))
+
+    apos.groupBy(*f2
+       ).agg(collect_list(struct('post2', 'df', 'alg')).alias('post')
+       ).withColumn('freq', count_sources('post')
+       ).withColumn('post',
+                    expr('sort_array(filter(transform(post, ' +
+                         'p -> struct(p.post2 as post2, p.df as df, ' +
+                         f'filter(p.alg, a -> freq[a.uid] >= {config.min_match}) as alg)), ' +
+                         'p -> size(p.alg) > 0))')
+       ).drop('freq'
+       ).write.mode('ignore').parquet(pairsFname)
     
     pairs = spark.read.load(pairsFname)
     
@@ -309,9 +313,6 @@ if __name__ == '__main__':
     pairs.withColumn('src', vit_src('post')).write.mode('ignore').parquet(srcFname)
 
     srcmap = spark.read.load(srcFname)
-
-    # f2 = [f for f in srcmap.columns if f.endswith('2')]
-    # f1 = [f.replace('2', '') for f in f2]
 
     span_edge = udf(lambda src: spanEdge(src, 200), # config.gap
                     'array<struct<uid: bigint, left2: int, begin2: int, end2: int, right2: int,'
