@@ -29,7 +29,7 @@ def getPostings(text, n, floating_ngrams):
         prev = c
     return [(key, i) for key, i in posts if tf[key] == 1]
 
-def vitSrc(pos, n, max_gap, min_align, min_match):
+def vitSrc(pos, n, max_gap, min_align):
     @dataclass(frozen=True)
     class BP:
         lab: int
@@ -41,11 +41,6 @@ def vitSrc(pos, n, max_gap, min_align, min_match):
         pos2: int
         pos: int
         score: float
-
-    doc = dict()
-    for p in pos:
-        for m in p.alg:
-            doc[m.uid] = doc.get(m.uid, 0) + 1
 
     ## b70 docs: 21918104; 237921873725 characters
     N = 100 # 21918104
@@ -77,8 +72,6 @@ def vitSrc(pos, n, max_gap, min_align, min_match):
         bp[BP(0, npos + n, 0)] = BP(0, bglast.pos2, 0)
         # print(prev[0], file=sys.stderr)
         for m in p.alg:
-            if doc.get(m.uid, 0) < min_match:
-                continue
             same = prev.get(m.uid, Score(0, 0, -inf))
             gap = max(0, m.post - same.pos - n)
             gap2 = max(0, p.post2 - same.pos2 - n)
@@ -307,7 +300,7 @@ if __name__ == '__main__':
     pairs = spark.read.load(pairsFname)
     
     vit_src = udf(lambda post: vitSrc(post,
-                                      config.n, config.gap, config.min_align, config.min_match),
+                                      config.n, config.gap, config.min_align),
                   'array<struct<uid: bigint, begin2: int, end2: int, begin: int, end: int>>')
 
     pairs.withColumn('src', vit_src('post')).write.mode('ignore').parquet(srcFname)
