@@ -4,7 +4,7 @@ import json, os, sys
 from collections import Counter
 from math import ceil, log, inf
 from pyspark.sql import SparkSession, Row
-from pyspark.sql.functions import col, explode, size, udf, struct, length, collect_list, collect_set, sort_array, when, expr, explode, slice, map_from_entries, flatten, xxhash64, monotonically_increasing_id, lit, array, arrays_zip, concat
+from pyspark.sql.functions import col, explode, size, udf, struct, length, collect_list, collect_set, sort_array, when, expr, explode, slice, map_from_entries, flatten, xxhash64, lit, array, arrays_zip, concat
 from pyspark.sql.types import *
 
 from dataclasses import dataclass
@@ -291,10 +291,12 @@ if __name__ == '__main__':
        ).agg(collect_list(struct('post2', 'df', 'alg')).alias('post')
        ).withColumn('freq', count_sources('post')
        ).withColumn('post',
-                    expr('sort_array(filter(transform(post, ' +
-                         'p -> struct(p.post2 as post2, p.df as df, ' +
-                         f'filter(p.alg, a -> freq[a.uid] >= {config.min_match}) as alg)), ' +
-                         'p -> size(p.alg) > 0))')
+                    expr(f'''sort_array(filter(
+                               transform(post,
+                                 p -> struct(p.post2 as post2, p.df as df,
+                                             filter(p.alg,
+                                               a -> freq[a.uid] >= {config.min_match}) as alg)),
+                               p -> size(p.alg) > 0))''')
        ).drop('freq'
        ).filter(size('post') > 0
        ).write.mode('ignore').parquet(pairsFname)
