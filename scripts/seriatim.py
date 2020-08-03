@@ -102,10 +102,11 @@ def vitSrc(pos, n, max_gap, min_align):
         # print(bp, file=sys.stderr)
 
     matches = list()
-    cur = BP(0, last + n, 0)
-    while cur.pos2 > 0:
-        matches.append(cur)
-        cur = bp[cur]
+    if len(bp) > 0:
+        cur = BP(0, last + n, 0)
+        while cur.pos2 > 0:
+            matches.append(cur)
+            cur = bp[cur]
     matches.reverse()
 
     # return [(m.lab, m.pos2, m.pos2 + n, m.pos, m.pos + n) for m in matches]
@@ -295,6 +296,7 @@ if __name__ == '__main__':
                          f'filter(p.alg, a -> freq[a.uid] >= {config.min_match}) as alg)), ' +
                          'p -> size(p.alg) > 0))')
        ).drop('freq'
+       ).filter(size('post') > 0
        ).write.mode('ignore').parquet(pairsFname)
     
     pairs = spark.read.load(pairsFname)
@@ -347,16 +349,16 @@ if __name__ == '__main__':
          ).withColumn('src', arrays_zip('src', 'text')
          ).drop('text'
          ).select(*f1, explode('src').alias('src')
-         ).select(*f1, col('src.src.*'), col('src.text.*')
-         ).withColumn('lalg', anchor_align('prefix', 'prefix2', lit('left'))
-         ).withColumn('ralg', anchor_align('suffix', 'suffix2', lit('right'))
-         # ).withColumn('text', concat(col('lalg.s1'), col('text'), col('ralg.s1'))
-         # ).withColumn('text2', concat(col('lalg.s2'), col('text2'), col('ralg.s2'))
+         ).select(*f1, col('src.src.*'), col('src.text.*') # HACK! explode prevents UDF inlining
+         ).withColumn('lalg', explode(array(anchor_align('prefix', 'prefix2', lit('left'))))
+         ).withColumn('ralg', explode(array(anchor_align('suffix', 'suffix2', lit('right'))))
+         ).withColumn('text', concat(col('lalg.s1'), col('text'), col('ralg.s1'))
+         ).withColumn('text2', concat(col('lalg.s2'), col('text2'), col('ralg.s2'))
          ).withColumn('begin', col('begin') - length('lalg.s1')
          ).withColumn('end', col('end') + length('ralg.s1') - config.n
          ).withColumn('begin2', col('begin2') - length('lalg.s2')
          ).withColumn('end2', col('end2') + length('ralg.s2') - config.n
-         # ).drop('lalg', 'ralg'
+         ).drop('lalg', 'ralg'
          ).write.mode('ignore').parquet(extentsFname)
          
     spark.stop()
