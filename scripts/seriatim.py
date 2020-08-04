@@ -1,32 +1,29 @@
 import argparse
 import heapq as hq
 import json, os, sys
-from collections import Counter
+from collections import Counter, deque
 from math import ceil, log, inf
 from pyspark.sql import SparkSession, Row
-from pyspark.sql.functions import col, explode, size, udf, struct, length, collect_list, collect_set, sort_array, when, expr, explode, slice, map_from_entries, flatten, xxhash64, lit, array, arrays_zip, concat
-from pyspark.sql.types import *
+from pyspark.sql.functions import col, explode, size, udf, struct, length, collect_list, collect_set, sort_array, when, expr, explode, map_from_entries, flatten, xxhash64, lit, array, arrays_zip, concat
 
 from dataclasses import dataclass
 
 def getPostings(text, n, floating_ngrams):
     tf = dict()
     posts = list()
-    prev = ''
+    start = deque([], maxlen=n)
+    chars = deque([], maxlen=n)
     for i, c in enumerate(text):
-        if c.isalnum() and ( floating_ngrams or i == 0 or not prev.isalnum() ):
-            # buf = ''.join(islice((s for s in islice(text, i, len(text)) if s.isalnum()), n)).lower()
-            j = i + 1
-            chars = 1
-            while j < len(text) and chars < n:
-                if text[j].isalnum():
-                    chars += 1
-                j += 1
-            buf = ''.join([s for s in text[i:j] if s.isalnum()]).lower()
-            if len(buf) >= n:
-                tf[buf] = tf.get(buf, 0) + 1
-                posts.append((buf, i))
-        prev = c
+        if c.isalnum():
+            prev = start[0] if len(start) == n else -2
+            start.append(i)
+            chars.append(c.lower())
+            if len(chars) == n and ( floating_ngrams or (start[0] - prev) > 1 ):
+                key = ''.join(chars)
+                val = tf.get(key, 0) + 1
+                tf[key] = val
+                if val == 1:
+                    posts.append((key, start[0]))
     return [(key, i) for key, i in posts if tf[key] == 1]
 
 def vitSrc(pos, n, max_gap, min_align):
@@ -205,41 +202,7 @@ def anchorAlign(s1, s2, side):
     else:
         return (s1[0:e1], s2[0:e2])
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Passim Alignment',
-                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('-i', '--id', type=str, default='id',
-                        help='Field for unique document IDs')
-    parser.add_argument('-t', '--text', type=str, default='text',
-                        help='Field for document text')
-    parser.add_argument('-l', '--minDF', type=int, default=2,
-                        help='Lower limit on document frequency', metavar='N')
-    parser.add_argument('-u', '--maxDF', type=int, default=100,
-                        help='Upper limit on document frequency', metavar='N')
-    parser.add_argument('-m', '--min-match', type=int, metavar='N', default=5,
-                        help='Minimum number of n-gram matches between documents')
-    parser.add_argument('-n', '--n', type=int, default=20,
-                        help='n-gram order', metavar='N')
-    parser.add_argument('--floating-ngrams', action='store_true',
-                        help='Allow n-grams to float from word boundaries')
-    parser.add_argument('-g', '--gap', type=int, default=600,
-                        help='Minimum size of gap that separates passages', metavar='N')
-    parser.add_argument('-a', '--min-align', type=int, default=50,
-                         help='Minimum length of alignment', metavar='N')
-    parser.add_argument('--fields', type=str, nargs='+', default=[],
-                        help='List of fileds to index')
-    parser.add_argument('-f', '--filterpairs', type=str, default='uid < uid2',
-                        help='SQL constraint on posting pairs; default=uid < uid2')
-    parser.add_argument('--input-format', type=str, default='json',
-                        help='Input format')
-    parser.add_argument('--output-format', type=str, default='json',
-                        help='Output format')
-    parser.add_argument('inputPath', metavar='<path>', help='input data')
-    parser.add_argument('outputPath', metavar='<path>', help='output')
-    config = parser.parse_args()
-
-    print(config)
-
+def main(config):
     spark = SparkSession.builder.appName('Passim Alignment').getOrCreate()
 
     dfpostFname = os.path.join(config.outputPath, 'dfpost.parquet')
@@ -364,3 +327,40 @@ if __name__ == '__main__':
          ).write.mode('ignore').parquet(extentsFname)
          
     spark.stop()
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Passim Alignment',
+                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('-i', '--id', type=str, default='id',
+                        help='Field for unique document IDs')
+    parser.add_argument('-t', '--text', type=str, default='text',
+                        help='Field for document text')
+    parser.add_argument('-l', '--minDF', type=int, default=2,
+                        help='Lower limit on document frequency', metavar='N')
+    parser.add_argument('-u', '--maxDF', type=int, default=100,
+                        help='Upper limit on document frequency', metavar='N')
+    parser.add_argument('-m', '--min-match', type=int, metavar='N', default=5,
+                        help='Minimum number of n-gram matches between documents')
+    parser.add_argument('-n', '--n', type=int, default=20,
+                        help='n-gram order', metavar='N')
+    parser.add_argument('--floating-ngrams', action='store_true',
+                        help='Allow n-grams to float from word boundaries')
+    parser.add_argument('-g', '--gap', type=int, default=600,
+                        help='Minimum size of gap that separates passages', metavar='N')
+    parser.add_argument('-a', '--min-align', type=int, default=50,
+                         help='Minimum length of alignment', metavar='N')
+    parser.add_argument('--fields', type=str, nargs='+', default=[],
+                        help='List of fileds to index')
+    parser.add_argument('-f', '--filterpairs', type=str, default='uid < uid2',
+                        help='SQL constraint on posting pairs; default=uid < uid2')
+    parser.add_argument('--input-format', type=str, default='json',
+                        help='Input format')
+    parser.add_argument('--output-format', type=str, default='json',
+                        help='Output format')
+    parser.add_argument('inputPath', metavar='<path>', help='input data')
+    parser.add_argument('outputPath', metavar='<path>', help='output')
+    config = parser.parse_args()
+
+    print(config)
+
+    main(config)
