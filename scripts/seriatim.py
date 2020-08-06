@@ -258,7 +258,68 @@ def mergeSpans(spans, uid):
     if curEnd > 0:
         res.append((curBegin, curEnd, boiler, src))
     return res
+
+def clusterExtents(config, extents):
+    s1 = extents.groupBy('uid').agg(sort_array(collect_set(struct('begin', 'end'))).alias('s1'))
+    s2 = extents.groupBy('uid2'
+               ).agg(sort_array(collect_set(struct('begin2', 'end2'))).alias('s2'))
+
+    link_spans = udf(lambda s1, s2: linkSpans(s1, s2),
+                     'array<struct<begin: int, end: int, begin2: int, end2: int>>')
+
+    within = s1.join(s2, col('uid') == col('uid2'), 'leftouter'
+              ).select('uid', explode(link_spans('s1', 's2')).alias('link')
+              ).selectExpr('struct(uid, link.begin2 as begin, link.end2 as end) as src',
+                           'struct(uid, link.begin, link.end) as dst',
+                           'false as boiler'
+              ).distinct()
+
+    boiler = 'gid = gid2' if 'gid' in extents.columns else 'false'
+
+    between = extents.selectExpr('struct(uid, begin, end) as src',
+                                 'struct(uid2 as uid, begin2 as begin, end2 as end) as dst',
+                                 f'{boiler} as boiler')
+
+    vert = extents.selectExpr('struct(uid2 as uid, begin2 as begin, end2 as end) as id',
+                 ).union(extents.selectExpr('struct(uid, begin, end) as id')
+                 ).distinct()
+
+    edges = between.union(within)
+
+    g = GraphFrame(vert, edges)
+    g.cache()
+
+    cc = g.connectedComponents().withColumnRenamed('component', 'cluster')
+
+    merge_spans = udf(lambda spans, uid: mergeSpans(spans, uid),
+                      'array<struct<begin: int, end: int, boiler: boolean, src: array<struct<uid: bigint, begin: int, end: int>>>>')
     
+    cspans = cc.join(edges, col('id') == col('dst'), 'leftouter'
+              ).select(col('id.*'), 'cluster', 'src', 'boiler'
+              ).groupBy('cluster', 'uid'
+              ).agg(collect_set(struct('begin', 'end', 'boiler', 'src')).alias('spans')
+              ).withColumn('spans', explode(merge_spans('spans', 'uid'))
+              ).select('cluster', 'uid', col('spans.*'))
+
+    sizes = cspans.groupBy('cluster'
+                 ).agg(f.countDistinct('uid').alias('size'),
+                       (f.sum(col('boiler').cast('int'))
+                        / (f.count('boiler') - 1.0)).alias('pboiler'))
+    # Subtract 1 from denominator to account for root
+
+    return cspans.join(sizes, 'cluster')
+    
+def clusterJoin(config, clusters, corpus):
+    out = clusters.join(corpus, 'uid'
+                 ).withColumn(config.text,
+                              col(config.text).substr(col('begin'), col('end') - col('begin')))
+
+    if config.output_format != 'parquet':
+        out = out.sort(desc('size'), 'cluster', *[expr(f) for f in config.fields],
+                       col(config.id), 'begin')
+
+    return out
+
 def main(config):
     spark = SparkSession.builder.appName('Passim Alignment').getOrCreate()
     # spark.conf.set('spark.sql.legacy.parquet.datetimeRebaseModeInRead', 'CORRECTED')
@@ -386,74 +447,17 @@ def main(config):
          ).drop('lalg', 'ralg'
          ).write.mode('ignore').parquet(extentsFname)
 
-    extents = spark.read.load(extentsFname)
-
-    s1 = extents.groupBy('uid').agg(sort_array(collect_set(struct('begin', 'end'))).alias('s1'))
-    s2 = extents.groupBy('uid2'
-               ).agg(sort_array(collect_set(struct('begin2', 'end2'))).alias('s2'))
-
-    link_spans = udf(lambda s1, s2: linkSpans(s1, s2),
-                     'array<struct<begin: int, end: int, begin2: int, end2: int>>')
-
-    within = s1.join(s2, col('uid') == col('uid2'), 'leftouter'
-              ).select('uid', explode(link_spans('s1', 's2')).alias('link')
-              ).selectExpr('struct(uid, link.begin2 as begin, link.end2 as end) as src',
-                           'struct(uid, link.begin, link.end) as dst',
-                           'false as boiler'
-              ).distinct()
-
-    boiler = 'gid = gid2' if 'gid' in f1 else 'false'
-
-    between = extents.selectExpr('struct(uid, begin, end) as src',
-                                 'struct(uid2 as uid, begin2 as begin, end2 as end) as dst',
-                                 f'{boiler} as boiler')
-
-    vert = extents.selectExpr('struct(uid2 as uid, begin2 as begin, end2 as end) as id',
-                 ).union(extents.selectExpr('struct(uid, begin, end) as id')
-                 ).distinct()
-
-    edges = between.union(within)
-
     spark.conf.set('spark.sql.shuffle.partitions', spark.sparkContext.defaultParallelism)
-
-    g = GraphFrame(vert, edges)
-    g.cache()
-
     spark.sparkContext.setCheckpointDir(os.path.join(config.outputPath, 'tmp'))
-    cc = g.connectedComponents().withColumnRenamed('component', 'cluster')
 
-    merge_spans = udf(lambda spans, uid: mergeSpans(spans, uid),
-                      'array<struct<begin: int, end: int, boiler: boolean, src: array<struct<uid: bigint, begin: int, end: int>>>>')
-    
-    cspans = cc.join(edges, col('id') == col('dst'), 'leftouter'
-              ).select(col('id.*'), 'cluster', 'src', 'boiler'
-              ).groupBy('cluster', 'uid'
-              ).agg(collect_set(struct('begin', 'end', 'boiler', 'src')).alias('spans')
-              ).withColumn('spans', explode(merge_spans('spans', 'uid'))
-              ).select('cluster', 'uid', col('spans.*'))
-
-    sizes = cspans.groupBy('cluster'
-                 ).agg(f.countDistinct('uid').alias('size'),
-                       (f.sum(col('boiler').cast('int'))
-                        / (f.count('boiler') - 1.0)).alias('pboiler'))
-    # Subtract 1 from denominator to account for root
-
-    cspans.join(sizes, 'cluster').write.mode('ignore').parquet(clustersFname)
+    clusterExtents(config,
+                   spark.read.load(extentsFname)).write.mode('ignore').parquet(clustersFname)
 
     spark.conf.set('spark.sql.shuffle.partitions', corpus.rdd.getNumPartitions() * 3)
-
-    clusters = spark.read.load(clustersFname)
-
-    out = clusters.join(corpus, 'uid'
-                 ).withColumn(config.text,
-                              col(config.text).substr(col('begin'), col('end') - col('begin')))
-
-    if config.output_format != 'parquet':
-        out = out.sort(desc('size'), 'cluster', *[expr(f) for f in config.fields],
-                       col(config.id), 'begin')
-
-    out.write.mode('ignore').format(config.output_format).save(outFname)
     
+    clusterJoin(config, spark.read.load(clustersFname),
+                corpus).write.mode('ignore').format(config.output_format).save(outFname)
+
     spark.stop()
 
 if __name__ == '__main__':
