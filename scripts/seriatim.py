@@ -1,7 +1,7 @@
 import argparse
 import heapq as hq
 import json, os, sys
-from collections import Counter, deque
+from collections import deque
 from intervaltree import Interval, IntervalTree
 from math import ceil, log, inf
 from pyspark.sql import SparkSession, Row
@@ -31,6 +31,18 @@ def getPostings(text, n, floating_ngrams):
                 if val == 1:
                     posts.append((key, start[0]))
     return [(key, i) for key, i in posts if tf[key] == 1]
+
+def mergePosts(posts):
+    matches = dict()
+    for plist in posts:
+        for p in plist:
+            key = (p.post2, p.df)
+            val = matches.get(key, list())
+            val.append(p.alg)
+            matches[key] = val
+    res = [(k[0], k[1], v) for k, v in matches.items()]
+    res.sort()
+    return res
 
 def vitSrc(pos, n, max_gap, min_align):
     @dataclass(frozen=True)
@@ -347,8 +359,8 @@ transform({pageCol},
 
 def main(config):
     spark = SparkSession.builder.appName('Passim Alignment').getOrCreate()
-    # spark.conf.set('spark.sql.legacy.parquet.datetimeRebaseModeInRead', 'CORRECTED')
-    # spark.conf.set('spark.sql.legacy.parquet.datetimeRebaseModeInWrite', 'CORRECTED')
+    spark.conf.set('spark.sql.legacy.parquet.datetimeRebaseModeInRead', 'CORRECTED')
+    spark.conf.set('spark.sql.legacy.parquet.datetimeRebaseModeInWrite', 'CORRECTED')
 
     dfpostFname = os.path.join(config.outputPath, 'dfpost.parquet')
     pairsFname = os.path.join(config.outputPath, 'pairs.parquet')
@@ -382,32 +394,22 @@ def main(config):
     
     dfpost = spark.read.load(dfpostFname)
 
-    count_sources = udf(lambda post: dict(Counter(item.uid for s in post for item in s.alg)),
-                        'map<bigint, int>')
+    merge_posts = udf(lambda posts: mergePosts(posts),
+                      'array<struct<post2: int, df: int, alg: array<struct<uid: bigint, post:int >>>>')
 
     apos = dfpost.join(dfpost.toDF(*[f + ('2' if f != 'feat' else '') for f in dfpost.columns]),
                        'feat'
                 ).filter(config.filterpairs
                 ).drop('feat', 'df2'
-                ).groupBy(*f2, 'post2', 'df'
-                ).agg(collect_list(struct(*f1, 'post')).alias('alg'))
-
-    if 'gid' in f1:
-        apos = apos.withColumn('alg', expr('CASE WHEN forall(alg, a -> a.gid <> gid2)' +
-                                           ' THEN alg ELSE filter(alg, a -> a.gid = gid2) END'))
+                ).groupBy(*f2, struct('uid',
+                                      struct(*[f for f in f1 if f != 'uid'])).alias('info')
+                ).agg(collect_list(struct('post2', 'df',
+                                          struct('uid', 'post').alias('alg'))).alias('post')
+                ).filter(size('post') >= config.min_match)
 
     apos.groupBy(*f2
-       ).agg(collect_list(struct('post2', 'df', 'alg')).alias('post')
-       ).withColumn('freq', count_sources('post')
-       ).withColumn('post',
-                    expr(f'''sort_array(filter(
-                               transform(post,
-                                 p -> struct(p.post2 as post2, p.df as df,
-                                             filter(p.alg,
-                                               a -> freq[a.uid] >= {config.min_match}) as alg)),
-                               p -> size(p.alg) > 0))''')
-       ).drop('freq'
-       ).filter(size('post') > 0
+       ).agg(map_from_entries(collect_list('info')).alias('meta'),
+             merge_posts(collect_list('post')).alias('post')
        ).write.mode('ignore').parquet(pairsFname)
     
     pairs = spark.read.load(pairsFname)
