@@ -10,6 +10,9 @@ from pyspark.sql.functions import (col, desc, explode, size, udf, struct, length
                                    expr, map_from_entries, flatten, xxhash64, lit,
                                    array, arrays_zip)
 import pyspark.sql.functions as f
+from pyspark.ml import Pipeline
+from pyspark.ml.classification import LogisticRegression
+from pyspark.ml.feature import RFormula, SQLTransformer
 from graphframes import GraphFrame
 
 from dataclasses import dataclass
@@ -44,7 +47,7 @@ def mergePosts(posts):
     res.sort()
     return res
 
-def vitSrc(pos, n, max_gap, min_align):
+def vitSrc(pos, prior, n, max_gap, min_align):
     @dataclass(frozen=True)
     class BP:
         lab: int
@@ -56,6 +59,9 @@ def vitSrc(pos, n, max_gap, min_align):
         pos2: int
         pos: int
         score: float
+
+    lZ = log(sum(prior.values()))
+    lprior = {k:(log(v) - lZ) for k, v in prior.items()}
 
     ## b70 docs: 21918104; 237921873725 characters
     N = 100 # 21918104
@@ -97,7 +103,7 @@ def vitSrc(pos, n, max_gap, min_align):
             # minerr = minsub + abs(gap2 - gap)
             cont = same.score + gap2 * lpcont + minerr * lpmiss + (overlap - minsub) * lpcopy \
                 + min(n, npos - same.pos2) * (lpcont + lpcopy)
-            switch = bg + lpswitch + log(0.001) + n * (lpcont + lpcopy)
+            switch = bg + lpswitch + lprior.get(m.uid, log(0.001)) + n * (lpcont + lpcopy)
             if (m.post < same.pos or gap2 > max_gap or gap > max_gap
                 or (switch > cont and stride > n)):
                 score = switch
@@ -150,6 +156,15 @@ def vitSrc(pos, n, max_gap, min_align):
         i += 1
 
     return spans
+
+def srcStats(src, docs):
+    N = len(src)
+    counts = dict()
+    for d in docs:
+        counts[d] = 0
+    for s in src:
+        counts[s.uid] = counts.get(s.uid, 0) + 1
+    return [(uid, [(1, count), (0, N - count)]) for uid, count in counts.items()]
 
 def spanEdge(src, max_gap):
     res = list()
@@ -365,6 +380,7 @@ def main(config):
     dfpostFname = os.path.join(config.outputPath, 'dfpost.parquet')
     pairsFname = os.path.join(config.outputPath, 'pairs.parquet')
     srcFname = os.path.join(config.outputPath, 'src.parquet')
+    featFname = os.path.join(config.outputPath, 'feat.parquet')
     extentsFname = os.path.join(config.outputPath, 'extents.parquet')
     clustersFname = os.path.join(config.outputPath, 'clusters.parquet')
     outFname = os.path.join(config.outputPath, 'out.' + config.output_format)
@@ -414,13 +430,58 @@ def main(config):
     
     pairs = spark.read.load(pairsFname)
     
-    vit_src = udf(lambda post: vitSrc(post,
+    vit_src = udf(lambda post, prior: vitSrc(post, prior,
                                       config.n, config.gap, config.min_align),
                   'array<struct<uid: bigint, begin2: int, end2: int, begin: int, end: int>>')
 
-    pairs.withColumn('src', vit_src('post')).write.mode('ignore').parquet(srcFname)
+    pairs.withColumn('prior', f.map_from_arrays(f.map_keys('meta'),
+                                                f.array_repeat(lit(1.0), size('meta')))
+        ).withColumn('src', vit_src('post', 'prior')
+        ).write.mode('ignore').parquet(srcFname)
 
     srcmap = spark.read.load(srcFname)
+
+    if config.link_model:
+        src_stats = udf(lambda src, docs: srcStats(src, docs),
+                        'array<struct<uid:bigint, stats: array<struct<label:int, weight:int>>>>')
+
+        data = srcmap.select(*f2, 'meta',
+                             explode(src_stats('src', f.map_keys('meta'))).alias('stats')
+                    ).select(*f2, 'meta', col('stats.*')
+                    ).select(*f2, 'uid', (col('meta')[col('uid')]).alias('info'),
+                             explode('stats').alias('stats')
+                    ).select(*f2, 'uid', col('info.*'), col('stats.*')
+                    ).filter(col('weight') > 0)
+
+        # data.write.save(featFname)
+
+        stages = []
+        if config.link_features:
+            stages.append(SQLTransformer(statement=
+                                         f'SELECT *, {config.link_features} FROM __THIS__'))
+
+        stages.append(RFormula(formula=f'label ~ {config.link_model}'))
+        stages.append(LogisticRegression(maxIter=10, regParam=0.1, weightCol='weight',
+                                         standardization=False))
+        pipeline = Pipeline(stages=stages)
+
+        model = pipeline.fit(data)
+
+        # model.save(os.path.join(config.outputPath, "model0"))
+
+        v1 = udf(lambda v: float(v[1]), 'double')
+
+        prior = model.transform(data).select('uid2', 'uid', v1('probability').alias('prob')
+                    ).distinct(
+                    ).groupBy('uid2'
+                    ).agg(map_from_entries(collect_list(struct('uid', 'prob'))).alias('prior'))
+        
+        srcmap.drop('prior'
+             ).join(prior, 'uid2'
+             ).withColumn('src', vit_src('post', 'prior')
+             ).write.mode('ignore').parquet(os.path.join(config.outputPath, 'src1.parquet'))
+
+        exit(0)
 
     span_edge = udf(lambda src: spanEdge(src, 200), # config.gap
                     'array<struct<uid: bigint, left2: int, begin2: int, end2: int, right2: int,'
@@ -513,10 +574,16 @@ if __name__ == '__main__':
                         help='List of fileds to index')
     parser.add_argument('-f', '--filterpairs', type=str, default='uid < uid2',
                         help='SQL constraint on posting pairs; default=uid < uid2')
+    parser.add_argument('--link-model', type=str, default=None,
+                        help='Link model in R format')
+    parser.add_argument('--link-features', type=str, default=None,
+                        help='Link model features as SQL SELECT')
     parser.add_argument('--input-format', type=str, default='json',
                         help='Input format')
     parser.add_argument('--output-format', type=str, default='json',
                         help='Output format')
+    parser.add_argument('--link_model', type=str, default=None,
+                        help='Link model in R format')
     parser.add_argument('inputPath', metavar='<path>', help='input data')
     parser.add_argument('outputPath', metavar='<path>', help='output')
     config = parser.parse_args()
