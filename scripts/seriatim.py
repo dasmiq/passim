@@ -41,7 +41,7 @@ def mergePosts(posts):
         for p in plist:
             key = (p.post2, p.df)
             val = matches.get(key, list())
-            val.append(p.alg)
+            val.extend(p.alg)
             matches[key] = val
     res = [(k[0], k[1], v) for k, v in matches.items()]
     res.sort()
@@ -418,23 +418,28 @@ def main(config):
                 ).filter(config.filterpairs
                 ).drop('feat', 'df2'
                 ).groupBy(*f2, struct('uid',
-                                      struct(*[f for f in f1 if f != 'uid'])).alias('info')
+                                      struct(*[f for f in f1 if f != 'uid'])).alias('meta')
                 ).agg(collect_list(struct('post2', 'df',
-                                          struct('uid', 'post').alias('alg'))).alias('post')
+                                          array(struct('uid',
+                                                       'post')).alias('alg'))).alias('post')
                 ).filter(size('post') >= config.min_match)
 
-    apos.groupBy(*f2
-       ).agg(map_from_entries(collect_list('info')).alias('meta'),
-             merge_posts(collect_list('post')).alias('post')
-       ).write.mode('ignore').parquet(pairsFname)
-    
-    pairs = spark.read.load(pairsFname)
+    if config.all_pairs:
+        apos = apos.withColumn('meta', map_from_entries(array('meta'))
+                  ).withColumn('post', sort_array('post'))
+    else:
+        apos = apos.groupBy(*f2
+                  ).agg(map_from_entries(collect_list('meta')).alias('meta'),
+                        merge_posts(collect_list('post')).alias('post'))
+
+    apos.write.mode('ignore').parquet(pairsFname)
     
     vit_src = udf(lambda post, prior: vitSrc(post, prior,
                                       config.n, config.gap, config.min_align),
                   'array<struct<uid: bigint, begin2: int, end2: int, begin: int, end: int>>')
 
-    pairs.withColumn('prior', f.map_from_arrays(f.map_keys('meta'),
+    spark.read.load(pairsFname
+        ).withColumn('prior', f.map_from_arrays(f.map_keys('meta'),
                                                 f.array_repeat(lit(1.0), size('meta')))
         ).withColumn('src', vit_src('post', 'prior')
         ).write.mode('ignore').parquet(srcFname)
@@ -574,6 +579,8 @@ if __name__ == '__main__':
                         help='List of fileds to index')
     parser.add_argument('-f', '--filterpairs', type=str, default='uid < uid2',
                         help='SQL constraint on posting pairs; default=uid < uid2')
+    parser.add_argument('--all-pairs', action='store_true',
+                        help='Compute alignments for all pairs.')
     parser.add_argument('--link-model', type=str, default=None,
                         help='Link model in R format')
     parser.add_argument('--link-features', type=str, default=None,
@@ -582,8 +589,6 @@ if __name__ == '__main__':
                         help='Input format')
     parser.add_argument('--output-format', type=str, default='json',
                         help='Output format')
-    parser.add_argument('--link_model', type=str, default=None,
-                        help='Link model in R format')
     parser.add_argument('inputPath', metavar='<path>', help='input data')
     parser.add_argument('outputPath', metavar='<path>', help='output')
     config = parser.parse_args()
