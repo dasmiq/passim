@@ -80,7 +80,7 @@ case class Span(val begin: Int, val end: Int) {
   }
 }
 
-case class Post(feat: Long, tf: Int, post: Int)
+case class Post(feat: Long, post: Int)
 
 case class PassAlign(id1: String, id2: String,
   s1: String, s2: String, b1: Int, e1: Int, n1: Int, b2: Int, e2: Int, n2: Int,
@@ -414,11 +414,12 @@ transform($pageCol,
           if ( buf.length >= minFeatLen ) {
             val key = hashString(buf.toString)
             tf(key) += 1
-            res += Post(key, tf(key), i)
+            if ( tf(key) == 1 )
+              res += Post(key, i)
           }
         }
       }
-      res.toSeq
+      res.toSeq.filter { p => tf(p.feat) == 1 }
     }
   }
 
@@ -1186,10 +1187,7 @@ transform($pageCol,
       .withColumn("post", explode(getPostings(col(config.text))))
       .drop(config.text)
       .withColumn("feat", 'post("feat"))
-      .withColumn("tf", 'post("tf"))
       .withColumn("post", 'post("post"))
-      .filter { 'tf === 1 }
-      .drop("tf")
 
     val df = posts.groupBy("feat").count.select('feat, 'count.cast("int") as "df")
       .filter { 'df >= config.minDF && 'df <= config.maxDF }
