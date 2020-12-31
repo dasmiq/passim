@@ -1012,7 +1012,7 @@ transform($pageCol,
   }
   val lineStart = udf { (text: String, begin: Int) =>
     var start = begin
-    while ( start > 0 && (begin - start) < 20 && text.charAt(start - 1) != '\n' ) {
+    while ( start > 0 && (begin - start) < 100 && text.charAt(start - 1) != '\n' ) {
       start -= 1
     }
     if ( start > 0 && text.charAt(start - 1) != '\n' )
@@ -1022,7 +1022,7 @@ transform($pageCol,
   }
   val lineStop = udf { (text: String, end: Int) =>
     var stop = end
-    while ( stop < text.length && (stop - end) < 20 && text.charAt(stop - 1) != '\n' ) {
+    while ( stop < text.length && (stop - end) < 100 && text.charAt(stop - 1) != '\n' ) {
       stop += 1
     }
     if ( stop < text.length && text.charAt(stop - 1) != '\n' )
