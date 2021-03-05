@@ -372,7 +372,47 @@ transform({pageCol},
 
     return out
 
-def main(config):
+def main(args):
+    parser = argparse.ArgumentParser(description='Passim Alignment',
+                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('-i', '--id', type=str, default='id',
+                        help='Field for unique document IDs')
+    parser.add_argument('-t', '--text', type=str, default='text',
+                        help='Field for document text')
+    parser.add_argument('-l', '--minDF', type=int, default=2,
+                        help='Lower limit on document frequency', metavar='N')
+    parser.add_argument('-u', '--maxDF', type=int, default=100,
+                        help='Upper limit on document frequency', metavar='N')
+    parser.add_argument('-m', '--min-match', type=int, metavar='N', default=5,
+                        help='Minimum number of n-gram matches between documents')
+    parser.add_argument('-n', '--n', type=int, default=20,
+                        help='n-gram order', metavar='N')
+    parser.add_argument('--floating-ngrams', action='store_true',
+                        help='Allow n-grams to float from word boundaries')
+    parser.add_argument('-g', '--gap', type=int, default=600,
+                        help='Minimum size of gap that separates passages', metavar='N')
+    parser.add_argument('-a', '--min-align', type=int, default=50,
+                         help='Minimum length of alignment', metavar='N')
+    parser.add_argument('--fields', type=str, nargs='+', default=[],
+                        help='List of fileds to index')
+    parser.add_argument('-f', '--filterpairs', type=str, default='uid < uid2',
+                        help='SQL constraint on posting pairs; default=uid < uid2')
+    parser.add_argument('--all-pairs', action='store_true',
+                        help='Compute alignments for all pairs.')
+    parser.add_argument('--link-model', type=str, default=None,
+                        help='Link model in R format')
+    parser.add_argument('--link-features', type=str, default=None,
+                        help='Link model features as SQL SELECT')
+    parser.add_argument('--input-format', type=str, default='json',
+                        help='Input format')
+    parser.add_argument('--output-format', type=str, default='json',
+                        help='Output format')
+    parser.add_argument('inputPath', metavar='<path>', help='input data')
+    parser.add_argument('outputPath', metavar='<path>', help='output')
+    config = parser.parse_args(args)
+
+    print(config)
+
     spark = SparkSession.builder.appName('Passim Alignment').getOrCreate()
     spark.conf.set('spark.sql.legacy.parquet.datetimeRebaseModeInRead', 'CORRECTED')
     spark.conf.set('spark.sql.legacy.parquet.datetimeRebaseModeInWrite', 'CORRECTED')
@@ -555,44 +595,5 @@ def main(config):
     spark.stop()
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Passim Alignment',
-                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('-i', '--id', type=str, default='id',
-                        help='Field for unique document IDs')
-    parser.add_argument('-t', '--text', type=str, default='text',
-                        help='Field for document text')
-    parser.add_argument('-l', '--minDF', type=int, default=2,
-                        help='Lower limit on document frequency', metavar='N')
-    parser.add_argument('-u', '--maxDF', type=int, default=100,
-                        help='Upper limit on document frequency', metavar='N')
-    parser.add_argument('-m', '--min-match', type=int, metavar='N', default=5,
-                        help='Minimum number of n-gram matches between documents')
-    parser.add_argument('-n', '--n', type=int, default=20,
-                        help='n-gram order', metavar='N')
-    parser.add_argument('--floating-ngrams', action='store_true',
-                        help='Allow n-grams to float from word boundaries')
-    parser.add_argument('-g', '--gap', type=int, default=600,
-                        help='Minimum size of gap that separates passages', metavar='N')
-    parser.add_argument('-a', '--min-align', type=int, default=50,
-                         help='Minimum length of alignment', metavar='N')
-    parser.add_argument('--fields', type=str, nargs='+', default=[],
-                        help='List of fileds to index')
-    parser.add_argument('-f', '--filterpairs', type=str, default='uid < uid2',
-                        help='SQL constraint on posting pairs; default=uid < uid2')
-    parser.add_argument('--all-pairs', action='store_true',
-                        help='Compute alignments for all pairs.')
-    parser.add_argument('--link-model', type=str, default=None,
-                        help='Link model in R format')
-    parser.add_argument('--link-features', type=str, default=None,
-                        help='Link model features as SQL SELECT')
-    parser.add_argument('--input-format', type=str, default='json',
-                        help='Input format')
-    parser.add_argument('--output-format', type=str, default='json',
-                        help='Output format')
-    parser.add_argument('inputPath', metavar='<path>', help='input data')
-    parser.add_argument('outputPath', metavar='<path>', help='output')
-    config = parser.parse_args()
-
-    print(config)
-
-    main(config)
+    import sys
+    main(sys.argv[1:])
