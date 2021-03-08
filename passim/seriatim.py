@@ -138,6 +138,7 @@ def vitSrc(pos, prior, n, max_gap, min_align):
     while i < len(matches):
         if matches[i].lab != 0:
             start = matches[i]
+            m = list()
             j = i
             while j < len(matches):
                 if matches[j].lab == 0:
@@ -149,8 +150,9 @@ def vitSrc(pos, prior, n, max_gap, min_align):
                     else:
                         if (matches[j-1].pos2 - matches[i].pos2 + n) >= min_align:
                             spans.append((matches[i].lab, matches[i].pos2, matches[j-1].pos2 + n,
-                                          matches[i].pos, matches[j-1].pos + n))
+                                          matches[i].pos, matches[j-1].pos + n, m))
                         break
+                m.append((matches[j].pos2, matches[j].pos))
                 j += 1
             i = j
         i += 1
@@ -175,7 +177,7 @@ def spanEdge(src, max_gap):
         right2 = min(rend, s.end2 + max_gap)
         left = max(0, s.begin - (s.begin2 - left2 + 20))
         right = s.end + 20 + (right2 - s.end2)
-        res.append((s.uid, left2, s.begin2, s.end2, right2, left, s.begin, s.end, right))
+        res.append((s.uid, left2, s.begin2, s.end2, right2, left, s.begin, s.end, right, s.anchors))
     return res
 
 def anchorAlign(s1, s2, side):
@@ -216,10 +218,10 @@ def anchorAlign(s1, s2, side):
             if t < len(s2):
                 if s1[s].lower() == s2[t].lower() or (s1[s].isspace() and s2[t].isspace()): #copy
                     cand.append((score - lpcopy, (s + 1, t + 1, e1, e2)))
-                else:
+                elif s1[s] != '\n' and s2[t] != '\n':
                     cand.append((score - lpedit, (s + 1, t + 1, e1, e2)))
         if t < len(s2):         # insert
-            cand.append((score - lpedit, (s, t + 1, e1, e1)))
+            cand.append((score - lpedit, (s, t + 1, e1, e1))) # e1 typo?
         for c in cand:
             (score, item) = c
             if item[2] == 0 and abs(item[0] - item[1]) > width:
@@ -234,6 +236,107 @@ def anchorAlign(s1, s2, side):
         return (s1[e1-1::-1], s2[e2-1::-1])
     else:
         return (s1[0:e1], s2[0:e2])
+
+def levAlign(s1, s2):
+    width = 10
+    V = 256
+    logV = log(V)
+    pcopy = 0.8
+    lpcopy = log(pcopy)
+    lpedit = log(1 - pcopy) - log(2 * V)
+
+    s1 = s1.replace('-', '\u2010')
+    s2 = s2.replace('-', '\u2010')
+    if len(s1) == len(s2) and s1 == s2: # There's probably a length break-even point here.
+        return (s1, s2)
+
+    chart = {}
+    bp = {}
+    pq = [(0, (0, 0))]
+    while len(pq) > 0:
+        #print(pq)
+        top = hq.heappop(pq)
+        #print(top)
+        (score, item) = top
+        (e1, e2) = item
+        if e1 == len(s1) and e2 == len(s2):
+            break
+        cand = list()
+        if e1 < len(s1):         # delete
+            cand.append((score - lpedit, (e1 + 1, e2)))
+            if e2 < len(s2):
+                if s1[e1].lower() == s2[e2].lower() or (s1[e1].isspace() and s2[e2].isspace()): #copy
+                    cand.append((score - lpcopy, (e1 + 1, e2 + 1)))
+                elif s1[e1] != '\n' and s2[e2] != '\n':
+                    cand.append((score - lpedit, (e1 + 1, e2 + 1)))
+        if e2 < len(s2):         # insert
+            cand.append((score - lpedit, (e1, e2 + 1)))
+        for c in cand:
+            (score, item) = c
+            if abs(item[0] - item[1]) > width:
+                continue
+            if chart.get(item, inf) > score:
+                chart[item] = score
+                bp[item] = (e1, e2)
+                hq.heappush(pq, c)
+                
+    (score, (e1, e2)) = top
+    if e1 == len(s1) and e2 == len(s2):
+        alg1 = list()
+        alg2 = list()
+        while e1 > 0 or e2 > 0:
+            (p1, p2) = bp[(e1, e2)]
+            if p1 < e1:
+                alg1 += s1[p1]
+                if p2 < e2:
+                    alg2 += s2[p2]
+                else:
+                    alg2 += '-'
+            else:
+                alg1 += '-'
+                alg2 += s2[p2]
+            e1 = p1
+            e2 = p2
+        return (''.join(reversed(alg1)), ''.join(reversed(alg2)))
+    else:                       # alignment failed
+        return (s1 + '-' * len(s2), '-' * len(s1) + s2)
+
+def chunkAlign(begin, begin2, text, text2, anchors):
+    alg1 = ''
+    alg2 = ''
+    b1 = 0
+    b2 = 0
+    for a in anchors:
+        e1 = a.pos - begin
+        e2 = a.pos2 - begin2
+        (s1, s2) = levAlign(text[b1:e1], text2[b2:e2])
+        alg1 += s1
+        alg2 += s2
+        b1 = e1
+        b2 = e2
+    (s1, s2) = levAlign(text[b1:len(text)], text2[b2:len(text2)])
+    alg1 += s1
+    alg2 += s2
+    return (alg1, alg2)
+
+def targetLines(begin, begin2, alg):
+    lines = list()
+    start = 0
+    b1 = begin
+    b2 = begin2
+    end = 0
+    while end < len(alg.s2):
+        if alg.s2[end] == '\n':
+            s1 = alg.s1[start:(end+1)]
+            s2 = alg.s2[start:(end+1)]
+            lines.append((b1, b2, s1, s2))
+            b1 += len(s1) - s1.count('-')
+            b2 += len(s2) - s2.count('-')
+            start = end + 1
+        end += 1
+    if start < len(alg.s2):
+        lines.append((b1, b2, alg.s1[start:len(alg.s1)], alg.s2[start:len(alg.s2)]))
+    return lines
 
 def loverlap(s1, s2):
     return max(0, min(s1.end, s2.end) - max(s1.begin, s2.begin))
@@ -399,6 +502,8 @@ def main(args):
                         help='SQL constraint on posting pairs; default=uid < uid2')
     parser.add_argument('--all-pairs', action='store_true',
                         help='Compute alignments for all pairs.')
+    parser.add_argument('--linewise', action='store_true',
+                        help='Output linewise alignments')
     parser.add_argument('--link-model', type=str, default=None,
                         help='Link model in R format')
     parser.add_argument('--link-features', type=str, default=None,
@@ -476,7 +581,7 @@ def main(args):
     
     vit_src = udf(lambda post, prior: vitSrc(post, prior,
                                       config.n, config.gap, config.min_align),
-                  'array<struct<uid: bigint, begin2: int, end2: int, begin: int, end: int>>')
+                  'array<struct<uid: bigint, begin2: int, end2: int, begin: int, end: int, anchors: array<struct<pos2: int, pos: int>>>>')
 
     spark.read.load(pairsFname
         ).withColumn('prior', f.map_from_arrays(f.map_keys('meta'),
@@ -530,7 +635,7 @@ def main(args):
 
     span_edge = udf(lambda src: spanEdge(src, 200), # config.gap
                     'array<struct<uid: bigint, left2: int, begin2: int, end2: int, right2: int,'
-                    + ' left: int, begin: int, end: int, right: int>>')
+                    + ' left: int, begin: int, end: int, right: int, anchors: array<struct<pos2: int, pos: int>>>>')
 
     grab_spans = udf(lambda src, text: ((text[s.left:s.begin],
                                          text[s.begin:(s.end - config.n)],
@@ -562,7 +667,7 @@ def main(args):
          ).select(*f2, explode('src').alias('src')
          ).select(*f2, col('src.src.*'), col('src.text2.*')
          ).groupBy('uid'
-         ).agg(collect_list(struct(*f2, *spanFields, 'prefix2', 'text2', 'suffix2')).alias('src')
+         ).agg(collect_list(struct(*f2, *spanFields, 'prefix2', 'text2', 'suffix2', 'anchors')).alias('src')
          ).join(termCorpus.withColumnRenamed(config.text, 'text'), 'uid'
          ).withColumn('text', grab_spans('src', 'text')
          ).withColumn('src', arrays_zip('src', 'text')
@@ -577,15 +682,40 @@ def main(args):
          ).withColumn('end', col('end') + length('ralg.s1') - config.n
          ).withColumn('begin2', col('begin2') - length('lalg.s2')
          ).withColumn('end2', col('end2') + length('ralg.s2') - config.n
-         ).drop('lalg', 'ralg'
+         ).drop('lalg', 'ralg', 'prefix', 'prefix2', 'suffix', 'suffix2' # debug fields
+         ).drop('left', 'right', 'left2', 'right2'
          ).write.mode('ignore').parquet(extentsFname)
+
+    extents = spark.read.load(extentsFname)
+
+    if config.linewise:
+        chunk_align = udf(lambda begin, begin2, text, text2, anchors:
+                          chunkAlign(begin, begin2, text, text2, anchors),
+                          'struct<s1: string, s2: string>')
+        target_lines = udf(lambda begin, begin2, alg: targetLines(begin, begin2, alg),
+                           'array<struct<b1: int, b2: int, s1: string, s2: string>>')
+
+        extentSet = set(extents.columns).difference(['uid'])
+        simpleFields = [f['name'] for f in json.loads(corpus.schema.json())['fields']
+                        if (isinstance(f['type'], str) and f['name'] not in extentSet)]
+        
+        alg = extents.withColumn('alg', chunk_align('begin', 'begin2', 'text', 'text2', 'anchors')
+                    ).drop('anchors'
+                    ).join(corpus.select(*simpleFields), 'uid'
+                    ).join(corpus.selectExpr(*[f'{n} as {n}2' for n in simpleFields]), 'uid2')
+        
+        lines = alg.withColumn('lines', target_lines('begin', 'begin2', 'alg')
+                    ).drop('alg', 'text', 'text2', 'begin', 'end', 'begin2', 'end2')
+        
+        lines.selectExpr(*[f for f in lines.columns if f != 'lines'], 'inline(lines)'
+                         ).write.json(os.path.join(config.outputPath, 'pass.json'))
+        exit(0)
 
     spark.conf.set('spark.sql.shuffle.partitions', spark.sparkContext.defaultParallelism)
     spark.sparkContext.setCheckpointDir(os.path.join(config.outputPath, 'tmp'))
 
     # TODO: Investigate why connected component computation still runs when output exists.
-    clusterExtents(config,
-                   spark.read.load(extentsFname)).write.mode('ignore').parquet(clustersFname)
+    clusterExtents(config, extents).write.mode('ignore').parquet(clustersFname)
 
     spark.conf.set('spark.sql.shuffle.partitions', corpus.rdd.getNumPartitions() * 3)
     
