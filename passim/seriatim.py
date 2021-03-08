@@ -317,6 +317,9 @@ def chunkAlign(config, begin, begin2, text, text2, anchors):
     alg2 += s2
     return (alg1, alg2)
 
+def countMatches(s1, s2):
+    return len(list(filter(lambda c: c[0] == c[1], zip(s1, s2))))
+
 def targetLines(begin, begin2, alg):
     lines = list()
     start = 0
@@ -327,13 +330,15 @@ def targetLines(begin, begin2, alg):
         if alg.s2[end] == '\n':
             s1 = alg.s1[start:(end+1)]
             s2 = alg.s2[start:(end+1)]
-            lines.append((b1, b2, s1, s2))
+            lines.append((b1, b2, s1, s2, countMatches(s1, s2)))
             b1 += len(s1) - s1.count('-')
             b2 += len(s2) - s2.count('-')
             start = end + 1
         end += 1
     if start < len(alg.s2):
-        lines.append((b1, b2, alg.s1[start:len(alg.s1)], alg.s2[start:len(alg.s2)]))
+        s1 = alg.s1[start:len(alg.s1)]
+        s2 = alg.s2[start:len(alg.s2)]
+        lines.append((b1, b2, s1, s2, countMatches(s1, s2)))
     return lines
 
 def loverlap(s1, s2):
@@ -527,6 +532,7 @@ def main(args):
     srcFname = os.path.join(config.outputPath, 'src.parquet')
     featFname = os.path.join(config.outputPath, 'feat.parquet')
     extentsFname = os.path.join(config.outputPath, 'extents.parquet')
+    psgFname = os.path.join(config.outputPath, 'psg.parquet')
     clustersFname = os.path.join(config.outputPath, 'clusters.parquet')
     outFname = os.path.join(config.outputPath, 'out.' + config.output_format)
 
@@ -692,24 +698,26 @@ def main(args):
         chunk_align = udf(lambda begin, begin2, text, text2, anchors:
                           chunkAlign(config, begin, begin2, text, text2, anchors),
                           'struct<s1: string, s2: string>')
-        target_lines = udf(lambda begin, begin2, alg: targetLines(begin, begin2, alg),
-                           'array<struct<b1: int, b2: int, s1: string, s2: string>>')
-
         extentSet = set(extents.columns).difference(['uid'])
         simpleFields = [f['name'] for f in json.loads(corpus.schema.json())['fields']
                         if (isinstance(f['type'], str) and f['name'] not in extentSet)]
         
-        alg = extents.withColumn('alg', chunk_align('begin', 'begin2', 'text', 'text2', 'anchors')
-                    ).drop('anchors'
-                    ).join(corpus.select(*simpleFields), 'uid'
-                    ).join(corpus.selectExpr(*[f'{n} as {n}2' for n in simpleFields]), 'uid2')
+        extents.withColumn('alg', chunk_align('begin', 'begin2', 'text', 'text2', 'anchors')
+                ).drop('anchors', 'text', 'text2'
+                ).join(corpus.select(*simpleFields), 'uid'
+                ).join(corpus.selectExpr(*[f'{n} as {n}2' for n in simpleFields]), 'uid2'
+                ).write.mode('ignore').parquet(psgFname)
+
+        psg = spark.read.load(psgFname)
         
-        lines = alg.withColumn('lines', target_lines('begin', 'begin2', 'alg')
+        target_lines = udf(lambda begin, begin2, alg: targetLines(begin, begin2, alg),
+                           'array<struct<b: int, b2: int, alg: string, alg2: string, matches: int>>')
+        lines = psg.withColumn('lines', target_lines('begin', 'begin2', 'alg')
                     ).drop('alg', 'text', 'text2', 'begin', 'end', 'begin2', 'end2')
         
-        lines.selectExpr(*[f for f in lines.columns if f != 'lines'], 'inline(lines)'
-                         ).write.json(os.path.join(config.outputPath, 'pass.json'))
-        # lines.write.json(os.path.join(config.outputPath, 'pass.json'))
+        # lines.selectExpr(*[f for f in lines.columns if f != 'lines'], 'inline(lines)'
+        #                  ).write.json(os.path.join(config.outputPath, 'pass.json'))
+        lines.write.format(config.output_format).save(outFname)
         exit(0)
 
     spark.conf.set('spark.sql.shuffle.partitions', spark.sparkContext.defaultParallelism)
