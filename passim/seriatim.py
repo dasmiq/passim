@@ -712,12 +712,37 @@ def main(args):
         
         target_lines = udf(lambda begin, begin2, alg: targetLines(begin, begin2, alg),
                            'array<struct<b: int, b2: int, alg: string, alg2: string, matches: int>>')
-        lines = psg.withColumn('lines', target_lines('begin', 'begin2', 'alg')
+        groups = psg.withColumn('lines', target_lines('begin', 'begin2', 'alg')
                     ).drop('alg', 'text', 'text2', 'begin', 'end', 'begin2', 'end2')
-        
-        # lines.selectExpr(*[f for f in lines.columns if f != 'lines'], 'inline(lines)'
-        #                  ).write.json(os.path.join(config.outputPath, 'pass.json'))
-        lines.write.format(config.output_format).save(outFname)
+        lines = groups.selectExpr(*[f for f in groups.columns if f != 'lines'], 'inline(lines)'
+                    ).withColumn('text', f.translate('alg', '-', '')
+                    ).withColumn('text2', f.translate('alg2', '-', ''))
+
+        pageCol = 'pages'
+        if pageCol in corpus.columns:
+            pageFields = [f for f
+                          in corpus.selectExpr(f'inline({pageCol})').columns if f != 'regions']
+            pfList = ', '.join([f'page.{f} as {f}' for f in pageFields])
+
+            pinfo = corpus.select('uid', explode(pageCol).alias('page')
+                               ).select('uid', expr(f'struct({pfList}) as page'),
+                                        expr('inline(page.regions)'))
+            pinfo2 = pinfo.toDF(*[f + '2' for f in pinfo.columns])
+
+            lines = lines.join(pinfo2,
+                               [lines.uid2 == pinfo2.uid2,
+                                lines.b2 <= pinfo2.start2,
+                                (lines.b2 + length(lines.text2)) >= (pinfo2.start2 + pinfo2.length2)],
+                               'left_outer'
+                ).drop(pinfo2.uid2
+                ).groupBy(*lines.columns, 'page2'
+                ).agg(array(struct(*[f'page2.{f}' for f in pageFields],
+                             sort_array(collect_list(struct(expr('start2 as start'),
+                                                            expr('length2 as length'),
+                                                            expr('coords2 as coords')))).alias('regions'))).alias('pages2')
+                ).drop('page2')
+                
+        lines.write.mode('ignore').format(config.output_format).save(outFname)
         exit(0)
 
     spark.conf.set('spark.sql.shuffle.partitions', spark.sparkContext.defaultParallelism)
