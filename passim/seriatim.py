@@ -180,12 +180,11 @@ def spanEdge(src, max_gap):
         res.append((s.uid, left2, s.begin2, s.end2, right2, left, s.begin, s.end, right, s.anchors))
     return res
 
-def anchorAlign(s1, s2, side):
+def anchorAlign(config, s1, s2, side):
     if side == 'left':
         s1 = s1[::-1]
         s2 = s2[::-1]
 
-    width = 10
     V = 256
     logV = log(V)
     pcopy = 0.8
@@ -224,7 +223,7 @@ def anchorAlign(s1, s2, side):
             cand.append((score - lpedit, (s, t + 1, e1, e1))) # e1 typo?
         for c in cand:
             (score, item) = c
-            if item[2] == 0 and abs(item[0] - item[1]) > width:
+            if item[2] == 0 and abs(item[0] - item[1]) > config.max_offset:
                 continue
             if chart.get(item, inf) > score:
                 chart[item] = score
@@ -237,8 +236,7 @@ def anchorAlign(s1, s2, side):
     else:
         return (s1[0:e1], s2[0:e2])
 
-def levAlign(s1, s2):
-    width = 10
+def levAlign(config, s1, s2):
     V = 256
     logV = log(V)
     pcopy = 0.8
@@ -273,7 +271,7 @@ def levAlign(s1, s2):
             cand.append((score - lpedit, (e1, e2 + 1)))
         for c in cand:
             (score, item) = c
-            if abs(item[0] - item[1]) > width:
+            if abs(item[0] - item[1]) > config.max_offset:
                 continue
             if chart.get(item, inf) > score:
                 chart[item] = score
@@ -301,7 +299,7 @@ def levAlign(s1, s2):
     else:                       # alignment failed
         return (s1 + '-' * len(s2), '-' * len(s1) + s2)
 
-def chunkAlign(begin, begin2, text, text2, anchors):
+def chunkAlign(config, begin, begin2, text, text2, anchors):
     alg1 = ''
     alg2 = ''
     b1 = 0
@@ -309,12 +307,12 @@ def chunkAlign(begin, begin2, text, text2, anchors):
     for a in anchors:
         e1 = a.pos - begin
         e2 = a.pos2 - begin2
-        (s1, s2) = levAlign(text[b1:e1], text2[b2:e2])
+        (s1, s2) = levAlign(config, text[b1:e1], text2[b2:e2])
         alg1 += s1
         alg2 += s2
         b1 = e1
         b2 = e2
-    (s1, s2) = levAlign(text[b1:len(text)], text2[b2:len(text2)])
+    (s1, s2) = levAlign(config, text[b1:len(text)], text2[b2:len(text2)])
     alg1 += s1
     alg2 += s2
     return (alg1, alg2)
@@ -494,12 +492,14 @@ def main(args):
                         help='Allow n-grams to float from word boundaries')
     parser.add_argument('-g', '--gap', type=int, default=600,
                         help='Minimum size of gap that separates passages', metavar='N')
+    parser.add_argument('--max-offset', type=int, default=10,
+                        help='Maximum offset in global alignment', metavar='N')
     parser.add_argument('-a', '--min-align', type=int, default=50,
                          help='Minimum length of alignment', metavar='N')
     parser.add_argument('--fields', type=str, nargs='+', default=[],
                         help='List of fileds to index')
     parser.add_argument('-f', '--filterpairs', type=str, default='uid < uid2',
-                        help='SQL constraint on posting pairs; default=uid < uid2')
+                        help='SQL constraint on posting pairs')
     parser.add_argument('--all-pairs', action='store_true',
                         help='Compute alignments for all pairs.')
     parser.add_argument('--linewise', action='store_true',
@@ -647,7 +647,7 @@ def main(args):
                                           text[(s.end2 - config.n):s.right2]) for s in src),
                      'array<struct<prefix2: string, text2: string, suffix2: string>>')
 
-    anchor_align = udf(lambda s1, s2, side: anchorAlign(s1, s2, side),
+    anchor_align = udf(lambda s1, s2, side: anchorAlign(config, s1, s2, side),
                        'struct<s1: string, s2: string>')
 
     # We align edges independently, but we could also consider
@@ -690,7 +690,7 @@ def main(args):
 
     if config.linewise:
         chunk_align = udf(lambda begin, begin2, text, text2, anchors:
-                          chunkAlign(begin, begin2, text, text2, anchors),
+                          chunkAlign(config, begin, begin2, text, text2, anchors),
                           'struct<s1: string, s2: string>')
         target_lines = udf(lambda begin, begin2, alg: targetLines(begin, begin2, alg),
                            'array<struct<b1: int, b2: int, s1: string, s2: string>>')
@@ -709,6 +709,7 @@ def main(args):
         
         lines.selectExpr(*[f for f in lines.columns if f != 'lines'], 'inline(lines)'
                          ).write.json(os.path.join(config.outputPath, 'pass.json'))
+        # lines.write.json(os.path.join(config.outputPath, 'pass.json'))
         exit(0)
 
     spark.conf.set('spark.sql.shuffle.partitions', spark.sparkContext.defaultParallelism)
