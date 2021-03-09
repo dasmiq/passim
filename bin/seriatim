@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
 
-wrapper="`dirname $0`"/../share/submit-seriatim.py
+dir=`dirname $0`
 
-PASSIM_HOME="$(cd "`dirname "$0"`"/..; pwd)"
+wrapped="$dir"/../share/submit-seriatim.py
+
+raw="$dir"/../passim/seriatim.py
+
+if [ -f "$raw" ]; then
+    script="$raw"
+else
+    script="$wrapped"
+fi
 
 SPARK_SUBMIT_ARGS="$SPARK_SUBMIT_ARGS"
 
 spark-submit \
     --packages 'graphframes:graphframes:0.8.0-spark3.0-s_2.12' \
     $SPARK_SUBMIT_ARGS \
-    $wrapper "$@"
+    "$script" "$@"
