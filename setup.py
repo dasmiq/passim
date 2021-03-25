@@ -13,7 +13,7 @@ setuptools.setup(
         'License :: OSI Approved :: MIT License',
     ],
     install_requires=[
-        'pyspark==3.0.1',
+        'pyspark>=3.0.1',
         'intervaltree'
     ],
     scripts=['bin/seriatim'],
