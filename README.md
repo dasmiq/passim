@@ -1,36 +1,17 @@
 # passim
 
-This project implements algorithms for detecting and aligning similar
-passages in text.  It can be run either in query mode, to find quoted
-passages from a reference text, or all-pairs mode, to find all pairs
-of passages within longer documents with substantial alignments.
+This project implements algorithms for detecting and aligning similar passages in text.  It can be run either in query mode, to find quoted passages from a reference text, or all-pairs mode, to find all pairs of passages within longer documents with substantial alignments.
 
 ## Installation
 
-Passim relies on [Apache Spark](http://spark.apache.org) to manage
-parallel computations, either on a single machine or a cluster.  We
-recommend downloading a precompiled, binary distribution of Spark,
-unpacking it, and adding the `bin` subdirectory to your `PATH`.
+Passim relies on [Apache Spark](http://spark.apache.org) to manage parallel computations, either on a single machine or a cluster.  Spark, in turn, requires Java to run with the `java` command.  In its default configuration, it also expects Python 3 to be runnable with the `python` command.  There are ways to configure your system differently using various environment variables, but having these defaults will make your life easier.
 
-To compile passim itself, we use [sbt](http://www.scala-sbt.org/), a
-build tool for Scala, Java, and other JVM languages.  A script to
-automatically download the sbt libraries is included with passim.  You
-can thus run:
+The easiest way to install the latest version of passim is with the `pip` command.  Since it requires Python 3, on some systems you may use `pip3`.
 ```
-$ build/sbt package
+pip install git+https://github.com/dasmiq/passim.git@seriatim#egg=passim
 ```
 
-This should produce a runnable .jar in
-`target/scala_*/passim*.jar`. (The exact filename will depend on the
-version of Scala and passim that you have.)
-
-The `bin` subdirectory of the passim distribution contains executable
-shell scripts such as `passim`.  We recommend adding this subdirectory
-to your `PATH`.
-
-Since passim defaults to the JSON format for input and output, it is
-convenient to have the
-[command-line JSON processor jq](http://stedolan.github.io/jq/)
+Since passim defaults to the JSON format for input and output, it is convenient to have the [command-line JSON processor jq](http://stedolan.github.io/jq/)
 installed.
 
 ## Aligning and Clustering Matching Passage Pairs
@@ -43,7 +24,7 @@ books, whole issues of newspapers, individual newspaper articles, etc.
 Minimally, a document consists of an identifier string and a single
 string of text content.
 
-For most text reuse detection problems, it is useful to group
+For many text reuse detection problems, it is useful to group
 documents into _series_.  Text reuse within series will be ignored.
 We may, for example, be less interested in the masthead and ads that
 appear week after week in the same newspaper and more interested in
