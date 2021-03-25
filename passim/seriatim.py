@@ -347,6 +347,14 @@ def targetLines(begin, begin2, alg):
         lines.append((b1, b2, s1, s2, countMatches(s1, s2)))
     return lines
 
+def textLines(text):
+    lines = list()
+    off = 0
+    for line in text.splitlines(keepends=True):
+        lines.append((off, line))
+        off += len(line)
+    return lines
+
 def loverlap(s1, s2):
     return max(0, min(s1.end, s2.end) - max(s1.begin, s2.begin))
 
@@ -513,6 +521,10 @@ def main(args):
                         help='SQL constraint on posting pairs')
     parser.add_argument('--all-pairs', action='store_true',
                         help='Compute alignments for all pairs.')
+    parser.add_argument('--pairwise', action='store_true',
+                        help='Output pairwise alignments')
+    parser.add_argument('--docwise', action='store_true',
+                        help='Output docwise alignments')
     parser.add_argument('--linewise', action='store_true',
                         help='Output linewise alignments')
     parser.add_argument('--link-model', type=str, default=None,
@@ -700,7 +712,7 @@ def main(args):
 
     extents = spark.read.load(extentsFname)
 
-    if config.linewise:
+    if config.pairwise or config.docwise or config.linewise:
         chunk_align = udf(lambda begin, begin2, text, text2, anchors:
                           chunkAlign(config, begin, begin2, text, text2, anchors),
                           'struct<s1: string, s2: string>')
@@ -717,12 +729,31 @@ def main(args):
         psg = spark.read.load(psgFname)
         
         target_lines = udf(lambda begin, begin2, alg: targetLines(begin, begin2, alg),
-                           'array<struct<b: int, b2: int, alg: string, alg2: string, matches: int>>')
+                           'array<struct<begin: int, begin2: int, alg: string, alg2: string, matches: int>>')
         groups = psg.withColumn('lines', target_lines('begin', 'begin2', 'alg')
                     ).drop('alg', 'text', 'text2', 'begin', 'end', 'begin2', 'end2')
         lines = groups.selectExpr(*[f for f in groups.columns if f != 'lines'], 'inline(lines)'
                     ).withColumn('text', f.translate('alg', '-', '')
                     ).withColumn('text2', f.translate('alg2', '-', ''))
+
+        if config.docwise:
+            text_lines = udf(lambda text: textLines(text),
+                             'array<struct<begin: int, text: string>>')
+            lines.groupBy('uid2', 'begin2'
+                ).agg(collect_list(struct(*[f for f in lines.columns
+                                            if ( (not f.endswith('2') or f == 'alg2')
+                                                 and f != 'uid')])).alias('wits')
+                ).groupBy(col('uid2').alias('uid')
+                ).agg(collect_list(struct(col('begin2').alias('begin'),
+                                          col('wits'))).alias('vars')
+                ).withColumn('vars', f.map_from_arrays(col('vars.begin'), col('vars.wits'))
+                ).join(corpus, 'uid'
+                ).withColumn('lines', text_lines('text')
+                ).withColumn('lines',
+                             expr('transform(lines, r -> struct(r.begin as begin, r.text as text, vars[r.begin] as wits))')
+                ).drop('vars'
+                ).write.mode('ignore').format(config.output_format).save(outFname)
+            exit(0)
 
         pageCol = 'pages'
         if pageCol in corpus.columns:
