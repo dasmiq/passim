@@ -247,6 +247,10 @@ def levAlign(config, s1, s2):
     s2 = s2.replace('-', '\u2010')
     if len(s1) == len(s2) and s1 == s2: # There's probably a length break-even point here.
         return (s1, s2)
+    elif len(s1) == 0:
+        return ('-' * len(s2), s2)
+    elif len(s2) == 0:
+        return (s1, '-' * len(s1))
 
     chart = {}
     bp = {}
@@ -259,11 +263,12 @@ def levAlign(config, s1, s2):
         (e1, e2) = item
         if e1 == len(s1) and e2 == len(s2):
             break
+        # Option to bail out
         cand = list()
         if e1 < len(s1):         # delete
             cand.append((score - lpedit, (e1 + 1, e2)))
             if e2 < len(s2):
-                if s1[e1].lower() == s2[e2].lower() or (s1[e1].isspace() and s2[e2].isspace()): #copy
+                if s1[e1] == s2[e2] or (s1[e1].isspace() and s2[e2].isspace()): #copy
                     cand.append((score - lpcopy, (e1 + 1, e2 + 1)))
                 elif s1[e1] != '\n' and s2[e2] != '\n':
                     cand.append((score - lpedit, (e1 + 1, e2 + 1)))
@@ -271,7 +276,7 @@ def levAlign(config, s1, s2):
             cand.append((score - lpedit, (e1, e2 + 1)))
         for c in cand:
             (score, item) = c
-            if abs(item[0] - item[1]) > config.max_offset:
+            if (abs(item[0]/len(s1) - item[1]/len(s2))*len(s1)) > config.max_offset:
                 continue
             if chart.get(item, inf) > score:
                 chart[item] = score
@@ -297,7 +302,8 @@ def levAlign(config, s1, s2):
             e2 = p2
         return (''.join(reversed(alg1)), ''.join(reversed(alg2)))
     else:                       # alignment failed
-        return (s1 + '-' * len(s2), '-' * len(s1) + s2)
+        return (s1 + '-' * max(0, len(s2) - len(s1)),
+                s2 + '-' * max(0, len(s1) - len(s2)))
 
 def chunkAlign(config, begin, begin2, text, text2, anchors):
     alg1 = ''
@@ -497,7 +503,7 @@ def main(args):
                         help='Allow n-grams to float from word boundaries')
     parser.add_argument('-g', '--gap', type=int, default=600,
                         help='Minimum size of gap that separates passages', metavar='N')
-    parser.add_argument('--max-offset', type=int, default=10,
+    parser.add_argument('--max-offset', type=int, default=20,
                         help='Maximum offset in global alignment', metavar='N')
     parser.add_argument('-a', '--min-align', type=int, default=50,
                          help='Minimum length of alignment', metavar='N')
