@@ -1,10 +1,5 @@
 #!/usr/bin/env bash
 
-PASSIM_HOME="$(cd "`dirname "$0"`"/..; pwd)"
+dir=`dirname $0`
 
-SPARK_SUBMIT_ARGS="$SPARK_SUBMIT_ARGS"
-
-spark-submit --class passim.PassimApp \
-	     --packages 'com.github.scopt:scopt_2.12:3.5.0,graphframes:graphframes:0.8.0-spark3.0-s_2.12' \
-	     $SPARK_SUBMIT_ARGS \
-	     "$PASSIM_HOME"/target/scala-2.12/passim_2.12-0.2.0.jar "$@"
+"$dir"/seriatim --all-pairs "$@"
