@@ -16,7 +16,7 @@ setuptools.setup(
         'pyspark>=3.0.1',
         'intervaltree'
     ],
-    scripts=['bin/seriatim'],
+    scripts=['bin/seriatim', 'bin/passim'],
     data_files=[('share', ['share/submit-seriatim.py'])],
     python_requires='>=3.6',
 )
