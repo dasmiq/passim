@@ -6,7 +6,16 @@ This project implements algorithms for detecting and aligning similar passages i
 
 Passim relies on [Apache Spark](http://spark.apache.org) to manage parallel computations, either on a single machine or a cluster.  Spark, in turn, requires Java to run with the `java` command.  In its default configuration, it also expects Python 3 to be runnable with the `python` command.  There are ways to configure your system differently using various environment variables, but having these defaults will make your life easier.
 
-The easiest way to install the latest version of passim is with the `pip` command.  Since it requires Python 3, on some systems you may use `pip3`.
+The easiest way to install the latest version of passim is with the `pip` command.  Since it requires Python 3, on some systems you may use `pip3`.  If you've checked out the source code, you can run
+```
+pip install .
+```
+You can install in your own `~/.local` directory with
+```
+pip install --user .
+```
+
+If you just want to install directly from GitHub, run
 ```
 pip install git+https://github.com/dasmiq/passim.git@seriatim#egg=passim
 ```
@@ -18,31 +27,16 @@ installed.
 
 ### Structuring the Input
 
-The input to passim is a set of _documents_. Depending on the kind of
-data you have, you might choose documents to be whole books, pages of
-books, whole issues of newspapers, individual newspaper articles, etc.
-Minimally, a document consists of an identifier string and a single
-string of text content.
+The input to passim is a set of _documents_. Depending on the kind of data you have, you might choose documents to be whole books, pages of books, whole issues of newspapers, individual newspaper articles, etc. Minimally, a document consists of an identifier string and a single string of text content.
 
-For many text reuse detection problems, it is useful to group
-documents into _series_.  Text reuse within series will be ignored.
-We may, for example, be less interested in the masthead and ads that
-appear week after week in the same newspaper and more interested in
-articles that propagate from one city's newspapers to another's.  In
-that case, we would declare all issues of the same newspaper&mdash;or all
-articles within those issues&mdash;to have the same series.  Similarly, we
-might define documents to be the pages or chapters of a book and
-series to be whole books.
+For many text reuse detection problems, it is useful to group documents into _series_.  Text reuse within series could then be ignored. We may, for example, be less interested in the masthead and ads that appear week after week in the same newspaper and more interested in articles that propagate from one city's newspapers to another's.  In that case, we would declare all issues of the same newspaper&mdash;or all articles within those issues&mdash;to have the same series.  Similarly, we might define documents to be the pages or chapters of a book and series to be whole books.
 
-The default input format for documents is in a file or set
-of files containing JSON records.  The record for a single document
-with the required `id` and `text` fields, as well as a `series` field,
-would look like:
+The default input format for documents is in a file or set of files containing one JSON record per line.  The record for a single document with the required `id` and `text` fields, as well as a `series` field, would look like:
 ```
 {"id": "d1", "series": "abc", "text": "This is text."}
 ```
 
-Note that this is must be a single line in the file.  This JSON record
+Note that this must be a single line in the file.  This JSON record
 format has two important differences from general-purpose JSON files.
 First, the JSON records for each document are concatenated together,
 rather than being nested inside a top-level array.  Second, each
@@ -51,10 +45,7 @@ multiple lines until the closing curly brace.  These restrictions make
 it more efficient to process in parallel large numbers of documents
 spread across multiple files.
 
-In addition to the fields `id`, `text`, and `series`, other metadata
-included in the record for each document will be passed through into
-the output.  In particular, a `date` field, if present, will be used
-to sort passages within each cluster.
+In addition to the fields `id`, `text`, and `series`, other metadata included in the record for each document will be passed through into the output.  In particular, a `date` field, if present, will be used to sort passages within each cluster.
 
 Natural language text is redundant, and adding markup and JSON
 field names increases the redundancy.  Spark and passim support
@@ -84,9 +75,7 @@ $ passim "{input.json,directory-of-json-files,some*.json.bz2}" output
 Output is written to a directory that, on completion, will contain an
 `out.json` directory with `part-*` files rather than a single file.
 This allows multiple workers to write it efficiently (and read it back
-in) in parallel.  In addition, the output directory should contain the
-parameters used to invoke passim in `conf` and the intermediate
-cluster membership data in `clusters.parquet`.
+in) in parallel.
 
 The output contains one JSON record for each reused passage.  Each
 record echoes the fields in the JSON input and adds the following
@@ -119,11 +108,9 @@ Some other useful parameters are:
 
 Parameter | Default value | Description
 --------- | ------------- | -----------
-`--n` | 5 | N-gram order for text-reuse detection
-`--max-series` | 100 | Maximum document frequency of n-grams used.
+`--n` | 20 | Character N-gram order for text-reuse detection
+`--maxDF` | 100 | Maximum document frequency of n-grams used.
 `-m` or `--min-match` | 5 | Minimum number of matching n-grams between two documents.
-`-o` or `--relative-overlap` | 0.5 | Proportion that two different aligned passages from the same document must overlap to be clustered together, as measured on the longer passage.
-`-w` or `--word-length` | 2.0 | Minimum average word length
 
 Pass parameters to the underlying Spark processes using the
 `SPARK_SUBMIT_ARGS` environment variable.  For example, to run passim
@@ -133,9 +120,7 @@ on a local machine with 10 cores and 200GB of memory, run the following command:
 $ SPARK_SUBMIT_ARGS='--master local[10] --driver-memory 200G --executor-memory 200G' passim input.json output
 ```
 
-See the
-[Spark documentation](https://spark.apache.org/docs/latest/index.html)
-for further configuration options.
+See the [Spark documentation](https://spark.apache.org/docs/latest/index.html) for further configuration options.
 
 ### Pruning Alignments
 
