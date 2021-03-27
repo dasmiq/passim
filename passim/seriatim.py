@@ -4,7 +4,7 @@ import json, os, sys
 from collections import deque
 from intervaltree import Interval, IntervalTree
 from math import ceil, log, inf
-from pyspark.sql import SparkSession, Row
+from pyspark.sql import SparkSession, Row, DataFrame
 from pyspark.sql.functions import (col, desc, explode, size, udf, struct, length,
                                    collect_list, collect_set, sort_array, when,
                                    expr, map_from_entries, flatten, xxhash64, lit,
@@ -406,9 +406,9 @@ def mergeSpans(spans, uid):
         res.append((curBegin, curEnd, boiler, src))
     return res
 
-def clusterExtents(config, extents):
-    s1 = extents.groupBy('uid').agg(sort_array(collect_set(struct('begin', 'end'))).alias('s1'))
-    s2 = extents.groupBy('uid2'
+def clusterExtents(self, config):
+    s1 = self.groupBy('uid').agg(sort_array(collect_set(struct('begin', 'end'))).alias('s1'))
+    s2 = self.groupBy('uid2'
                ).agg(sort_array(collect_set(struct('begin2', 'end2'))).alias('s2'))
 
     link_spans = udf(lambda s1, s2: linkSpans(s1, s2),
@@ -421,15 +421,15 @@ def clusterExtents(config, extents):
                            'false as boiler'
               ).distinct()
 
-    boiler = 'gid = gid2' if 'gid' in extents.columns else 'false'
+    boiler = 'gid = gid2' if 'gid' in self.columns else 'false'
 
-    between = extents.selectExpr('struct(uid, begin, end) as src',
-                                 'struct(uid2 as uid, begin2 as begin, end2 as end) as dst',
-                                 f'{boiler} as boiler')
+    between = self.selectExpr('struct(uid, begin, end) as src',
+                              'struct(uid2 as uid, begin2 as begin, end2 as end) as dst',
+                              f'{boiler} as boiler')
 
-    vert = extents.selectExpr('struct(uid2 as uid, begin2 as begin, end2 as end) as id',
-                 ).union(extents.selectExpr('struct(uid, begin, end) as id')
-                 ).distinct()
+    vert = self.selectExpr('struct(uid2 as uid, begin2 as begin, end2 as end) as id',
+                ).union(self.selectExpr('struct(uid, begin, end) as id')
+                ).distinct()
 
     edges = between.union(within)
 
@@ -456,6 +456,8 @@ def clusterExtents(config, extents):
 
     return cspans.join(sizes, 'cluster')
     
+setattr(DataFrame, 'clusterExtents', clusterExtents)
+
 def clusterJoin(config, clusters, corpus):
     out = clusters.join(corpus, 'uid'
                  ).withColumn(config.text,
@@ -795,7 +797,7 @@ def main(args):
 
     if not os.path.exists(clustersFname): # prevent creating tmpdirs in clustering 
         spark.conf.set('spark.sql.shuffle.partitions', spark.sparkContext.defaultParallelism)
-        clusterExtents(config, extents).write.mode('ignore').parquet(clustersFname)
+        extents.clusterExtents(config).write.mode('ignore').parquet(clustersFname)
         spark.conf.set('spark.sql.shuffle.partitions', corpus.rdd.getNumPartitions() * 3)
     
     clusterJoin(config, spark.read.load(clustersFname),
