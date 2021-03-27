@@ -180,6 +180,9 @@ def spanEdge(src, max_gap):
         res.append((s.uid, left2, s.begin2, s.end2, right2, left, s.begin, s.end, right, s.anchors))
     return res
 
+def countMatches(s1, s2):
+    return len(list(filter(lambda c: c[0] == c[1], zip(s1, s2))))
+
 def anchorAlign(config, s1, s2, side):
     if side == 'left':
         s1 = s1[::-1]
@@ -321,10 +324,7 @@ def chunkAlign(config, begin, begin2, text, text2, anchors):
     (s1, s2) = levAlign(config, text[b1:len(text)], text2[b2:len(text2)])
     alg1 += s1
     alg2 += s2
-    return (alg1, alg2)
-
-def countMatches(s1, s2):
-    return len(list(filter(lambda c: c[0] == c[1], zip(s1, s2))))
+    return (alg1, alg2, countMatches(alg1, alg2))
 
 def targetLines(begin, begin2, alg):
     lines = list()
@@ -552,6 +552,7 @@ def main(args):
     extentsFname = os.path.join(config.outputPath, 'extents.parquet')
     psgFname = os.path.join(config.outputPath, 'psg.parquet')
     clustersFname = os.path.join(config.outputPath, 'clusters.parquet')
+    alignFname = os.path.join(config.outputPath, 'align.' + config.output_format)
     outFname = os.path.join(config.outputPath, 'out.' + config.output_format)
 
     corpus = spark.read.option('mergeSchema',
@@ -715,72 +716,79 @@ def main(args):
     if config.pairwise or config.docwise or config.linewise:
         chunk_align = udf(lambda begin, begin2, text, text2, anchors:
                           chunkAlign(config, begin, begin2, text, text2, anchors),
-                          'struct<s1: string, s2: string>')
+                          'struct<s1: string, s2: string, matches: int>')
         extentSet = set(extents.columns).difference(['uid'])
         simpleFields = [f['name'] for f in json.loads(corpus.schema.json())['fields']
                         if (isinstance(f['type'], str) and f['name'] not in extentSet)]
         
         extents.withColumn('alg', chunk_align('begin', 'begin2', 'text', 'text2', 'anchors')
-                ).drop('anchors', 'text', 'text2'
-                ).join(corpus.select(*simpleFields), 'uid'
-                ).join(corpus.selectExpr(*[f'{n} as {n}2' for n in simpleFields]), 'uid2'
-                ).write.mode('ignore').parquet(psgFname)
+            ).drop('anchors', 'text', 'text2'
+            ).write.mode('ignore').parquet(psgFname)
 
         psg = spark.read.load(psgFname)
-        
-        target_lines = udf(lambda begin, begin2, alg: targetLines(begin, begin2, alg),
-                           'array<struct<begin: int, begin2: int, alg: string, alg2: string, matches: int>>')
-        groups = psg.withColumn('lines', target_lines('begin', 'begin2', 'alg')
-                    ).drop('alg', 'text', 'text2', 'begin', 'end', 'begin2', 'end2')
-        lines = groups.selectExpr(*[f for f in groups.columns if f != 'lines'], 'inline(lines)'
-                    ).withColumn('text', f.translate('alg', '-', '')
-                    ).withColumn('text2', f.translate('alg2', '-', ''))
 
-        if config.docwise:
-            text_lines = udf(lambda text: textLines(text),
-                             'array<struct<begin: int, text: string>>')
-            lines.groupBy('uid2', 'begin2'
-                ).agg(collect_list(struct(*[f for f in lines.columns
-                                            if ( (not f.endswith('2') or f == 'alg2')
-                                                 and f != 'uid')])).alias('wits')
-                ).groupBy(col('uid2').alias('uid')
-                ).agg(collect_list(struct(col('begin2').alias('begin'),
-                                          col('wits'))).alias('vars')
-                ).withColumn('vars', f.map_from_arrays(col('vars.begin'), col('vars.wits'))
-                ).join(corpus, 'uid'
-                ).withColumn('lines', text_lines('text')
-                ).withColumn('lines',
-                             expr('transform(lines, r -> struct(r.begin as begin, r.text as text, vars[r.begin] as wits))')
-                ).drop('vars'
-                ).write.mode('ignore').format(config.output_format).save(outFname)
-            exit(0)
+        passalg = psg.join(corpus.select(*simpleFields), 'uid'
+                    ).join(corpus.selectExpr(*[f'{n} as {n}2' for n in simpleFields]), 'uid2')
 
-        pageCol = 'pages'
-        if pageCol in corpus.columns:
-            pageFields = [f for f
-                          in corpus.selectExpr(f'inline({pageCol})').columns if f != 'regions']
-            pfList = ', '.join([f'page.{f} as {f}' for f in pageFields])
+        if config.pairwise:
+            passalg.select('*', 'alg.*'
+                    ).drop('alg'
+                    ).write.mode('ignore').format(config.output_format).save(alignFname)
 
-            pinfo = corpus.select('uid', explode(pageCol).alias('page')
-                               ).select('uid', expr(f'struct({pfList}) as page'),
-                                        expr('inline(page.regions)'))
-            pinfo2 = pinfo.toDF(*[f + '2' for f in pinfo.columns])
+        if config.docwise or config.linewise:
+            target_lines = udf(lambda begin, begin2, alg: targetLines(begin, begin2, alg),
+                               'array<struct<begin: int, begin2: int, alg: string, alg2: string, matches: int>>')
+            groups = passalg.withColumn('lines', target_lines('begin', 'begin2', 'alg')
+                            ).drop('alg', 'text', 'text2', 'begin', 'end', 'begin2', 'end2')
+            lines = groups.selectExpr(*[f for f in groups.columns if f != 'lines'], 'inline(lines)'
+                        ).withColumn('text', f.translate('alg', '-', '')
+                        ).withColumn('text2', f.translate('alg2', '-', ''))
 
-            lines = lines.join(pinfo2,
-                               [lines.uid2 == pinfo2.uid2,
-                                lines.b2 <= pinfo2.start2,
-                                (lines.b2 + length(lines.text2)) >= (pinfo2.start2 + pinfo2.length2)],
-                               'left_outer'
-                ).drop(pinfo2.uid2
-                ).groupBy(*lines.columns, 'page2'
-                ).agg(array(struct(*[f'page2.{f}' for f in pageFields],
-                             sort_array(collect_list(struct(expr('start2 as start'),
-                                                            expr('length2 as length'),
-                                                            expr('coords2 as coords')))).alias('regions'))).alias('pages2')
-                ).drop('page2')
+            if config.docwise:
+                text_lines = udf(lambda text: textLines(text),
+                                 'array<struct<begin: int, text: string>>')
+                lines.groupBy('uid2', 'begin2'
+                    ).agg(collect_list(struct(*[f for f in lines.columns
+                                                if ( (not f.endswith('2') or f == 'alg2')
+                                                     and f != 'uid')])).alias('wits')
+                    ).groupBy(col('uid2').alias('uid')
+                    ).agg(collect_list(struct(col('begin2').alias('begin'),
+                                              col('wits'))).alias('vars')
+                    ).withColumn('vars', f.map_from_arrays(col('vars.begin'), col('vars.wits'))
+                    ).join(corpus, 'uid'
+                    ).withColumn('lines', text_lines('text')
+                    ).withColumn('lines',
+                                 expr('transform(lines, r -> struct(r.begin as begin, r.text as text, vars[r.begin] as wits))')
+                    ).drop('vars'
+                    ).write.mode('ignore').format(config.output_format).save(outFname)
+                exit(0)
+
+            pageCol = 'pages'
+            if pageCol in corpus.columns:
+                pageFields = [f for f
+                              in corpus.selectExpr(f'inline({pageCol})').columns if f != 'regions']
+                pfList = ', '.join([f'page.{f} as {f}' for f in pageFields])
+
+                pinfo = corpus.select('uid', explode(pageCol).alias('page')
+                                      ).select('uid', expr(f'struct({pfList}) as page'),
+                                               expr('inline(page.regions)'))
+                pinfo2 = pinfo.toDF(*[f + '2' for f in pinfo.columns])
+
+                lines = lines.join(pinfo2,
+                                   [lines.uid2 == pinfo2.uid2,
+                                    lines.b2 <= pinfo2.start2,
+                                    (lines.b2 + length(lines.text2)) >= (pinfo2.start2 + pinfo2.length2)],
+                                   'left_outer'
+                            ).drop(pinfo2.uid2
+                            ).groupBy(*lines.columns, 'page2'
+                            ).agg(array(struct(*[f'page2.{f}' for f in pageFields],
+                                        sort_array(collect_list(struct(expr('start2 as start'),
+                                                                       expr('length2 as length'),
+                                                                       expr('coords2 as coords')))).alias('regions'))).alias('pages2')
+                            ).drop('page2')
                 
-        lines.write.mode('ignore').format(config.output_format).save(outFname)
-        exit(0)
+            lines.write.mode('ignore').format(config.output_format).save(outFname)
+            exit(0)
 
     spark.conf.set('spark.sql.shuffle.partitions', spark.sparkContext.defaultParallelism)
     spark.sparkContext.setCheckpointDir(os.path.join(config.outputPath, 'tmp'))
