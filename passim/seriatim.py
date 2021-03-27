@@ -545,13 +545,16 @@ def main(args):
     spark.conf.set('spark.sql.legacy.parquet.datetimeRebaseModeInRead', 'CORRECTED')
     spark.conf.set('spark.sql.legacy.parquet.datetimeRebaseModeInWrite', 'CORRECTED')
 
-    dfpostFname = os.path.join(config.outputPath, 'dfpost.parquet')
-    pairsFname = os.path.join(config.outputPath, 'pairs.parquet')
-    srcFname = os.path.join(config.outputPath, 'src.parquet')
-    featFname = os.path.join(config.outputPath, 'feat.parquet')
-    extentsFname = os.path.join(config.outputPath, 'extents.parquet')
-    psgFname = os.path.join(config.outputPath, 'psg.parquet')
-    clustersFname = os.path.join(config.outputPath, 'clusters.parquet')
+    tmpdir = 'tmp'
+    spark.sparkContext.setCheckpointDir(os.path.join(config.outputPath, tmpdir))
+    
+    dfpostFname = os.path.join(config.outputPath, tmpdir, 'dfpost.parquet')
+    pairsFname = os.path.join(config.outputPath, tmpdir, 'pairs.parquet')
+    srcFname = os.path.join(config.outputPath, tmpdir, 'src.parquet')
+    featFname = os.path.join(config.outputPath, tmpdir, 'feat.parquet')
+    extentsFname = os.path.join(config.outputPath, tmpdir, 'extents.parquet')
+    psgFname = os.path.join(config.outputPath, tmpdir, 'psg.parquet')
+    clustersFname = os.path.join(config.outputPath, tmpdir, 'clusters.parquet')
     alignFname = os.path.join(config.outputPath, 'align.' + config.output_format)
     outFname = os.path.join(config.outputPath, 'out.' + config.output_format)
 
@@ -790,13 +793,10 @@ def main(args):
             lines.write.mode('ignore').format(config.output_format).save(outFname)
             exit(0)
 
-    spark.conf.set('spark.sql.shuffle.partitions', spark.sparkContext.defaultParallelism)
-    spark.sparkContext.setCheckpointDir(os.path.join(config.outputPath, 'tmp'))
-
-    # TODO: Investigate why connected component computation still runs when output exists.
-    clusterExtents(config, extents).write.mode('ignore').parquet(clustersFname)
-
-    spark.conf.set('spark.sql.shuffle.partitions', corpus.rdd.getNumPartitions() * 3)
+    if not os.path.exists(clustersFname): # prevent creating tmpdirs in clustering 
+        spark.conf.set('spark.sql.shuffle.partitions', spark.sparkContext.defaultParallelism)
+        clusterExtents(config, extents).write.mode('ignore').parquet(clustersFname)
+        spark.conf.set('spark.sql.shuffle.partitions', corpus.rdd.getNumPartitions() * 3)
     
     clusterJoin(config, spark.read.load(clustersFname),
                 corpus).write.mode('ignore').format(config.output_format).save(outFname)
