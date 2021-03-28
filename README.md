@@ -56,30 +56,19 @@ split it into blocks before decompressing.
 
 ### Running passim
 
-The simplest invocation contains list of inputs and a directory name
-for the output.
-
+The simplest invocation contains list of inputs and a directory name for the output.
 ```
 $ passim input.json output
 ```
 
-Following Spark conventions, input may be a single file, a single
-directory full of files, or a `*` wildcard (glob) expression.
-Multiple input paths should be separated by commas.  Files may also be
-compressed.
-
+Following Spark conventions, input may be a single file, a single directory full of files, or a `*` wildcard (glob) expression.  Multiple input paths should be separated by commas.  Files may also be compressed.
 ```
 $ passim "{input.json,directory-of-json-files,some*.json.bz2}" output
 ```
 
-Output is written to a directory that, on completion, will contain an
-`out.json` directory with `part-*` files rather than a single file.
-This allows multiple workers to write it efficiently (and read it back
-in) in parallel.
+Output is written to a directory that, on completion, will contain an `out.json` directory with `part-*` files rather than a single file. This allows multiple workers to write it efficiently (and read it back in) in parallel.
 
-The output contains one JSON record for each reused passage.  Each
-record echoes the fields in the JSON input and adds the following
-extra fields to describe the clustered passages:
+The output contains one JSON record for each reused passage.  Each record echoes the fields in the JSON input and adds the following extra fields to describe the clustered passages:
 
 Field | Description
 ----- | ------------
@@ -88,6 +77,8 @@ Field | Description
 `begin` | character offset into the document where the reused passage begins
 `end` | character offset into the document where the reused passage ends
 `uid` | unique internal ID for each document, used for debugging
+`src` | preceding passage in the cluster inferred to be the source of this passage
+`pboiler` | proportion of links in the cluster among texts from the same series
 
 In addition, `pages`, `regions`, and `locs` include information about
 locations in the underlying text of the reused passage.  See [Marking
@@ -112,10 +103,7 @@ Parameter | Default value | Description
 `--maxDF` | 100 | Maximum document frequency of n-grams used.
 `-m` or `--min-match` | 5 | Minimum number of matching n-grams between two documents.
 
-Pass parameters to the underlying Spark processes using the
-`SPARK_SUBMIT_ARGS` environment variable.  For example, to run passim
-on a local machine with 10 cores and 200GB of memory, run the following command:
-
+Pass parameters to the underlying Spark processes using the `SPARK_SUBMIT_ARGS` environment variable.  For example, to run passim on a local machine with 10 cores and 200GB of memory, run the following command:
 ```
 $ SPARK_SUBMIT_ARGS='--master local[10] --driver-memory 200G --executor-memory 200G' passim input.json output
 ```
