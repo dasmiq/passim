@@ -99,9 +99,11 @@ Some other useful parameters are:
 
 Parameter | Default value | Description
 --------- | ------------- | -----------
-`--n` | 20 | Character N-gram order for text-reuse detection
-`--maxDF` | 100 | Maximum document frequency of n-grams used.
+`-n` | 20 | Character N-gram order for text-reuse detection
+`-u` or `--maxDF` | 100 | Maximum document frequency of n-grams used.
 `-m` or `--min-match` | 5 | Minimum number of matching n-grams between two documents.
+
+Use the `--help` option to see a full list of options.
 
 Pass parameters to the underlying Spark processes using the `SPARK_SUBMIT_ARGS` environment variable.  For example, to run passim on a local machine with 10 cores and 200GB of memory, run the following command:
 ```
@@ -176,6 +178,6 @@ Humanities. TODO.
 
 ## License
 
-Copyright © 2012-7 David A. Smith
+Copyright © 2012-21 David A. Smith
 
-Distributed under the Eclipse Public License.
+Distributed under the MIT License.
