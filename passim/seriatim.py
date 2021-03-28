@@ -406,6 +406,43 @@ def mergeSpans(spans, uid):
         res.append((curBegin, curEnd, boiler, src))
     return res
 
+def passRegions(self, corpus, pageCol, newCol, uidCol, begin, end, keeptokens=False):
+    if pageCol not in corpus.columns:
+        return self
+    pageFields = [f for f
+                  in corpus.selectExpr(f'inline({pageCol})').columns if f != 'regions']
+    pfList = ', '.join([f'page.{f} as {f}' for f in pageFields])
+
+    pinfo = corpus.select('uid', explode(pageCol).alias('page')
+                ).select('uid', expr(f'struct({pfList}) as page'),
+                         expr('inline(page.regions)'))
+    res = self.join(pinfo, [self[uidCol] == pinfo.uid,
+                            begin <= pinfo.start,
+                            end >= (pinfo.start + pinfo.length)],
+                    'left_outer'
+            ).drop(pinfo.uid
+            ).groupBy(*self.columns, 'page'
+            ).agg(when(col('page').isNotNull(),
+                       array(struct(*[f'page.{f}' for f in pageFields],
+                               sort_array(collect_list(struct('start', 'length', 'coords'))).alias('regions')))).alias(newCol + 'Tokens'),
+                  when(col('page').isNotNull(),
+                       array(struct(*[f'page.{f}' for f in pageFields],
+                               array(struct(f.min('start').alias('start'),
+                                            (f.max(col('start') + col('length')) - f.min('start')).alias('length'),
+                                            struct(f.min('coords.x').alias('x'),
+                                                   f.min('coords.y').alias('y'),
+                                                   (f.max(col('coords.x') + col('coords.w')) - f.min('coords.x')).alias('w'),
+                                                   (f.max(col('coords.y') + col('coords.h')) - f.min('coords.y')).alias('h')
+                                                   
+                                                   ).alias('coords'))).alias('regions'))
+                        )).alias(newCol)
+            ).drop('page')
+    if not keeptokens:
+        res = res.drop(newCol + 'Tokens')
+    return res
+
+setattr(DataFrame, 'passRegions', passRegions)
+
 def clusterExtents(self, config):
     s1 = self.groupBy('uid').agg(sort_array(collect_set(struct('begin', 'end'))).alias('s1'))
     s2 = self.groupBy('uid2'
@@ -458,41 +495,20 @@ def clusterExtents(self, config):
     
 setattr(DataFrame, 'clusterExtents', clusterExtents)
 
-def clusterJoin(config, clusters, corpus):
-    out = clusters.join(corpus, 'uid'
-                 ).withColumn(config.text,
-                              col(config.text).substr(col('begin'), col('end') - col('begin')))
-
-    pageCol = 'pages'
-    if pageCol in out.columns:
-        pageFields = ', '.join([f'p.{f} as {f}'
-                                for f in out.selectExpr(f'inline({pageCol})').columns
-                                if f != 'regions'])
-        out = out.withColumn(pageCol, expr(f'''
-filter(transform({pageCol}, p -> struct({pageFields}, filter(p.regions, r -> r.start < end AND (r.start + r.length) > begin) as regions)), p -> size(p.regions) > 0)''')
-                ).withColumn(pageCol, expr(f'''
-transform({pageCol},
-          p -> struct({pageFields},
-                      array(aggregate(p.regions,
-                                      struct(p.regions[0].start as start,
-                                             p.regions[0].length as length,
-                                             struct(p.regions[0].coords.x as x,
-                                                    p.regions[0].coords.y as y,
-                                                    p.regions[0].coords.w as w,
-                                                    p.regions[0].coords.h as h) as coords),
-                                      (acc, r) -> struct(least(acc.start, r.start) as start,
-                                                         greatest(acc.start + acc.length, r.start + r.length) - least(acc.start, r.start) as length,
-                                                         struct(least(acc.coords.x, r.coords.x) as x,
-                                                                least(acc.coords.y, r.coords.y) as y,
-                                                                greatest(acc.coords.x + acc.coords.w, r.coords.x + r.coords.w) - least(acc.coords.x, r.coords.x) as w,
-                                                                greatest(acc.coords.y + acc.coords.h, r.coords.y + r.coords.h) - least(acc.coords.y, r.coords.y) as h) as coords))) as regions))
-'''))
+def clusterJoin(self, config, corpus):
+    out = self.join(corpus.drop('pages'), 'uid'
+            ).withColumn(config.text,
+                         col(config.text).substr(col('begin'), col('end') - col('begin'))
+            ).passRegions(corpus, 'pages', 'pages',
+                          'uid', col('begin'), col('end'))
 
     if config.output_format != 'parquet':
         out = out.sort(desc('size'), 'cluster', *[expr(f) for f in config.fields],
                        col(config.id), 'begin')
 
     return out
+
+setattr(DataFrame, 'clusterJoin', clusterJoin)
 
 def main(args):
     parser = argparse.ArgumentParser(description='Passim Alignment',
@@ -738,6 +754,10 @@ def main(args):
         if config.pairwise:
             passalg.select('*', 'alg.*'
                     ).drop('alg'
+                    ).passRegions(corpus, 'pages', 'pages',
+                                  'uid', col('begin'), col('end')
+                    ).passRegions(corpus, 'pages', 'pages2',
+                                  'uid2', col('begin2'), col('end2')
                     ).write.mode('ignore').format(config.output_format).save(alignFname)
 
         if config.docwise or config.linewise:
@@ -768,31 +788,11 @@ def main(args):
                     ).write.mode('ignore').format(config.output_format).save(outFname)
                 exit(0)
 
-            pageCol = 'pages'
-            if pageCol in corpus.columns:
-                pageFields = [f for f
-                              in corpus.selectExpr(f'inline({pageCol})').columns if f != 'regions']
-                pfList = ', '.join([f'page.{f} as {f}' for f in pageFields])
-
-                pinfo = corpus.select('uid', explode(pageCol).alias('page')
-                                      ).select('uid', expr(f'struct({pfList}) as page'),
-                                               expr('inline(page.regions)'))
-                pinfo2 = pinfo.toDF(*[f + '2' for f in pinfo.columns])
-
-                lines = lines.join(pinfo2,
-                                   [lines.uid2 == pinfo2.uid2,
-                                    lines.b2 <= pinfo2.start2,
-                                    (lines.b2 + length(lines.text2)) >= (pinfo2.start2 + pinfo2.length2)],
-                                   'left_outer'
-                            ).drop(pinfo2.uid2
-                            ).groupBy(*lines.columns, 'page2'
-                            ).agg(array(struct(*[f'page2.{f}' for f in pageFields],
-                                        sort_array(collect_list(struct(expr('start2 as start'),
-                                                                       expr('length2 as length'),
-                                                                       expr('coords2 as coords')))).alias('regions'))).alias('pages2')
-                            ).drop('page2')
-                
-            lines.write.mode('ignore').format(config.output_format).save(outFname)
+            lines.passRegions(corpus, 'pages', 'pages',
+                              'uid', col('begin'), col('begin') + length('text'), True
+                ).passRegions(corpus, 'pages', 'pages2',
+                              'uid2', col('begin2'), col('begin2') + length('text2'), True
+                ).write.mode('ignore').format(config.output_format).save(outFname)
             exit(0)
 
     if not os.path.exists(clustersFname): # prevent creating tmpdirs in clustering 
@@ -800,8 +800,9 @@ def main(args):
         extents.clusterExtents(config).write.mode('ignore').parquet(clustersFname)
         spark.conf.set('spark.sql.shuffle.partitions', corpus.rdd.getNumPartitions() * 3)
     
-    clusterJoin(config, spark.read.load(clustersFname),
-                corpus).write.mode('ignore').format(config.output_format).save(outFname)
+    spark.read.load(clustersFname
+        ).clusterJoin(config, corpus
+        ).write.mode('ignore').format(config.output_format).save(outFname)
 
     spark.stop()
 
