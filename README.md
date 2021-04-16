@@ -81,9 +81,12 @@ Some other useful parameters are:
 
 Parameter | Default value | Description
 --------- | ------------- | -----------
-`-n` | 20 | Character N-gram order for text-reuse detection
-`-u` or `--maxDF` | 100 | Maximum document frequency of n-grams used.
+`-n` | 20 | Character n-gram order for text-reuse detection
+`-l` or `--minDF` | 2 | Minimum document frequency of n-grams indexed.
+`-u` or `--maxDF` | 100 | Maximum document frequency of n-grams indexed.
 `-m` or `--min-match` | 5 | Minimum number of matching n-grams between two documents.
+`-a` or `--min-align` | 50 | Minimum number of characters in aligned passages.
+`-g` or `--gap` | 600 | Passages more than this number of characters apart will be aligned separately.
 
 Use the `--help` option to see a full list of options.
 
