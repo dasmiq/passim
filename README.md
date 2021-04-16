@@ -6,7 +6,7 @@ This project implements algorithms for detecting and aligning similar passages i
 
 Passim relies on [Apache Spark](http://spark.apache.org) to manage parallel computations, either on a single machine or a cluster.  Spark, in turn, requires Java to run with the `java` command.  In its default configuration, it also expects Python 3 to be runnable with the `python` command.  There are ways to configure your system differently using various environment variables, but having these defaults will make your life easier.
 
-The easiest way to install the latest version of passim is with the `pip` command.  Since it requires Python 3, on some systems you may use `pip3`.  If you've checked out the source code, you can run
+The easiest way to install the latest version of passim is with the `pip` command.  Since it requires Python 3, on some systems you may need to use `pip3`.  If you've checked out the source code, you can run
 ```
 pip install .
 ```
@@ -20,39 +20,26 @@ If you just want to install directly from GitHub, run
 pip install git+https://github.com/dasmiq/passim.git@seriatim#egg=passim
 ```
 
-Since passim defaults to the JSON format for input and output, it is convenient to have the [command-line JSON processor jq](http://stedolan.github.io/jq/)
-installed.
+Since passim defaults to the JSON format for input and output, it is convenient to have the [command-line JSON processor jq](http://stedolan.github.io/jq/) installed.
 
 ## Aligning and Clustering Matching Passage Pairs
 
 ### Structuring the Input
 
-The input to passim is a set of _documents_. Depending on the kind of data you have, you might choose documents to be whole books, pages of books, whole issues of newspapers, individual newspaper articles, etc. Minimally, a document consists of an identifier string and a single string of text content.
+The input to passim is a set of _documents_.  Depending on the kind of data you have, you might choose documents to be whole books, pages of books, whole issues of newspapers, individual newspaper articles, etc.  Minimally, a document consists of an identifier string and a single string of text content.
 
 For many text reuse detection problems, it is useful to group documents into _series_.  Text reuse within series could then be ignored. We may, for example, be less interested in the masthead and ads that appear week after week in the same newspaper and more interested in articles that propagate from one city's newspapers to another's.  In that case, we would declare all issues of the same newspaper&mdash;or all articles within those issues&mdash;to have the same series.  Similarly, we might define documents to be the pages or chapters of a book and series to be whole books.
 
-The default input format for documents is in a file or set of files containing one JSON record per line.  The record for a single document with the required `id` and `text` fields, as well as a `series` field, would look like:
+The default input format for documents is in a file or set of files containing one JSON record per line, i.e., the [JSON Lines format](https://jsonlines.org/).  The record for a single document with the required `id` and `text` fields, as well as a `series` field, would look like:
 ```
 {"id": "d1", "series": "abc", "text": "This is text."}
 ```
 
-Note that this must be a single line in the file.  This JSON record
-format has two important differences from general-purpose JSON files.
-First, the JSON records for each document are concatenated together,
-rather than being nested inside a top-level array.  Second, each
-record must be contained on one line, rather than extending over
-multiple lines until the closing curly brace.  These restrictions make
-it more efficient to process in parallel large numbers of documents
-spread across multiple files.
+Note that this must be a single line in the file.  This JSON record format has two important differences from general-purpose JSON files.  First, the JSON records for each document are concatenated together, rather than being nested inside a top-level array.  Second, each record must be contained on one line, rather than extending over multiple lines until the closing curly brace.  These restrictions make it more efficient to process in parallel large numbers of documents spread across multiple files.
 
 In addition to the fields `id`, `text`, and `series`, other metadata included in the record for each document will be passed through into the output.  In particular, a `date` field, if present, will be used to sort passages within each cluster.
 
-Natural language text is redundant, and adding markup and JSON
-field names increases the redundancy.  Spark and passim support
-several compression schemes.  For relatively small files, gzip is
-adequate; however, when the input files are large enough that they do
-not comfortably fit in memory, bzip2 is preferable since programs can
-split it into blocks before decompressing.
+Natural language text is redundant, and adding markup and JSON field names increases the redundancy.  Spark and passim support several compression schemes.  For relatively small files, gzip is adequate; however, when the input files are large enough that they do not comfortably fit in memory, bzip2 is preferable since programs can split it into blocks before decompressing.
 
 ### Running passim
 
@@ -84,16 +71,11 @@ In addition, `pages`, `regions`, and `locs` include information about
 locations in the underlying text of the reused passage.  See [Marking
 Locations inside Documents](#locations) below.
 
-The default input and output format is JSON.  Use the `--input-format
-parquet` and `--output-format parquet` to use the compressed Parquet
-format, which can speed up later processing.
+The default input and output format is JSON.  Use the `--input-format parquet` and `--output-format parquet` to use the compressed binary Parquet format, which can speed up later processing.
 
-If, in addition to the clusters, you want to output pairwise
-alignments between all matching passages, invoke passim with the
-`--pairwise` flag.  These alignments will be in the `align.json` or
-`align.parquet`, depending on which output format you choose.
+If, in addition to the clusters, you want to output pairwise alignments between all matching passages, invoke passim with the `--pairwise` flag.  These alignments will be in `align.json` or `align.parquet`, depending on which output format you choose.
 
-By default, passim starts indexing character n-grams at word boundaries.  If your text is very noisy, you can index other n-grams, starting at the middle of words, with the `--floating-ngrams` flag.
+By default, passim indexes character n-grams starting at word boundaries in order to find candidate passages to align.  If your text is very noisy, you can index other n-grams, starting at the middle of words, with the `--floating-ngrams` flag.  In any case, passim only indexes alphanumeric characters (as determined by python's `isalnum` function), skipping whitespace, punctuation, and other characters.
 
 Some other useful parameters are:
 
@@ -159,7 +141,7 @@ In both of these output variants, target lines and witness passages are presente
 
 ## <a name="locations"></a> Marking Locations inside Documents
 
-Documents may document their extent on physical pages with the `pages` field.  This field is an array of `Page` regions with the following schema (here written in Scala):
+Documents may record their extent on physical pages with the `pages` field.  This field is an array of `Page` regions with the following schema (here written in Scala):
 ```
 case class Coords(x: Int, y: Int, w: Int, h: Int, b: Int)
 
@@ -172,9 +154,7 @@ The `start` and `length` fields in the `Region` record indicate character offset
 
 ## Acknowledgements
 
-We insert the appropriate text in gratitude to our sponsors at the
-Andrew W. Mellon Foundation and the National Endowment for the
-Humanities. TODO.
+We insert the appropriate text in gratitude to our sponsors at the Andrew W. Mellon Foundation and the National Endowment for the Humanities. TODO.
 
 ## License
 
