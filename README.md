@@ -37,9 +37,9 @@ The default input format for documents is in a file or set of files containing o
 
 Note that this must be a single line in the file.  This JSON record format has two important differences from general-purpose JSON files.  First, the JSON records for each document are concatenated together, rather than being nested inside a top-level array.  Second, each record must be contained on one line, rather than extending over multiple lines until the closing curly brace.  These restrictions make it more efficient to process in parallel large numbers of documents spread across multiple files.
 
-In addition to the fields `id`, `text`, and `series`, other metadata included in the record for each document will be passed through into the output.  In particular, a `date` field, if present, will be used to sort passages within each cluster.
+In addition to the fields `id`, `text`, and `series`, other metadata included in the record for each document will be passed through into the output.
 
-Natural language text is redundant, and adding markup and JSON field names increases the redundancy.  Spark and passim support several compression schemes.  For relatively small files, gzip is adequate; however, when the input files are large enough that they do not comfortably fit in memory, bzip2 is preferable since programs can split it into blocks before decompressing.
+Natural language text is redundant, and adding markup and JSON field names increases the redundancy.  Spark and passim support several compression schemes.  For relatively small files, gzip is adequate; however, when the input files are large enough that they do not comfortably fit in memory, bzip2 is preferable since programs can split these files into blocks before decompressing.
 
 ### Running passim
 
@@ -99,24 +99,20 @@ See the [Spark documentation](https://spark.apache.org/docs/latest/index.html) f
 
 ### Pruning Alignments
 
-The documents input to passim are indexed to determine which pairs should be aligned.  Often, document metadata can provide a priori constraints on which documents should be aligned.  If there were no constraints, every pair of documents in the input would be aligned, in both directions.  By default, however, documents with the same `series` value will not be aliged.  These constraints on alignments are expressed by two arguments to passim: `--fields` and `--filterpairs`.
+The text of documents input to passim is indexed to determine which pairs should be aligned.  Often, document metadata can provide additional constraints on which documents should be aligned.  If there were no constraints, every pair of documents in the input would be aligned, in both directions.  These constraints on alignments are expressed by two arguments to passim: `--fields` and `--filterpairs`.
 
-The `--fields` argument tells passim which fields in the input records to index when determining which documents to align.  Fields has the syntax of SQL `FROM` clause as implemented by Apache Spark, with the exception that multiple fields are separated by semicolons.  By default, the value of the fields argument is:
+The `--fields` argument tells passim which fields in the input records to index when determining which documents to align.  Fields has the syntax of SQL `FROM` clause as implemented by Apache Spark.  Multiple fields may be passed by successfive command-line arguments.  Use quotes to surround fields definitions containing spaces.  In the following example, we ask passim to index the `date` field as is and to index the `series` field by hashing it to a 64-bit integer and calling it `gid`:
 ```
---fields 'hashId(id) as uid;hashId(series) as gid'
+--fields date 'xxhash64(series) as gid'
 ```
 
-Since document and series identifiers can be long strings, passim runs more efficiently if they are hashed to long integers by the (builtin) `hashId` function.
+Since document and series identifiers can be long strings, passim runs more efficiently if they are hashed to long integers by the (builtin) `xxhash64` function.
 
-The `--filterpairs` argument is an SQL expression that specifies which pairs of documents are candidates for comparison.  A candidate pair consists of a "left-hand" document, whose field names are identical to those in the input, and a "right-hand" document, whose field names have a "2" appended to them.  This is similar to the left- and right-handed sides of a SQL JOIN; in fact, passim is effectively performing a (massively pruned) self-join on the table of input documents.  The default value for the filterpairs argument is:
-```
---filterpairs 'gid < gid2'
-```
-This ensures that documents from the same series are not aligned and, further, ensures that any given pair of documents is aligned in only one direction, as determined by the lexicographic ordering of the hashes of their series IDs.
+The `--filterpairs` argument is an SQL expression that specifies which pairs of documents are candidates for comparison.  A candidate pair consists of a "source" document, whose field names are identical to those in the input, and a "target" document, whose field names have a "2" appended to them.  This is similar to the left- and right-handed sides of a SQL JOIN; in fact, passim is effectively performing a (massively pruned) self-join on the table of input documents.
 
-As an example, consider aligning only document pairs where the "left-hand" document predates the "right-hand" document by 0 to 30 days.  To perform efficient date arithmetic, we use Apache Spark's built-in `date` function to convert a string `date` field to an integer:
+As an example, consider aligning only document pairs where the "source" document predates the "target" document by 0 to 30 days.  To perform efficient date arithmetic, we use Apache Spark's built-in `date` function to convert a string `date` field to an integer:
 ```
---fields 'date(date) as day' --filterpairs 'day <= day2 AND (day2 - day) <= 30 AND uid <> uid2'
+--fields 'date(date) as day' --filterpairs 'day < day2 AND (day2 - day) <= 30 AND uid <> uid2'
 ```
 Since the dates may be equal, we also include the constraint that the hashed document ids (`uid`) be different.  Had we not done this, the output would also have included alignments of every document with itself.  The `uid` field as a hash of the `id` field is always available.  Note also the SQL inequality operator `<>`.
 
