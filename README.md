@@ -116,6 +116,12 @@ As an example, consider aligning only document pairs where the "source" document
 ```
 Since the dates may be equal, we also include the constraint that the hashed document ids (`uid`) be different.  Had we not done this, the output would also have included alignments of every document with itself.  The `uid` field as a hash of the `id` field is always available.  Note also the SQL inequality operator `<>`.
 
+By default, passim uses `--filterpairs uid < uid2` to prune comparisons.  In other words, passim imposes a total order on all documents based on the arbitrary but easily-comparable hashes of document identifiers.
+
+### passim vs. seriatim
+
+TODO
+
 ### Producing Aligned Output
 
 For the purposes of collating related texts or aligning different transcriptions of the same text, one can produce output using the `--docwise` or `--linewise` flags.  Each output record in `out.json` or `out.parquet` will then contain a document or line from the right-hand, "target" text, along with information about corresponding passages in the left-hand, "witness" or "source" text.
@@ -140,16 +146,46 @@ In both of these output variants, target lines and witness passages are presente
 
 ## <a name="locations"></a> Marking Locations inside Documents
 
-Documents may record their extent on physical pages with the `pages` field.  This field is an array of `Page` regions with the following schema (here written in Scala):
+Documents may record their extent on physical pages with the `pages` field.
+
 ```
-case class Coords(x: Int, y: Int, w: Int, h: Int, b: Int)
+          "pages": [
+            {
+              "id": "scheffel_ekkehard_1855/0261",
+              "seq": 0,
+              "width": 1600,
+              "height": 2525,
+              "dpi": 0,
+              "regions": [
+                {
+                  "start": 14,
+                  "length": 6,
+                  "coords": {
+                    "x": 100,
+                    "y": 195,
+                    "w": 117,
+                    "h": 47,
+                    "b": 47
+                  }
+                },
+                {
+                  "start": 21,
+                  "length": 6,
+                  "coords": {
+                    "x": 252,
+                    "y": 194,
+                    "w": 114,
+                    "h": 44,
+                    "b": 44
+                  }
+                },
+		...
+	      ]
+	    }
+	  ]
+ ```
 
-case class Region(start: Int, length: Int, coords: Coords)
-
-case class Page(id: String, seq: Int, width: Int, height: Int, dpi: Int, regions: Array[Region])
-```
-
-The `start` and `length` fields in the `Region` record indicate character offsets into the document `text` field.
+The `start` and `length` fields of a record in `regions` indicate character offsets into the document `text` field.  A document may span several pages, and thus the `pages` field is an array.
 
 ## Acknowledgements
 
