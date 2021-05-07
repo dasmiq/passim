@@ -6,7 +6,7 @@ This project implements algorithms for detecting and aligning similar passages i
 
 Passim relies on [Apache Spark](http://spark.apache.org) to manage parallel computations, either on a single machine or a cluster.  Spark, in turn, requires Java to run with the `java` command.  In its default configuration, it also expects Python 3 to be runnable with the `python` command.  There are ways to configure your system differently using various environment variables, but having these defaults will make your life easier.
 
-The easiest way to install the latest version of passim is with the `pip` command.  Since it requires Python 3, on some systems you may need to use `pip3`.  If you've checked out the source code, you can run
+Once you have java and python installed, the easiest way to install the latest version of passim is with the `pip` command.  Since passim requires Python 3, on some systems you may need to use `pip3`.  If you've checked out the source code, you can run
 ```
 pip install .
 ```
