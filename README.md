@@ -120,7 +120,7 @@ By default, passim uses `--filterpairs uid < uid2` to prune comparisons.  In oth
 
 ### passim vs. seriatim
 
-TODO
+As in previous versions, `passim` aligns pairs of passages that pass the filter criteria specified above.  There is now also a top-level `seriatim` command that, for a given target passage, returns the source passage with the _best_ alignment.  This is useful for constructing directed graphs of text reuse.  (In fact, `passim` is now equivalent to invoking `seriatim` with the `--all-pairs` option.)
 
 ### Producing Aligned Output
 
