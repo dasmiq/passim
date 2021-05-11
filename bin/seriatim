@@ -15,6 +15,7 @@ fi
 SPARK_SUBMIT_ARGS="$SPARK_SUBMIT_ARGS"
 
 spark-submit \
+    --repositories 'https://repos.spark-packages.org/' \
     --packages 'graphframes:graphframes:0.8.0-spark3.0-s_2.12' \
     $SPARK_SUBMIT_ARGS \
     "$script" "$@"
