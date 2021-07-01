@@ -534,7 +534,7 @@ def main(args):
     parser.add_argument('-a', '--min-align', type=int, default=50,
                          help='Minimum length of alignment', metavar='N')
     parser.add_argument('--fields', type=str, nargs='+', default=[],
-                        help='List of fileds to index')
+                        help='List of fields to index')
     parser.add_argument('-f', '--filterpairs', type=str, default='uid < uid2',
                         help='SQL constraint on posting pairs')
     parser.add_argument('--all-pairs', action='store_true',
