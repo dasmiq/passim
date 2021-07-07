@@ -139,7 +139,7 @@ Parameter | Default value | Description
 `--n` | 5 | N-gram order for text-reuse detection
 `--max-series` | 100 | Maximum document frequency of n-grams used.
 `--min-match` | 5 | Minimum number of matching n-grams between two documents.
-`--relative-overlap` | 0.5 | Proportion that two different aligned passages from the same document must overlap to be clustered together, as measured on the longer passage.
+`--relative-overlap` | 0.8 | Proportion that two different aligned passages from the same document must overlap to be clustered together, as measured on the longer passage.
 
 Pass parameters to the underlying Spark processes using the
 `SPARK_SUBMIT_ARGS` environment variable.  For example, to run passim

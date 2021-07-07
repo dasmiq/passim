@@ -38,7 +38,9 @@ dlog () {
 
 acquire_sbt_jar () {
   SBT_VERSION=`awk -F "=" '/sbt\.version/ {print $2}' ./project/build.properties`
-  URL1=https://dl.bintray.com/typesafe/ivy-releases/org.scala-sbt/sbt-launch/${SBT_VERSION}/sbt-launch.jar
+#  URL1=https://dl.bintray.com/typesafe/ivy-releases/org.scala-sbt/sbt-launch/${SBT_VERSION}/sbt-launch.jar
+  URL1="https://github.com/sbt/sbt/releases/download/v"${SBT_VERSION}"/sbt-"${SBT_VERSION}".zip"
+  echo $URL1
   JAR=build/sbt-launch-${SBT_VERSION}.jar
 
   sbt_jar=$JAR
@@ -49,10 +51,16 @@ acquire_sbt_jar () {
     # Download
     printf "Attempting to fetch sbt\n"
     JAR_DL="${JAR}.part"
+    ZIP_DL="build/sbt-launch-${SBT_VERSION}.zip"
     if [ $(command -v curl) ]; then
-      curl --fail --location --silent ${URL1} > "${JAR_DL}" &&\
-        mv "${JAR_DL}" "${JAR}"
+      curl --fail --location --silent ${URL1} > "${ZIP_DL}" &&\
+      #curl --fail --location --silent ${URL1} > "${JAR_DL}" &&\
+        #mv "${JAR_DL}" "${JAR}"
+        unzip "${ZIP_DL}" -d "build/temp/"
+        mv "build/temp/sbt/bin/sbt-launch.jar" $JAR
+        rm -rf "build/temp/"
     elif [ $(command -v wget) ]; then
+      echo "wget"
       wget --quiet ${URL1} -O "${JAR_DL}" &&\
         mv "${JAR_DL}" "${JAR}"
     else
