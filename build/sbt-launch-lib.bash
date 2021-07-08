@@ -54,15 +54,14 @@ acquire_sbt_jar () {
     ZIP_DL="build/sbt-launch-${SBT_VERSION}.zip"
     if [ $(command -v curl) ]; then
       curl --fail --location --silent ${URL1} > "${ZIP_DL}" &&\
-      #curl --fail --location --silent ${URL1} > "${JAR_DL}" &&\
-        #mv "${JAR_DL}" "${JAR}"
-        unzip "${ZIP_DL}" -d "build/temp/"
+        unzip -qq "${ZIP_DL}" -d "build/temp/"
         mv "build/temp/sbt/bin/sbt-launch.jar" $JAR
         rm -rf "build/temp/"
     elif [ $(command -v wget) ]; then
-      echo "wget"
-      wget --quiet ${URL1} -O "${JAR_DL}" &&\
-        mv "${JAR_DL}" "${JAR}"
+      wget --quiet ${URL1} -O "${ZIP_DL}" &&\
+        unzip -qq "${ZIP_DL}" -d "build/temp/"
+        mv "build/temp/sbt/bin/sbt-launch.jar" $JAR
+        rm -rf "build/temp/"
     else
       printf "You do not have curl or wget installed, please install sbt manually from http://www.scala-sbt.org/\n"
       exit -1
