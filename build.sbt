@@ -2,17 +2,17 @@ name := "passim"
 
 version := "0.2.0"
 
-scalaVersion := "2.11.8"
+scalaVersion := "2.12.10"
 
 resolvers += Resolver.mavenLocal
 
-libraryDependencies += "org.apache.spark" %% "spark-core" % "2.4.3"
-libraryDependencies += "org.apache.spark" %% "spark-graphx" % "2.4.3"
-libraryDependencies += "org.apache.spark" %% "spark-sql" % "2.4.3"
+libraryDependencies += "org.apache.spark" %% "spark-core" % "3.0.0"
+libraryDependencies += "org.apache.spark" %% "spark-graphx" % "3.0.0"
+libraryDependencies += "org.apache.spark" %% "spark-sql" % "3.0.0"
 
 resolvers += "Spark Packages Repo" at "http://dl.bintray.com/spark-packages/maven"
 
-libraryDependencies += "graphframes" % "graphframes" % "0.7.0-spark2.4-s_2.11"
+libraryDependencies += "graphframes" % "graphframes" % "0.8.0-spark3.0-s_2.12"
 
 libraryDependencies += "com.github.scopt" %% "scopt" % "3.5.0"
 
