@@ -10,7 +10,7 @@ libraryDependencies += "org.apache.spark" %% "spark-core" % "3.0.0"
 libraryDependencies += "org.apache.spark" %% "spark-graphx" % "3.0.0"
 libraryDependencies += "org.apache.spark" %% "spark-sql" % "3.0.0"
 
-resolvers += "Spark Packages Repo" at "http://dl.bintray.com/spark-packages/maven"
+resolvers += "Spark Packages Repo" at "https://repos.spark-packages.org/"
 
 libraryDependencies += "graphframes" % "graphframes" % "0.8.0-spark3.0-s_2.12"
 
