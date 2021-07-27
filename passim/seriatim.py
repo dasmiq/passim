@@ -358,27 +358,37 @@ def textLines(text):
 def loverlap(s1, s2):
     return max(0, min(s1.end, s2.end) - max(s1.begin, s2.begin))
 
-def linkSpans(s1, s2):
-    srcOverlap = 0.5
-    dstOverlap = 0.9
-    sib = IntervalTree([Interval(s[0], s[1]) for s in s1])
+def linkSpans(src_overlap, dst_overlap, s1, s2):
+    """Link pairs of spans within the same document, such that either:
+    1. one span is the source for a link to another document and the
+       other span is the destination for a link from another document; or
+    2. two spans that are not desintations overlap with each other.
+    """
     src = IntervalTree([Interval(s[0], s[1]) for s in s2]) if s2 != None else IntervalTree()
     res = list()
+    unsourced = list()
     for s in s1:
         cur = Interval(s[0], s[1])
         sources = [i for i in src[cur.begin:cur.end]
-                   if loverlap(cur, i) / cur.length() >= srcOverlap]
-        # NB: There shouldn't be much overlap in sources, except due to edge alignments;
-        # nevertheless, pick the largest overlap.
+                   if loverlap(cur, i) / cur.length() >= dst_overlap]
+        # NB: There shouldn't be much overlap in spans that are the
+        # destinations of links from other documents (i.e., sources
+        # here), except due to edge alignments; nevertheless, pick the
+        # largest overlap.
         sources.sort(key=lambda i: loverlap(cur, i) / cur.length(), reverse=True)
         if sources:
             res.append((cur.begin, cur.end, sources[0].begin, sources[0].end))
         else:
-            sibs = [i for i in sib[cur.begin:cur.end] if (i != cur and i.length() <= cur.length())]
-            sibs.sort(key=lambda i: loverlap(cur, i) / cur.length(), reverse=True)
-            if (sibs and
-                (loverlap(cur, sibs[0]) / cur.length()) >= dstOverlap):
-                res.append((cur.begin, cur.end, sibs[0].begin, sibs[0].end))
+            unsourced.append(cur)
+    if len(unsourced) > 0:
+        unsourced.sort(key=lambda i: (-i.length(), i.begin, i.end))
+        for i in range(1, len(unsourced)):
+            dst = unsourced[i]
+            for j in range(i-1, -1, -1):
+                src = unsourced[j]
+                if (loverlap(dst, src) / dst.length()) >= src_overlap:
+                    res.append((dst.begin, dst.end, src.begin, src.end))
+                    break
     return res
 
 def mergeSpans(spans, uid):
@@ -448,7 +458,7 @@ def clusterExtents(self, config):
     s2 = self.groupBy('uid2'
                ).agg(sort_array(collect_set(struct('begin2', 'end2'))).alias('s2'))
 
-    link_spans = udf(lambda s1, s2: linkSpans(s1, s2),
+    link_spans = udf(lambda s1, s2: linkSpans(config.src_overlap, config.dst_overlap, s1, s2),
                      'array<struct<begin: int, end: int, begin2: int, end2: int>>')
 
     within = s1.join(s2, col('uid') == col('uid2'), 'leftouter'
@@ -533,6 +543,10 @@ def main(args):
                         help='Maximum offset in global alignment', metavar='N')
     parser.add_argument('-a', '--min-align', type=int, default=50,
                          help='Minimum length of alignment', metavar='N')
+    parser.add_argument('--src-overlap', type=float, default=0.9,
+                        help='Source overlap proportion', metavar='p')
+    parser.add_argument('--dst-overlap', type=float, default=0.5,
+                        help='Destination overlap proportion', metavar='p')
     parser.add_argument('--fields', type=str, nargs='+', default=[],
                         help='List of fields to index')
     parser.add_argument('-f', '--filterpairs', type=str, default='uid < uid2',
