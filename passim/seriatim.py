@@ -506,11 +506,34 @@ def clusterExtents(self, config):
 setattr(DataFrame, 'clusterExtents', clusterExtents)
 
 def clusterJoin(self, config, corpus):
-    out = self.join(corpus.drop('pages'), 'uid'
+    out = self.join(corpus, 'uid'
             ).withColumn(config.text,
-                         col(config.text).substr(col('begin'), col('end') - col('begin'))
-            ).passRegions(corpus, 'pages', 'pages',
-                          'uid', col('begin'), col('end'))
+                         col(config.text).substr(col('begin'), col('end') - col('begin')))
+
+    pageCol = 'pages'
+    if pageCol in out.columns:
+        pageFields = ', '.join([f'p.{f} as {f}'
+                                for f in out.selectExpr(f'inline({pageCol})').columns
+                                if f != 'regions'])
+        out = out.withColumn(pageCol, expr(f'''
+filter(transform({pageCol}, p -> struct({pageFields}, filter(p.regions, r -> r.start < end AND (r.start + r.length) > begin) as regions)), p -> size(p.regions) > 0)''')
+                ).withColumn(pageCol, expr(f'''
+transform({pageCol},
+          p -> struct({pageFields},
+                      array(aggregate(p.regions,
+                                      struct(p.regions[0].start as start,
+                                             p.regions[0].length as length,
+                                             struct(p.regions[0].coords.x as x,
+                                                    p.regions[0].coords.y as y,
+                                                    p.regions[0].coords.w as w,
+                                                    p.regions[0].coords.h as h) as coords),
+                                      (acc, r) -> struct(least(acc.start, r.start) as start,
+                                                         greatest(acc.start + acc.length, r.start + r.length) - least(acc.start, r.start) as length,
+                                                         struct(least(acc.coords.x, r.coords.x) as x,
+                                                                least(acc.coords.y, r.coords.y) as y,
+                                                                greatest(acc.coords.x + acc.coords.w, r.coords.x + r.coords.w) - least(acc.coords.x, r.coords.x) as w,
+                                                                greatest(acc.coords.y + acc.coords.h, r.coords.y + r.coords.h) - least(acc.coords.y, r.coords.y) as h) as coords))) as regions))
+'''))
 
     if config.output_format != 'parquet':
         out = out.sort(desc('size'), 'cluster', *[expr(f) for f in config.fields],
