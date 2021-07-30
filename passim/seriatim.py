@@ -212,18 +212,20 @@ def anchorAlign(config, s1, s2, side):
         (s, t, e1, e2) = item
         if s == len(s1) and t == len(s2):
             break
+        cand = []
         ## Finish
-        cand = [(score - (lpstop + 2 * lpfinal + lppad * (len(s2) - t)),
-                  (len(s1), len(s2), s, t))]
+        if t == len(s2) or s2[t] == '\n' or ((not config.complete_lines) and (config.floating_ngrams or (not s2[t].isalnum()))):
+            cand.append((score - (lpstop + 2 * lpfinal + lppad * (len(s2) - t)),
+                         (len(s1), len(s2), s, t)))
         if s < len(s1):         # delete
             cand.append((score - lpedit, (s + 1, t, e1, e2)))
             if t < len(s2):
                 if s1[s].lower() == s2[t].lower() or (s1[s].isspace() and s2[t].isspace()): #copy
                     cand.append((score - lpcopy, (s + 1, t + 1, e1, e2)))
-                elif s1[s] != '\n' and s2[t] != '\n':
+                elif s1[s] != '\n' and s2[t] != '\n': # newlines can't rewrite as printable
                     cand.append((score - lpedit, (s + 1, t + 1, e1, e2)))
         if t < len(s2):         # insert
-            cand.append((score - lpedit, (s, t + 1, e1, e1))) # e1 typo?
+            cand.append((score - lpedit, (s, t + 1, e1, e2)))
         for c in cand:
             (score, item) = c
             if item[2] == 0 and abs(item[0] - item[1]) > config.max_offset:
@@ -560,6 +562,8 @@ def main(args):
                         help='n-gram order', metavar='N')
     parser.add_argument('--floating-ngrams', action='store_true',
                         help='Allow n-grams to float from word boundaries')
+    parser.add_argument('--complete-lines', action='store_true',
+                        help='Break target alignments at line breaks')
     parser.add_argument('-g', '--gap', type=int, default=600,
                         help='Minimum size of gap that separates passages', metavar='N')
     parser.add_argument('--max-offset', type=int, default=20,
