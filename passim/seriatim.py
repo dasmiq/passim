@@ -580,12 +580,11 @@ def main(args):
                         help='SQL constraint on posting pairs')
     parser.add_argument('--all-pairs', action='store_true',
                         help='Compute alignments for all pairs.')
-    parser.add_argument('--pairwise', action='store_true',
-                        help='Output pairwise alignments')
-    parser.add_argument('--docwise', action='store_true',
-                        help='Output docwise alignments')
-    parser.add_argument('--linewise', action='store_true',
-                        help='Output linewise alignments')
+    parser.add_argument('--pairwise', action='store_true', help='Output pairwise alignments')
+    parser.add_argument('--docwise', action='store_true', help='Output docwise alignments')
+    parser.add_argument('--linewise', action='store_true', help='Output linewise alignments')
+    parser.add_argument('--to-pairs', action='store_true', help='Output pairs and stop')    
+    parser.add_argument('--to-extents', action='store_true', help='Output extents and stop')    
     parser.add_argument('--link-model', type=str, default=None,
                         help='Link model in R format')
     parser.add_argument('--link-features', type=str, default=None,
@@ -665,6 +664,8 @@ def main(args):
                         merge_posts(collect_list('post')).alias('post'))
 
     apos.write.mode('ignore').parquet(pairsFname)
+    if config.to_pairs:
+        exit(0)
     
     vit_src = udf(lambda post, prior: vitSrc(post, prior,
                                       config.n, config.gap, config.min_align),
@@ -772,6 +773,9 @@ def main(args):
          ).drop('lalg', 'ralg', 'prefix', 'prefix2', 'suffix', 'suffix2' # debug fields
          ).drop('left', 'right', 'left2', 'right2'
          ).write.mode('ignore').parquet(extentsFname)
+
+    if config.to_extents:
+        exit(0)
 
     extents = spark.read.load(extentsFname)
 
