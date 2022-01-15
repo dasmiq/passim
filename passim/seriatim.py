@@ -558,7 +558,7 @@ def main(args):
                         help='Upper limit on document frequency', metavar='N')
     parser.add_argument('-m', '--min-match', type=int, metavar='N', default=5,
                         help='Minimum number of n-gram matches between documents')
-    parser.add_argument('-n', '--n', type=int, default=20,
+    parser.add_argument('-n', '--n', type=int, default=25,
                         help='n-gram order', metavar='N')
     parser.add_argument('--floating-ngrams', action='store_true',
                         help='Allow n-grams to float from word boundaries')

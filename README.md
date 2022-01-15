@@ -81,7 +81,7 @@ Some other useful parameters are:
 
 Parameter | Default value | Description
 --------- | ------------- | -----------
-`-n` | 20 | Character n-gram order for text-reuse detection
+`-n` | 25 | Character n-gram order for text-reuse detection
 `-l` or `--minDF` | 2 | Minimum document frequency of n-grams indexed.
 `-u` or `--maxDF` | 100 | Maximum document frequency of n-grams indexed.
 `-m` or `--min-match` | 5 | Minimum number of matching n-grams between two documents.
