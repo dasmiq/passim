@@ -736,7 +736,7 @@ def main(args):
                      'array<struct<prefix2: string, text2: string, suffix2: string>>')
 
     anchor_align = udf(lambda s1, s2, side: anchorAlign(config, s1, s2, side),
-                       'struct<s1: string, s2: string>')
+                       'struct<s1: string, s2: string>').asNondeterministic()
 
     # We align edges independently, but we could also consider
     # aligning gaps between target spans jointly so that they don't
@@ -761,9 +761,9 @@ def main(args):
          ).withColumn('src', arrays_zip('src', 'text')
          ).drop('text'
          ).select(*f1, explode('src').alias('src')
-         ).select(*f1, col('src.src.*'), col('src.text.*') # HACK! explode prevents UDF inlining
-         ).withColumn('lalg', explode(array(anchor_align('prefix', 'prefix2', lit('left'))))
-         ).withColumn('ralg', explode(array(anchor_align('suffix', 'suffix2', lit('right'))))
+         ).select(*f1, col('src.src.*'), col('src.text.*')
+         ).withColumn('lalg', anchor_align('prefix', 'prefix2', lit('left'))
+         ).withColumn('ralg', anchor_align('suffix', 'suffix2', lit('right'))
          ).withColumn('text', f.concat(col('lalg.s1'), col('text'), col('ralg.s1'))
          ).withColumn('text2', f.concat(col('lalg.s2'), col('text2'), col('ralg.s2'))
          ).withColumn('begin', col('begin') - length('lalg.s1')
