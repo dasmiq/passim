@@ -625,7 +625,7 @@ def main(args):
     f1 = [f for f in termCorpus.columns if f != config.text]
     f2 = [f + '2' for f in f1]
 
-    spark.conf.set('spark.sql.shuffle.partitions', corpus.rdd.getNumPartitions() * 3)
+    spark.conf.set('spark.sql.shuffle.partitions', corpus.rdd.getNumPartitions())
 
     get_postings = udf(lambda text: getPostings(text, config.n, config.floating_ngrams),
                        'array<struct<feat: string, post: int>>')
@@ -843,7 +843,7 @@ def main(args):
     if not os.path.exists(clustersFname): # prevent creating tmpdirs in clustering 
         spark.conf.set('spark.sql.shuffle.partitions', spark.sparkContext.defaultParallelism)
         extents.clusterExtents(config).write.mode('ignore').parquet(clustersFname)
-        spark.conf.set('spark.sql.shuffle.partitions', corpus.rdd.getNumPartitions() * 3)
+        spark.conf.set('spark.sql.shuffle.partitions', corpus.rdd.getNumPartitions())
     
     spark.read.load(clustersFname
         ).clusterJoin(config, corpus
