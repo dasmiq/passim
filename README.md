@@ -185,7 +185,7 @@ Documents may record their extent on physical pages with the `pages` field.
 	  ]
  ```
 
-The `start` and `length` fields of a record in `regions` indicate character offsets into the document `text` field.  A document may span several pages, and thus the `pages` field is an array.
+Although, as stated above, JSON records should occupy a single line, we format the data here on several lines for legibility.  The `start` and `length` fields of a record in `regions` indicate character offsets into the document `text` field.  The `pages` field is an array since a document may span several pages.
 
 ## Acknowledgements
 
