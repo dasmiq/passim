@@ -597,6 +597,11 @@ def main(args):
     parser.add_argument('outputPath', metavar='<path>', help='output')
     config = parser.parse_args(args)
 
+    # replace placeholders in the filterpairs argument:
+    config.filterpairs = config.filterpairs.replace("LESSTHAN", "<")
+    config.filterpairs = config.filterpairs.replace("GREATERTHAN", ">")
+    config.filterpairs = config.filterpairs.replace("PIPE", "|")
+    
     print(config)
 
     spark = SparkSession.builder.appName('Passim Alignment').getOrCreate()
