@@ -545,6 +545,12 @@ transform({pageCol},
 
 setattr(DataFrame, 'clusterJoin', clusterJoin)
 
+def replace_placeholders(s):
+  try:
+    return s.replace("_LT_", "<").replace("_LTE_", "<=").replace("_GT_", ">").replace("_GTE_", ">=").replace("_PIPE_", "|").replace("_AMPERSAND_", "&")
+  except:
+    return s
+
 def main(args):
     parser = argparse.ArgumentParser(description='Passim Alignment',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -598,8 +604,8 @@ def main(args):
     config = parser.parse_args(args)
 
     # replace placeholders in the relevant arguments:
-    config.filterpairs = config.filterpairs.replace("_LT_", "<").replace("_LTE_", "<=").replace("_GT_", ">").replace("_GTE_", ">=").replace("_PIPE_", "|").replace("_AMPERSAND_", "&")
-    config.link_features = config.link_features.replace("_LT_", "<").replace("_LTE_", "<=").replace("_GT_", ">").replace("_GTE_", ">=").replace("_PIPE_", "|").replace("_AMPERSAND_", "&")
+    config.filterpairs = replace_placeholders(config.filterpairs)
+    config.link_features = replace_placeholders(config.link_features)
     print(config)
 
     spark = SparkSession.builder.appName('Passim Alignment').getOrCreate()
