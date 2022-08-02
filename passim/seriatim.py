@@ -183,6 +183,71 @@ def spanEdge(src, max_gap):
 def countMatches(s1, s2):
     return len(list(filter(lambda c: c[0] == c[1], zip(s1, s2))))
 
+def beamAnchorAlign(config, s1, s2, side):
+    if side == 'left':
+        s1 = s1[::-1]
+        s2 = s2[::-1]
+
+    V = 256
+    logV = log(V)
+    pcopy = config.pcopy
+    lpcopy = log(pcopy)
+    lpedit = log(1 - pcopy) - log(2 * V)
+    lpstop = log((1 + pcopy) / 2)
+    pfinal = 0.01
+    lpfinal = log(pfinal)
+    lppad = log(1 - pfinal) - log(V)
+
+    # Progress by target text position
+    t = 0
+    best = (0, 0)
+    bestScore = float('inf')
+    # Items are (score, s)
+    cur = [(0, 0)]
+    suc = []
+    while t <= len(s2):
+        # print(t)
+        pops = 0
+        seen = {}
+        while len(cur) > 0 and pops < config.beam:
+            top = hq.heappop(cur)
+            (score, s) = top
+            if score >= bestScore or (s in seen and score >= seen[s]):
+                continue
+            seen[s] = score
+            pops += 1
+            # print(top)
+            ## Finish
+            if t == len(s2) or s2[t] == '\n' or ((not config.complete_lines) and (config.floating_ngrams or (not s2[t].isalnum()))):
+                finalScore = score - (lpstop + 2 * lpfinal + lppad * (len(s2) - t))
+                if finalScore < bestScore:
+                    bestScore = finalScore
+                    best = (s, t)
+            if s < len(s1):     # delete
+                hq.heappush(cur, (score - lpedit, s + 1))
+                if t < len(s2):
+                    if s1[s].lower() == s2[t].lower() or (s1[s].isspace() and s2[t].isspace()): #copy
+                        hq.heappush(suc, (score - lpcopy, s + 1))
+                    elif s1[s] != '\n' and s2[t] != '\n': # newlines can't rewrite as printable
+                        hq.heappush(suc, (score - lpedit, s + 1))
+            if t < len(s2):     # insert
+                hq.heappush(suc, (score - lpedit, s))
+
+        t += 1
+        cur = suc
+        suc = []
+
+    (e1, e2) = best
+    # print("# BEST!")
+    # print(best)
+    # print(bestScore)
+    
+    # It might be worth deleting small numbers of characters trailing (leading) a newline.
+    if side == 'left':
+        return (s1[e1-1::-1], s2[e2-1::-1])
+    else:
+        return (s1[0:e1], s2[0:e2])
+
 def anchorAlign(config, s1, s2, side):
     if side == 'left':
         s1 = s1[::-1]
@@ -190,7 +255,7 @@ def anchorAlign(config, s1, s2, side):
 
     V = 256
     logV = log(V)
-    pcopy = 0.8
+    pcopy = config.pcopy
     lpcopy = log(pcopy)
     lpedit = log(1 - pcopy) - log(2 * V)
     lpstop = log((1 + pcopy) / 2)
@@ -244,7 +309,7 @@ def anchorAlign(config, s1, s2, side):
 def levAlign(config, s1, s2):
     V = 256
     logV = log(V)
-    pcopy = 0.8
+    pcopy = config.pcopy
     lpcopy = log(pcopy)
     lpedit = log(1 - pcopy) - log(2 * V)
 
@@ -568,6 +633,10 @@ def main(args):
                         help='Minimum size of gap that separates passages', metavar='N')
     parser.add_argument('--max-offset', type=int, default=20,
                         help='Maximum offset in global alignment', metavar='N')
+    parser.add_argument('--beam', type=int, default=0,
+                        help='Beam search width', metavar='N')
+    parser.add_argument('--pcopy', type=float, default=0.8,
+                        help='Probability of copying a character', metavar='p')
     parser.add_argument('-a', '--min-align', type=int, default=50,
                          help='Minimum length of alignment', metavar='N')
     parser.add_argument('--src-overlap', type=float, default=0.9,
@@ -736,7 +805,10 @@ def main(args):
                      'array<struct<prefix2: string, text2: string, suffix2: string>>')
 
     anchor_align = udf(lambda s1, s2, side: anchorAlign(config, s1, s2, side),
-                       'struct<s1: string, s2: string>').asNondeterministic()
+                       'struct<s1: string, s2: string>').asNondeterministic() \
+                       if config.beam == 0 \
+                          else udf(lambda s1, s2, side: beamAnchorAlign(config, s1, s2, side),
+                                   'struct<s1: string, s2: string>').asNondeterministic()
 
     # We align edges independently, but we could also consider
     # aligning gaps between target spans jointly so that they don't
