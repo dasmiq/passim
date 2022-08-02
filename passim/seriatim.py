@@ -181,7 +181,9 @@ def spanEdge(src, max_gap):
     return res
 
 def countMatches(s1, s2):
-    return len(list(filter(lambda c: c[0] == c[1], zip(s1, s2))))
+    return len(list(filter(lambda c: (c[0].lower() == c[1].lower() or
+                                      (c[0].isspace() and c[1].isspace())),
+                           zip(s1, s2))))
 
 def beamAnchorAlign(config, s1, s2, side):
     if side == 'left':
@@ -322,58 +324,99 @@ def levAlign(config, s1, s2):
     elif len(s2) == 0:
         return (s1, '-' * len(s1))
 
-    chart = {}
-    bp = {}
-    pq = [(0, (0, 0))]
-    while len(pq) > 0:
-        #print(pq)
-        top = hq.heappop(pq)
-        #print(top)
-        (score, item) = top
-        (e1, e2) = item
-        if e1 == len(s1) and e2 == len(s2):
-            break
-        # Option to bail out
-        cand = list()
-        if e1 < len(s1):         # delete
-            cand.append((score - lpedit, (e1 + 1, e2)))
-            if e2 < len(s2):
-                if s1[e1] == s2[e2] or (s1[e1].isspace() and s2[e2].isspace()): #copy
-                    cand.append((score - lpcopy, (e1 + 1, e2 + 1)))
-                elif s1[e1] != '\n' and s2[e2] != '\n':
-                    cand.append((score - lpedit, (e1 + 1, e2 + 1)))
-        if e2 < len(s2):         # insert
-            cand.append((score - lpedit, (e1, e2 + 1)))
-        for c in cand:
-            (score, item) = c
-            if (abs(item[0]/len(s1) - item[1]/len(s2))*len(s1)) > config.max_offset:
-                continue
-            if chart.get(item, inf) > score:
-                chart[item] = score
-                bp[item] = (e1, e2)
-                hq.heappush(pq, c)
+    if config.beam > 0:
+        t = 0
+        bestScore = float('inf')
+        best = (0, '', '')
+        cur = [(0, (0, '', ''))] # items are (source, alg1, alg2)
+        suc = []
+        while t <= len(s2):
+            # print(t)
+            pops = 0
+            seen = {}
+            while len(cur) > 0 and pops < config.beam:
+                top = hq.heappop(cur)
+                (score, (s, a1, a2)) = top
+                if s == len(s1) and t == len(s2) and score <= bestScore:
+                    bestScore = score
+                    best = (s, a1, a2)
+                if s in seen and score >= seen[s]:
+                    continue
+                seen[s] = score
+                pops += 1
+                # print(top)
+                if s < len(s1): # delete
+                    hq.heappush(cur, (score - lpedit, (s + 1, a1 + s1[s], a2 + '-')))
+                    if t < len(s2):
+                        if s1[s] == s2[t] or (s1[s].isspace() and s2[t].isspace()): #copy
+                            hq.heappush(suc, (score - lpcopy, (s + 1, a1+s1[s], a2+s2[t])))
+                        elif s1[s] != '\n' and s2[t] != '\n':
+                            hq.heappush(suc, (score - lpedit, (s + 1, a1+s1[s], a2+s2[t])))
+                if t < len(s2): # insert
+                    hq.heappush(suc, (score - lpedit, (s, a1 + '-', a2 + s2[t])))
+            t += 1
+            cur = suc
+            suc = []
+
+        if bestScore < inf:
+            (s, a1, a2) = best
+            return (a1, a2)
+        else:                       # alignment failed
+            return (s1 + '-' * max(0, len(s2) - len(s1)),
+                    s2 + '-' * max(0, len(s1) - len(s2)))            
+    else:
+        chart = {}
+        bp = {}
+        pq = [(0, (0, 0))]
+        while len(pq) > 0:
+            #print(pq)
+            top = hq.heappop(pq)
+            #print(top)
+            (score, item) = top
+            (e1, e2) = item
+            if e1 == len(s1) and e2 == len(s2):
+                break
+            # Option to bail out
+            cand = list()
+            if e1 < len(s1):         # delete
+                cand.append((score - lpedit, (e1 + 1, e2)))
+                if e2 < len(s2):
+                    if s1[e1] == s2[e2] or (s1[e1].isspace() and s2[e2].isspace()): #copy
+                        cand.append((score - lpcopy, (e1 + 1, e2 + 1)))
+                    elif s1[e1] != '\n' and s2[e2] != '\n':
+                        cand.append((score - lpedit, (e1 + 1, e2 + 1)))
+            if e2 < len(s2):         # insert
+                cand.append((score - lpedit, (e1, e2 + 1)))
+            for c in cand:
+                (score, item) = c
+                if (abs(item[0]/len(s1) - item[1]/len(s2))*len(s1)) > config.max_offset:
+                    continue
+                if chart.get(item, inf) > score:
+                    chart[item] = score
+                    bp[item] = (e1, e2)
+                    hq.heappush(pq, c)
                 
-    (score, (e1, e2)) = top
-    if e1 == len(s1) and e2 == len(s2):
-        alg1 = list()
-        alg2 = list()
-        while e1 > 0 or e2 > 0:
-            (p1, p2) = bp[(e1, e2)]
-            if p1 < e1:
-                alg1 += s1[p1]
-                if p2 < e2:
-                    alg2 += s2[p2]
+        (score, (e1, e2)) = top    
+        if e1 == len(s1) and e2 == len(s2):
+            alg1 = list()
+            alg2 = list()
+            while e1 > 0 or e2 > 0:
+                (p1, p2) = bp[(e1, e2)]
+                if p1 < e1:
+                    alg1 += s1[p1]
+                    if p2 < e2:
+                        alg2 += s2[p2]
+                    else:
+                        alg2 += '-'
                 else:
-                    alg2 += '-'
-            else:
-                alg1 += '-'
-                alg2 += s2[p2]
-            e1 = p1
-            e2 = p2
-        return (''.join(reversed(alg1)), ''.join(reversed(alg2)))
-    else:                       # alignment failed
-        return (s1 + '-' * max(0, len(s2) - len(s1)),
-                s2 + '-' * max(0, len(s1) - len(s2)))
+                    alg1 += '-'
+                    alg2 += s2[p2]
+                e1 = p1
+                e2 = p2
+            return (''.join(reversed(alg1)), ''.join(reversed(alg2)))
+        else:                       # alignment failed
+            return (s1 + '-' * max(0, len(s2) - len(s1)),
+                    s2 + '-' * max(0, len(s1) - len(s2)))
 
 def chunkAlign(config, begin, begin2, text, text2, anchors):
     alg1 = ''
