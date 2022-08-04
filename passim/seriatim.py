@@ -701,6 +701,9 @@ def main(args):
                         help='Link model in R format')
     parser.add_argument('--link-features', type=str, default=None,
                         help='Link model features as SQL SELECT')
+    parser.add_argument('--log-level', type=str, default='WARN',
+                        choices=['ERROR', 'WARN', 'INFO', 'DEBUG'],
+                        help='spark log level')
     parser.add_argument('--input-format', type=str, default='json',
                         help='Input format')
     parser.add_argument('--output-format', type=str, default='json',
@@ -712,6 +715,7 @@ def main(args):
     print(config)
 
     spark = SparkSession.builder.appName('Passim Alignment').getOrCreate()
+    spark.sparkContext.setLogLevel(config.log_level)
     spark.conf.set('spark.sql.legacy.parquet.datetimeRebaseModeInRead', 'CORRECTED')
     spark.conf.set('spark.sql.legacy.parquet.datetimeRebaseModeInWrite', 'CORRECTED')
 
