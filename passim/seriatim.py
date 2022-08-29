@@ -837,7 +837,7 @@ def main(args):
 
         exit(0)
 
-    span_edge = udf(lambda src: spanEdge(src, 200), # config.gap
+    span_edge = udf(lambda src: spanEdge(src, config.gap),
                     'array<struct<uid: bigint, left2: int, begin2: int, end2: int, right2: int,'
                     + ' left: int, begin: int, end: int, right: int, anchors: array<struct<pos2: int, pos: int>>>>')
 
