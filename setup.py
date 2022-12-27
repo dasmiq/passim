@@ -14,6 +14,7 @@ setuptools.setup(
     ],
     install_requires=[
         'pyspark>=3.0.1',
+        'graphframes',
         'intervaltree'
     ],
     scripts=['bin/seriatim', 'bin/passim', 'bin/passim.cmd', 'bin/seriatim.cmd'],
