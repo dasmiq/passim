@@ -675,8 +675,8 @@ def main(args):
     parser.add_argument('-g', '--gap', type=int, default=600,
                         help='Minimum size of gap that separates passages', metavar='N')
     parser.add_argument('--max-offset', type=int, default=20,
-                        help='Maximum offset in global alignment', metavar='N')
-    parser.add_argument('--beam', type=int, default=0,
+                        help='Maximum offset in global alignment [deprecated]', metavar='N')
+    parser.add_argument('--beam', type=int, default=20,
                         help='Beam search width', metavar='N')
     parser.add_argument('--pcopy', type=float, default=0.8,
                         help='Probability of copying a character', metavar='p')
