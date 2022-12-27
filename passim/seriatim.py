@@ -781,7 +781,8 @@ def main(args):
 
     apos.write.mode('ignore').parquet(pairsFname)
     if config.to_pairs:
-        exit(0)
+        spark.stop()
+        return(0)
     
     vit_src = udf(lambda post, prior: vitSrc(post, prior,
                                       config.n, config.gap, config.min_align),
@@ -835,7 +836,8 @@ def main(args):
              ).withColumn('src', vit_src('post', 'prior')
              ).write.mode('ignore').parquet(os.path.join(config.outputPath, 'src1.parquet'))
 
-        exit(0)
+        spark.stop()
+        return(0)
 
     span_edge = udf(lambda src: spanEdge(src, config.gap),
                     'array<struct<uid: bigint, left2: int, begin2: int, end2: int, right2: int,'
@@ -894,7 +896,8 @@ def main(args):
          ).write.mode('ignore').parquet(extentsFname)
 
     if config.to_extents:
-        exit(0)
+        spark.stop()
+        return(0)
 
     extents = spark.read.load(extentsFname)
 
@@ -950,14 +953,16 @@ def main(args):
                                  expr('transform(lines, r -> struct(r.begin as begin, r.text as text, vars[r.begin] as wits))')
                     ).drop('vars'
                     ).write.mode('ignore').format(config.output_format).save(outFname)
-                exit(0)
+                spark.stop()
+                return
 
             lines.passRegions(corpus, 'pages', 'pages',
                               'uid', col('begin'), col('begin') + length('text'), True
                 ).passRegions(corpus, 'pages', 'pages2',
                               'uid2', col('begin2'), col('begin2') + length('text2'), True
                 ).write.mode('ignore').format(config.output_format).save(outFname)
-            exit(0)
+            spark.stop()
+            return
 
     if not os.path.exists(clustersFname): # prevent creating tmpdirs in clustering 
         spark.conf.set('spark.sql.shuffle.partitions', spark.sparkContext.defaultParallelism)
@@ -969,6 +974,7 @@ def main(args):
         ).write.mode('ignore').format(config.output_format).save(outFname)
 
     spark.stop()
+    return(0)
 
 if __name__ == '__main__':
     import sys
