@@ -716,8 +716,8 @@ def main(args):
 
     spark = SparkSession.builder.appName('Passim Alignment').getOrCreate()
     spark.sparkContext.setLogLevel(config.log_level)
-    spark.conf.set('spark.sql.legacy.parquet.datetimeRebaseModeInRead', 'CORRECTED')
-    spark.conf.set('spark.sql.legacy.parquet.datetimeRebaseModeInWrite', 'CORRECTED')
+    spark.conf.set('spark.sql.parquet.datetimeRebaseModeInRead', 'CORRECTED')
+    spark.conf.set('spark.sql.parquet.datetimeRebaseModeInWrite', 'CORRECTED')
 
     tmpdir = 'tmp'
     spark.sparkContext.setCheckpointDir(os.path.join(config.outputPath, tmpdir))
