@@ -760,12 +760,17 @@ def main(args):
     merge_posts = udf(lambda posts: mergePosts(posts),
                       'array<struct<post2: int, df: int, alg: array<struct<uid: bigint, post:int >>>>')
 
+    metaFields = ', '.join([f for f in f1 if f != 'uid'])
+    if metaFields != '':
+        metaVal = f'struct({metaFields})'
+    else:
+        metaVal = 'struct(1 AS meta)'
+
     apos = dfpost.join(dfpost.toDF(*[f + ('2' if f != 'feat' else '') for f in dfpost.columns]),
                        'feat'
                 ).filter(config.filterpairs
                 ).drop('feat', 'df2'
-                ).groupBy(*f2, struct('uid',
-                                      struct(*[f for f in f1 if f != 'uid'])).alias('meta')
+                ).groupBy(*f2, struct('uid', expr(metaVal)).alias('meta')
                 ).agg(collect_list(struct('post2', 'df',
                                           array(struct('uid',
                                                        'post')).alias('alg'))).alias('post')
