@@ -90,9 +90,22 @@ The default input and output format is JSON.  Use the `--input-format parquet` a
 
 If, in addition to the clusters, you want to output pairwise alignments between all matching passages, invoke passim with the `--pairwise` flag.  These alignments will be in `align.json` or `align.parquet`, depending on which output format you choose.
 
+Use the `--help` option to see a full list of options.
+
+Pass parameters to the underlying Spark processes using the `SPARK_SUBMIT_ARGS` environment variable.  For example, to run passim on a local machine with 10 cores and 200GB of memory, run the following command:
+```
+$ SPARK_SUBMIT_ARGS='--master local[10] --driver-memory 200G --executor-memory 200G' passim input.json output
+```
+
+See the [Spark documentation](https://spark.apache.org/docs/latest/index.html) for further configuration options.
+
+### Controlling passim's n-gram filtering
+
+One of the main goals of passim was to work well with large collections. To do that, passim indexes spans of _n_ input characters (i.e., n-grams) and then selects document pairs for alignment only if they share sufficient n-grams. After these pairs of input documents are selected for alignment, passim runs a full character-level alignment algorithm starting from the matching n-grams to produce the full output alignment.
+
 By default, passim indexes character n-grams starting at word boundaries in order to find candidate passages to align.  If your text is very noisy, you can index other n-grams, starting at the middle of words, with the `--floating-ngrams` flag.  In any case, passim only indexes alphanumeric characters (as determined by python's `isalnum` function), skipping whitespace, punctuation, and other characters.
 
-Some other useful parameters are:
+Some useful parameters are:
 
 Parameter | Default value | Description
 --------- | ------------- | -----------
@@ -103,14 +116,7 @@ Parameter | Default value | Description
 `-a` or `--min-align` | 50 | Minimum number of characters in aligned passages.
 `-g` or `--gap` | 600 | Passages more than this number of characters apart will be aligned separately.
 
-Use the `--help` option to see a full list of options.
-
-Pass parameters to the underlying Spark processes using the `SPARK_SUBMIT_ARGS` environment variable.  For example, to run passim on a local machine with 10 cores and 200GB of memory, run the following command:
-```
-$ SPARK_SUBMIT_ARGS='--master local[10] --driver-memory 200G --executor-memory 200G' passim input.json output
-```
-
-See the [Spark documentation](https://spark.apache.org/docs/latest/index.html) for further configuration options.
+When selecting values for these parameters, you are managing a precision-recall tradeoff. Shorter n-grams or lower minimum matches might produce more output alignments, but they might be less relevant.
 
 ### Pruning Alignments
 
