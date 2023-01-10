@@ -2,23 +2,38 @@
 
 This project implements algorithms for detecting and aligning similar passages in text.  It can be run either in query mode, to find quoted passages from a reference text, or all-pairs mode, to find all pairs of passages within longer documents with substantial alignments.
 
+## Documentation
+
+Besides the documentation in this README file, you might find it helpful to read:
+
+* [Getting Started with `passim`](docs/passim_quickstart.ipynb), an IPython notebook that walks through installation and basic usage; and
+* [Detecting Text Reuse with Passim 2.0](https://github.com/dasmiq/ph-submissions/blob/passim2-replace/en/published/originals/detecting-text-reuse-with-passim.md), an updated version of the tutorial on [_Programming Historian_](https://programminghistorian.org/).
+
+If you are using the earlier _Programming Historian_ tutorial on passim version 1, see [this updated version](https://github.com/dasmiq/ph-submissions/blob/passim1-release/en/published/originals/detecting-text-reuse-with-passim.md) that corrects links to the source code.
+
 ## Installation
 
 Passim relies on [Apache Spark](http://spark.apache.org) to manage parallel computations, either on a single machine or a cluster.  Spark, in turn, requires Java to run with the `java` command.  In its default configuration, it also expects Python 3 to be runnable with the `python` command.  There are ways to configure your system differently using various environment variables, but having these defaults will make your life easier.
 
-Once you have java and python installed, the easiest way to install the latest version of passim is with the `pip` command.  Since passim requires Python 3, on some systems you may need to use `pip3`.  If you've checked out the source code, you can run
+Once you have java and python installed, the easiest way to install the latest version of passim is with the `pip` command.  Since passim requires Python 3, you may need to use `pip3` on some systems.
+
+The easiest way to install Passim is to have `pip` download from github directly:
+```
+$ pip install git+https://github.com/dasmiq/passim.git@seriatim#egg=passim
+```
+
+If pip complains that you don't have access to install python packages on the system, you can use the `--user` option to install in your home directory, like so:
+```
+$ pip install --user git+https://github.com/dasmiq/passim.git@seriatim#egg=passim
+```
+
+If you've cloned the source code, you can run
 ```
 pip install .
 ```
-You can install in your own `~/.local` directory with
-```
-pip install --user .
-```
+with or without the `--user` option, as needed.
 
-If you just want to install directly from GitHub, run
-```
-pip install git+https://github.com/dasmiq/passim.git@seriatim#egg=passim
-```
+It is possible that `pip` might install passim in a location not in your `PATH`. If so, run `pip show --files passim` to see where it is; you can then modify your `PATH` to find it.
 
 Since passim defaults to the JSON format for input and output, it is convenient to have the [command-line JSON processor jq](http://stedolan.github.io/jq/) installed.
 
