@@ -794,8 +794,8 @@ def main(args):
                   'array<struct<uid: bigint, begin2: int, end2: int, begin: int, end: int, anchors: array<struct<pos2: int, pos: int>>>>')
 
     spark.read.load(pairsFname
-        ).withColumn('prior', f.map_from_arrays(f.map_keys('meta'),
-                                                f.array_repeat(lit(1.0), size('meta')))
+        ).withColumn('prior', map_from_entries(arrays_zip(f.map_keys('meta'),
+                                                          f.array_repeat(lit(1.0),size('meta'))))
         ).withColumn('src', vit_src('post', 'prior')
         ).write.mode('ignore').parquet(srcFname)
 
@@ -951,7 +951,8 @@ def main(args):
                     ).groupBy(col('uid2').alias('uid')
                     ).agg(collect_list(struct(col('begin2').alias('begin'),
                                               col('wits'))).alias('vars')
-                    ).withColumn('vars', f.map_from_arrays(col('vars.begin'), col('vars.wits'))
+                    ).withColumn('vars', map_from_entries(arrays_zip(col('vars.begin'),
+                                                                     col('vars.wits')))
                     ).join(corpus, 'uid'
                     ).withColumn('lines', text_lines('text')
                     ).withColumn('lines',
