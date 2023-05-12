@@ -12,6 +12,8 @@ else
     script="$wrapped"
 fi
 
+export SPARK_CONF_DIR="$dir"/../conf
+
 SPARK_SUBMIT_ARGS="$SPARK_SUBMIT_ARGS"
 
 spark-submit \

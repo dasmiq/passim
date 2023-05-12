@@ -18,6 +18,7 @@ setuptools.setup(
         'intervaltree'
     ],
     scripts=['bin/seriatim', 'bin/passim', 'bin/passim.cmd', 'bin/seriatim.cmd'],
-    data_files=[('share', ['share/submit-seriatim.py'])],
+    data_files=[('share', ['share/submit-seriatim.py']),
+                ('conf', ['conf/log4j2.properties'])],
     python_requires='>=3.6',
 )
