@@ -526,6 +526,13 @@ def mergeSpans(spans, uid):
         res.append((curBegin, curEnd, boiler, src))
     return res
 
+def passLocs(self, corpus, locsCol, newCol, uidCol, begin, end):
+    if locsCol not in corpus.columns:
+        return self
+
+    return self.withColumn(newCol,
+                           expr(f"filter({locsCol}, r -> r.start <= end AND (r.start + r.length) > begin)['loc']"))
+
 def passRegions(self, corpus, pageCol, newCol, uidCol, begin, end, keeptokens=False):
     if pageCol not in corpus.columns:
         return self
@@ -561,6 +568,7 @@ def passRegions(self, corpus, pageCol, newCol, uidCol, begin, end, keeptokens=Fa
         res = res.drop(newCol + 'Tokens')
     return res
 
+setattr(DataFrame, 'passLocs', passLocs)
 setattr(DataFrame, 'passRegions', passRegions)
 
 def clusterExtents(self, config):
@@ -618,7 +626,9 @@ setattr(DataFrame, 'clusterExtents', clusterExtents)
 def clusterJoin(self, config, corpus):
     out = self.join(corpus, 'uid'
             ).withColumn(config.text,
-                         col(config.text).substr(col('begin'), col('end') - col('begin')))
+                         col(config.text).substr(col('begin'), col('end') - col('begin'))
+            ).passLocs(corpus, 'locs', 'locs', 'uid', col('begin'), col('end'))
+
 
     pageCol = 'pages'
     if pageCol in out.columns:
