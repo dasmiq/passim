@@ -206,7 +206,9 @@ Documents may record their extent on physical pages with the `pages` field.
 	  ]
  ```
 
-Although, as stated above, JSON records should occupy a single line, we format the data here on several lines for legibility.  The `start` and `length` fields of a record in `regions` indicate character offsets into the document `text` field.  The `pages` field is an array since a document may span several pages.
+Although, as stated above, JSON records should occupy a single line, we format the data here on several lines for legibility.  The `start` and `length` fields of a record in `regions` indicate character offsets into the document `text` field.  The `pages` field is an array since a document may span several pages.  You may specify a field with a different name using the `--pages` option.
+
+The `locs` field (whose name is changeable with the `--locs` option) specifies spans in a text associated with canonical citation schemes, such as books, chapters, and verses in the Bible, books, chapters, and sections in Herodotus, and so on.  This field is an array of triples, with fields `loc`, `start`, and `length`.  As with the `regions` field on a page, `start` and `length` indicate the spans in the text associated with each citation stored in the `loc` field.  Text passages in cluster and aligned-line output then contain a `locs` field to indicate which citations overlap with that passage.
 
 ## Acknowledgements
 
@@ -214,6 +216,6 @@ We insert the appropriate text in gratitude to our sponsors at the Andrew W. Mel
 
 ## License
 
-Copyright © 2012-21 David A. Smith
+Copyright © 2012-23 David A. Smith
 
 Distributed under the MIT License.
