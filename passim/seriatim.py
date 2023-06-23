@@ -530,9 +530,17 @@ def passLocs(self, corpus, locsCol, newCol, uidCol, begin, end):
     if locsCol not in corpus.columns:
         return self
 
-    return self.withColumn(newCol,
-                           expr(f"filter({locsCol}, r -> r.start <= end AND (r.start + r.length) > begin)['loc']"))
+    pinfo = corpus.select('uid', explode(locsCol).alias('locs')
+                ).select('uid', 'locs.*')
 
+    return self.join(pinfo, [self[uidCol] == pinfo.uid,
+                             end > pinfo.start,
+                             begin < (pinfo.start + pinfo.length)],
+                     'left_outer'
+            ).drop(pinfo.uid
+            ).groupBy(*self.columns
+            ).agg(sort_array(collect_list('loc')).alias('locs'))
+    
 def passRegions(self, corpus, pageCol, newCol, uidCol, begin, end, keeptokens=False):
     if pageCol not in corpus.columns:
         return self
@@ -626,11 +634,13 @@ setattr(DataFrame, 'clusterExtents', clusterExtents)
 def clusterJoin(self, config, corpus):
     out = self.join(corpus, 'uid'
             ).withColumn(config.text,
-                         col(config.text).substr(col('begin'), col('end') - col('begin'))
-            ).passLocs(corpus, 'locs', 'locs', 'uid', col('begin'), col('end'))
+                         col(config.text).substr(col('begin'), col('end') - col('begin')))
 
+    if config.locs in out.columns:
+        out = out.withColumn(config.locs,
+                             expr(f"filter({config.locs}, r -> r.start < end AND (r.start + r.length) > begin)['loc']"))
 
-    pageCol = 'pages'
+    pageCol = config.pages
     if pageCol in out.columns:
         pageFields = ', '.join([f'p.{f} as {f}'
                                 for f in out.selectExpr(f'inline({pageCol})').columns
@@ -670,6 +680,10 @@ def main(args):
                         help='Field for unique document IDs')
     parser.add_argument('-t', '--text', type=str, default='text',
                         help='Field for document text')
+    parser.add_argument('--locs', type=str, default='locs',
+                        help='Field for citable loci')
+    parser.add_argument('--pages', type=str, default='pages',
+                        help='Field for page location information')
     parser.add_argument('-l', '--minDF', type=int, default=2,
                         help='Lower limit on document frequency', metavar='N')
     parser.add_argument('-u', '--maxDF', type=int, default=100,
@@ -936,9 +950,9 @@ def main(args):
         if config.pairwise:
             passalg.select('*', 'alg.*'
                     ).drop('alg'
-                    ).passRegions(corpus, 'pages', 'pages',
+                    ).passRegions(corpus, config.pages, config.pages,
                                   'uid', col('begin'), col('end')
-                    ).passRegions(corpus, 'pages', 'pages2',
+                    ).passRegions(corpus, config.pages, config.pages + '2',
                                   'uid2', col('begin2'), col('end2')
                     ).write.mode('ignore').format(config.output_format).save(alignFname)
 
@@ -949,7 +963,9 @@ def main(args):
                             ).drop('alg', 'text', 'text2', 'begin', 'end', 'begin2', 'end2')
             lines = groups.selectExpr(*[f for f in groups.columns if f != 'lines'], 'inline(lines)'
                         ).withColumn('text', f.translate('alg', '-', '')
-                        ).withColumn('text2', f.translate('alg2', '-', ''))
+                        ).withColumn('text2', f.translate('alg2', '-', '')
+                        ).passLocs(corpus, config.locs, config.locs,
+                                   'uid', col('begin'), col('begin') + length('text'))
 
             if config.docwise:
                 text_lines = udf(lambda text: textLines(text),
@@ -972,9 +988,9 @@ def main(args):
                 spark.stop()
                 return
 
-            lines.passRegions(corpus, 'pages', 'pages',
+            lines.passRegions(corpus, config.pages, config.pages,
                               'uid', col('begin'), col('begin') + length('text'), True
-                ).passRegions(corpus, 'pages', 'pages2',
+                ).passRegions(corpus, config.oages, config.pages + '2',
                               'uid2', col('begin2'), col('begin2') + length('text2'), True
                 ).write.mode('ignore').format(config.output_format).save(outFname)
             spark.stop()
