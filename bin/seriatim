@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+
+dir=`dirname $0`
+
+wrapped="$dir"/../share/submit-seriatim.py
+
+raw="$dir"/../passim/seriatim.py
+
+if [ -f "$raw" ]; then
+    script="$raw"
+else
+    script="$wrapped"
+fi
+
+export SPARK_CONF_DIR="$dir"/../conf
+
+SPARK_SUBMIT_ARGS="$SPARK_SUBMIT_ARGS"
+
+spark-submit \
+    --repositories 'https://repos.spark-packages.org/' \
+    --packages 'graphframes:graphframes:0.8.0-spark3.0-s_2.12' \
+    $SPARK_SUBMIT_ARGS \
+    "$script" "$@"
