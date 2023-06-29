@@ -19,12 +19,12 @@ Once you have java and python installed, the easiest way to install the latest v
 
 The easiest way to install Passim is to have `pip` download from github directly:
 ```
-$ pip install git+https://github.com/dasmiq/passim.git@seriatim#egg=passim
+$ pip install git+https://github.com/dasmiq/passim.git
 ```
 
 If pip complains that you don't have access to install python packages on the system, you can use the `--user` option to install in your home directory, like so:
 ```
-$ pip install --user git+https://github.com/dasmiq/passim.git@seriatim#egg=passim
+$ pip install --user git+https://github.com/dasmiq/passim.git
 ```
 
 If you've cloned the source code, you can run
