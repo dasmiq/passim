@@ -2,7 +2,7 @@ import setuptools
 
 setuptools.setup(
     name='passim',
-    version='2.0.0-alpha.2',
+    version='2.0.0',
     author='David A. Smith',
     author_email='dasmiq@gmail.com',
     description='Detecting and analyzing text reuse',
