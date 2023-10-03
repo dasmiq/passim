@@ -185,14 +185,14 @@ def countMatches(s1, s2):
                                       (c[0].isspace() and c[1].isspace())),
                            zip(s1, s2))))
 
-def beamAnchorAlign(config, s1, s2, side):
+def beamAnchorAlign(s1, s2, side,
+                    pcopy=0.8, beam=20, complete_lines=False, floating_ngrams=False):
     if side == 'left':
         s1 = s1[::-1]
         s2 = s2[::-1]
 
     V = 256
     logV = log(V)
-    pcopy = config.pcopy
     lpcopy = log(pcopy)
     lpedit = log(1 - pcopy) - log(2 * V)
     lpstop = log((1 + pcopy) / 2)
@@ -211,7 +211,7 @@ def beamAnchorAlign(config, s1, s2, side):
         # print(t)
         pops = 0
         seen = {}
-        while len(cur) > 0 and pops < config.beam:
+        while len(cur) > 0 and pops < beam:
             top = hq.heappop(cur)
             (score, s) = top
             if score >= bestScore or (s in seen and score >= seen[s]):
@@ -220,7 +220,7 @@ def beamAnchorAlign(config, s1, s2, side):
             pops += 1
             # print(top)
             ## Finish
-            if t == len(s2) or s2[t] == '\n' or ((not config.complete_lines) and (config.floating_ngrams or (not s2[t].isalnum()))):
+            if t == len(s2) or s2[t] == '\n' or ((not complete_lines) and (floating_ngrams or (not s2[t].isalnum()))):
                 finalScore = score - (lpstop + 2 * lpfinal + lppad * (len(s2) - t))
                 if finalScore < bestScore:
                     bestScore = finalScore
@@ -250,14 +250,14 @@ def beamAnchorAlign(config, s1, s2, side):
     else:
         return (s1[0:e1], s2[0:e2])
 
-def anchorAlign(config, s1, s2, side):
+def anchorAlign(s1, s2, side,
+                pcopy=0.8, max_offset=20, complete_lines=False, floating_ngrams=False):
     if side == 'left':
         s1 = s1[::-1]
         s2 = s2[::-1]
 
     V = 256
     logV = log(V)
-    pcopy = config.pcopy
     lpcopy = log(pcopy)
     lpedit = log(1 - pcopy) - log(2 * V)
     lpstop = log((1 + pcopy) / 2)
@@ -295,7 +295,7 @@ def anchorAlign(config, s1, s2, side):
             cand.append((score - lpedit, (s, t + 1, e1, e2)))
         for c in cand:
             (score, item) = c
-            if item[2] == 0 and abs(item[0] - item[1]) > config.max_offset:
+            if item[2] == 0 and abs(item[0] - item[1]) > max_offset:
                 continue
             if chart.get(item, inf) > score:
                 chart[item] = score
@@ -308,10 +308,9 @@ def anchorAlign(config, s1, s2, side):
     else:
         return (s1[0:e1], s2[0:e2])
 
-def levAlign(config, s1, s2):
+def levAlign(s1, s2, pcopy=0.8, beam=20, max_offset=20):
     V = 256
     logV = log(V)
-    pcopy = config.pcopy
     lpcopy = log(pcopy)
     lpedit = log(1 - pcopy) - log(2 * V)
 
@@ -324,7 +323,7 @@ def levAlign(config, s1, s2):
     elif len(s2) == 0:
         return (s1, '-' * len(s1))
 
-    if config.beam > 0:
+    if beam > 0:
         t = 0
         bestScore = float('inf')
         best = (0, '', '')
@@ -334,7 +333,7 @@ def levAlign(config, s1, s2):
             # print(t)
             pops = 0
             seen = {}
-            while len(cur) > 0 and pops < config.beam:
+            while len(cur) > 0 and pops < beam:
                 top = hq.heappop(cur)
                 (score, (s, a1, a2)) = top
                 if s == len(s1) and t == len(s2) and score <= bestScore:
@@ -389,7 +388,7 @@ def levAlign(config, s1, s2):
                 cand.append((score - lpedit, (e1, e2 + 1)))
             for c in cand:
                 (score, item) = c
-                if (abs(item[0]/len(s1) - item[1]/len(s2))*len(s1)) > config.max_offset:
+                if (abs(item[0]/len(s1) - item[1]/len(s2))*len(s1)) > max_offset:
                     continue
                 if chart.get(item, inf) > score:
                     chart[item] = score
@@ -418,7 +417,7 @@ def levAlign(config, s1, s2):
             return (s1 + '-' * max(0, len(s2) - len(s1)),
                     s2 + '-' * max(0, len(s1) - len(s2)))
 
-def chunkAlign(config, begin, begin2, text, text2, anchors):
+def chunkAlign(begin, begin2, text, text2, anchors, pcopy, beam, max_offset):
     alg1 = ''
     alg2 = ''
     b1 = 0
@@ -426,12 +425,12 @@ def chunkAlign(config, begin, begin2, text, text2, anchors):
     for a in anchors:
         e1 = a.pos - begin
         e2 = a.pos2 - begin2
-        (s1, s2) = levAlign(config, text[b1:e1], text2[b2:e2])
+        (s1, s2) = levAlign(text[b1:e1], text2[b2:e2], pcopy, beam, max_offset)
         alg1 += s1
         alg2 += s2
         b1 = e1
         b2 = e2
-    (s1, s2) = levAlign(config, text[b1:len(text)], text2[b2:len(text2)])
+    (s1, s2) = levAlign(text[b1:len(text)], text2[b2:len(text2)], pcopy, beam, max_offset)
     alg1 += s1
     alg2 += s2
     return (alg1, alg2, countMatches(alg1, alg2))
@@ -882,10 +881,10 @@ def main(args):
                                           text[(s.end2 - config.n):s.right2]) for s in src),
                      'array<struct<prefix2: string, text2: string, suffix2: string>>')
 
-    anchor_align = udf(lambda s1, s2, side: anchorAlign(config, s1, s2, side),
+    anchor_align = udf(lambda s1, s2, side: anchorAlign(s1, s2, side, config.pcopy, config.max_offset, config.complete_lines, config.floating_ngrams),
                        'struct<s1: string, s2: string>').asNondeterministic() \
                        if config.beam == 0 \
-                          else udf(lambda s1, s2, side: beamAnchorAlign(config, s1, s2, side),
+                          else udf(lambda s1, s2, side: beamAnchorAlign(s1, s2, side, config.pcopy, config.beam, config.complete_lines, config.floating_ngrams),
                                    'struct<s1: string, s2: string>').asNondeterministic()
 
     # We align edges independently, but we could also consider
@@ -932,7 +931,8 @@ def main(args):
 
     if config.pairwise or config.docwise or config.linewise:
         chunk_align = udf(lambda begin, begin2, text, text2, anchors:
-                          chunkAlign(config, begin, begin2, text, text2, anchors),
+                          chunkAlign(begin, begin2, text, text2, anchors,
+                                     config.pcopy, config.beam, config.max_offset),
                           'struct<s1: string, s2: string, matches: int>')
         extentSet = set(extents.columns).difference(['uid'])
         simpleFields = [f['name'] for f in json.loads(corpus.schema.json())['fields']
