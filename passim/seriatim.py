@@ -180,6 +180,25 @@ def spanEdge(src, max_gap):
         res.append((s.uid, left2, s.begin2, s.end2, right2, left, s.begin, s.end, right, s.anchors))
     return res
 
+def spliceExtents(extents):
+    res = list()
+    cur = None
+    for ex in extents:
+        if cur == None:
+            cur = ex
+        elif ex.begin2 >= cur.end2 or ex.begin >= cur.end:
+            res.append(cur)
+            cur = ex
+        else:
+            cur = Row(begin2=cur.begin2, end2=ex.end2,
+                      text2=(cur.text2 + ex.text2[(cur.end2 - ex.begin2):]),
+                      begin=cur.begin, end=ex.end,
+                      text=(cur.text + ex.text[(cur.end - ex.begin):]),
+                      anchors=(cur.anchors + ex.anchors))
+    if cur != None:
+        res.append(cur)
+    return res
+
 def countMatches(s1, s2):
     return len(list(filter(lambda c: (c[0].lower() == c[1].lower() or
                                       (c[0].isspace() and c[1].isspace())),
@@ -927,7 +946,16 @@ def main(args):
         spark.stop()
         return(0)
 
-    extents = spark.read.load(extentsFname)
+    splice_extents = udf(lambda extents: spliceExtents(extents),
+                         'array<struct<begin2: int, end2: int, text2: string, begin: int, end: int, text: string, anchors: array<struct<pos2: int, pos: int>>>>')
+
+    extents = spark.read.load(extentsFname
+         ).groupBy(*f1, *f2
+         ).agg(splice_extents(sort_array(collect_list(struct('begin2', 'end2', 'text2',
+                                                             'begin', 'end', 'text', 'anchors')))
+                              ).alias('extents')
+         ).withColumn('extents', explode('extents')
+         ).select(*f1, *f2, col('extents.*'))
 
     if config.pairwise or config.docwise or config.linewise:
         chunk_align = udf(lambda begin, begin2, text, text2, anchors:
