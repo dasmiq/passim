@@ -186,15 +186,15 @@ def spliceExtents(extents):
     for ex in extents:
         if cur == None:
             cur = ex
-        elif ex.begin2 >= cur.end2 or ex.begin >= cur.end:
-            res.append(cur)
-            cur = ex
-        else:
+        elif ex.begin2 < cur.end2 < ex.end2 and cur.begin < ex.begin < cur.end < ex.end:
             cur = Row(begin2=cur.begin2, end2=ex.end2,
-                      text2=(cur.text2 + ex.text2[(cur.end2 - ex.begin2):]),
                       begin=cur.begin, end=ex.end,
+                      text2=(cur.text2 + ex.text2[(cur.end2 - ex.begin2):]),
                       text=(cur.text + ex.text[(cur.end - ex.begin):]),
                       anchors=(cur.anchors + ex.anchors))
+        else:
+            res.append(cur)
+            cur = ex
     if cur != None:
         res.append(cur)
     return res
@@ -947,12 +947,12 @@ def main(args):
         return(0)
 
     splice_extents = udf(lambda extents: spliceExtents(extents),
-                         'array<struct<begin2: int, end2: int, text2: string, begin: int, end: int, text: string, anchors: array<struct<pos2: int, pos: int>>>>')
+                         'array<struct<begin2: int, end2: int, begin: int, end: int, text2: string, text: string, anchors: array<struct<pos2: int, pos: int>>>>')
 
     extents = spark.read.load(extentsFname
          ).groupBy(*f1, *f2
-         ).agg(splice_extents(sort_array(collect_list(struct('begin2', 'end2', 'text2',
-                                                             'begin', 'end', 'text', 'anchors')))
+         ).agg(splice_extents(sort_array(collect_list(struct('begin2', 'end2', 'begin', 'end',
+                                                             'text2', 'text', 'anchors')))
                               ).alias('extents')
          ).withColumn('extents', explode('extents')
          ).select(*f1, *f2, col('extents.*'))
