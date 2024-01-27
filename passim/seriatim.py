@@ -490,7 +490,7 @@ def linkSpans(src_overlap, dst_overlap, s1, s2):
     """Link pairs of spans within the same document, such that either:
     1. one span is the source for a link to another document and the
        other span is the destination for a link from another document; or
-    2. two spans that are not desintations overlap with each other.
+    2. two spans that are not destinations overlap with each other.
     """
     src = IntervalTree([Interval(s[0], s[1]) for s in s2]) if s2 != None else IntervalTree()
     res = list()
