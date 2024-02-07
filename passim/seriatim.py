@@ -785,17 +785,18 @@ def main(args):
 
     spark.conf.set('spark.sql.shuffle.partitions', corpus.rdd.getNumPartitions())
 
-    get_postings = udf(lambda text: getPostings(text, config.n, config.floating_ngrams),
-                       'array<struct<feat: string, post: int>>')
+    if not os.path.exists(dfpostFname):
+        get_postings = udf(lambda text: getPostings(text, config.n, config.floating_ngrams),
+                           'array<struct<feat: string, post: int>>')
     
-    posts = termCorpus.select(*f1, explode(get_postings(config.text)).alias('post')
-                     ).select(*f1, col('post.*')
-                     ).withColumn('feat', xxhash64('feat'))
+        posts = termCorpus.select(*f1, explode(get_postings(config.text)).alias('post')
+                         ).select(*f1, col('post.*')
+                         ).withColumn('feat', xxhash64('feat'))
 
-    df = posts.groupBy('feat').count().select('feat', col('count').cast('int').alias('df')
-             ).filter( (col('df') >= config.minDF) & (col('df') <= config.maxDF) )
+        df = posts.groupBy('feat').count().select('feat', col('count').cast('int').alias('df')
+                 ).filter( (col('df') >= config.minDF) & (col('df') <= config.maxDF) )
 
-    posts.join(df, 'feat').write.mode('ignore').save(dfpostFname)
+        posts.join(df, 'feat').write.mode('ignore').save(dfpostFname)
     
     dfpost = spark.read.load(dfpostFname)
 
@@ -803,16 +804,18 @@ def main(args):
                       'array<struct<post2: int, df: int, alg: array<struct<uid: bigint, post:int >>>>')
 
     metaFields = ', '.join([f for f in f1 if f != 'uid'])
-    if metaFields != '':
+    if metaFields != '' and config.link_model:
         metaVal = f'struct({metaFields})'
+        metaFields2 = f2
     else:
         metaVal = 'struct(1 AS meta)'
+        metaFields2 = ['uid2']
 
     apos = dfpost.join(dfpost.toDF(*[f + ('2' if f != 'feat' else '') for f in dfpost.columns]),
                        'feat'
                 ).filter(config.filterpairs
                 ).drop('feat', 'df2'
-                ).groupBy(*f2, struct('uid', expr(metaVal)).alias('meta')
+                ).groupBy(*metaFields2, struct('uid', expr(metaVal)).alias('meta')
                 ).agg(collect_list(struct('post2', 'df',
                                           array(struct('uid',
                                                        'post')).alias('alg'))).alias('post')
@@ -822,11 +825,12 @@ def main(args):
         apos = apos.withColumn('meta', map_from_entries(array('meta'))
                   ).withColumn('post', sort_array('post'))
     else:
-        apos = apos.groupBy(*f2
+        apos = apos.groupBy(*metaFields2
                   ).agg(map_from_entries(collect_list('meta')).alias('meta'),
                         merge_posts(collect_list('post')).alias('post'))
 
-    apos.write.mode('ignore').parquet(pairsFname)
+    if not os.path.exists(pairsFname):
+        apos.write.mode('ignore').parquet(pairsFname)
     if config.to_pairs:
         spark.stop()
         return(0)
@@ -835,11 +839,13 @@ def main(args):
                                       config.n, config.gap, config.min_align),
                   'array<struct<uid: bigint, begin2: int, end2: int, begin: int, end: int, anchors: array<struct<pos2: int, pos: int>>>>')
 
-    spark.read.load(pairsFname
-        ).withColumn('prior', map_from_entries(arrays_zip(f.map_keys('meta'),
-                                                          f.array_repeat(lit(1.0),size('meta'))))
-        ).withColumn('src', vit_src('post', 'prior')
-        ).write.mode('ignore').parquet(srcFname)
+    if not os.path.exists(srcFname):
+        spark.read.load(pairsFname
+            ).withColumn('prior', map_from_entries(arrays_zip(f.map_keys('meta'),
+                                                              f.array_repeat(lit(1.0),
+                                                                             size('meta'))))
+            ).withColumn('src', vit_src('post', 'prior')
+            ).write.mode('ignore').parquet(srcFname)
 
     srcmap = spark.read.load(srcFname)
 
@@ -913,34 +919,34 @@ def main(args):
     spanFields = ['left', 'begin', 'end', 'right']
     spanFields += [f + '2' for f in spanFields]
 
-    srcmap.withColumn('src', span_edge('src')
-         ).drop('post'
-         ).join(termCorpus.select(col('uid').alias('uid2'), col(config.text).alias('text2')),
-                'uid2'
-         ).withColumn('text2', grab_spans2('src', 'text2')
-         ).withColumn('src', arrays_zip('src', 'text2')
-         ).drop('meta', 'text2'
-         ).select(*f2, explode('src').alias('src')
-         ).select(*f2, col('src.src.*'), col('src.text2.*')
-         ).groupBy('uid'
-         ).agg(collect_list(struct(*f2, *spanFields, 'prefix2', 'text2', 'suffix2', 'anchors')).alias('src')
-         ).join(termCorpus.withColumnRenamed(config.text, 'text'), 'uid'
-         ).withColumn('text', grab_spans('src', 'text')
-         ).withColumn('src', arrays_zip('src', 'text')
-         ).drop('text'
-         ).select(*f1, explode('src').alias('src')
-         ).select(*f1, col('src.src.*'), col('src.text.*')
-         ).withColumn('lalg', anchor_align('prefix', 'prefix2', lit('left'))
-         ).withColumn('ralg', anchor_align('suffix', 'suffix2', lit('right'))
-         ).withColumn('text', f.concat(col('lalg.s1'), col('text'), col('ralg.s1'))
-         ).withColumn('text2', f.concat(col('lalg.s2'), col('text2'), col('ralg.s2'))
-         ).withColumn('begin', col('begin') - length('lalg.s1')
-         ).withColumn('end', col('end') + length('ralg.s1') - config.n
-         ).withColumn('begin2', col('begin2') - length('lalg.s2')
-         ).withColumn('end2', col('end2') + length('ralg.s2') - config.n
-         ).drop('lalg', 'ralg', 'prefix', 'prefix2', 'suffix', 'suffix2' # debug fields
-         ).drop('left', 'right', 'left2', 'right2'
-         ).write.mode('ignore').parquet(extentsFname)
+    if not os.path.exists(extentsFname):
+        srcmap.select('uid2', span_edge('src').alias('src')
+             ).join(termCorpus.toDF(*[f + '2' for f in termCorpus.columns]), 'uid2'
+             ).withColumnRenamed(config.text + '2', 'text2'
+             ).withColumn('text2', grab_spans2('src', 'text2')
+             ).withColumn('src', arrays_zip('src', 'text2')
+             ).drop('text2'
+             ).select(*f2, explode('src').alias('src')
+             ).select(*f2, col('src.src.*'), col('src.text2.*')
+             ).groupBy('uid'
+             ).agg(collect_list(struct(*f2, *spanFields, 'prefix2', 'text2', 'suffix2', 'anchors')).alias('src')
+             ).join(termCorpus.withColumnRenamed(config.text, 'text'), 'uid'
+             ).withColumn('text', grab_spans('src', 'text')
+             ).withColumn('src', arrays_zip('src', 'text')
+             ).drop('text'
+             ).select(*f1, explode('src').alias('src')
+             ).select(*f1, col('src.src.*'), col('src.text.*')
+             ).withColumn('lalg', anchor_align('prefix', 'prefix2', lit('left'))
+             ).withColumn('ralg', anchor_align('suffix', 'suffix2', lit('right'))
+             ).withColumn('text', f.concat(col('lalg.s1'), col('text'), col('ralg.s1'))
+             ).withColumn('text2', f.concat(col('lalg.s2'), col('text2'), col('ralg.s2'))
+             ).withColumn('begin', col('begin') - length('lalg.s1')
+             ).withColumn('end', col('end') + length('ralg.s1') - config.n
+             ).withColumn('begin2', col('begin2') - length('lalg.s2')
+             ).withColumn('end2', col('end2') + length('ralg.s2') - config.n
+             ).drop('lalg', 'ralg', 'prefix', 'prefix2', 'suffix', 'suffix2' # debug fields
+             ).drop('left', 'right', 'left2', 'right2'
+             ).write.mode('ignore').parquet(extentsFname)
 
     if config.to_extents:
         spark.stop()
