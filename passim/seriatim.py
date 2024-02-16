@@ -544,6 +544,113 @@ def mergeSpans(spans, uid):
         res.append((curBegin, curEnd, boiler, src))
     return res
 
+@dataclass(frozen=True)
+class alg:
+    uid: int
+    post: int
+
+@dataclass(frozen=True)
+class post:
+    post2: int
+    df: int
+    alg: list[alg]
+
+@dataclass(frozen=True)
+class anchor:
+    pos2: int
+    pos: int
+
+@dataclass(frozen=True)
+class pmatch:
+    uid: int
+    begin2: int
+    end2: int
+    begin: int
+    end: int
+    anchors: list[anchor]
+
+@dataclass(frozen=True)
+class edge:
+    uid: int
+    left2: int
+    begin2: int
+    end2: int
+    right2: int
+    left: int
+    begin: int
+    end: int
+    right: int
+    anchors: list[anchor]
+
+@dataclass(frozen=True)
+class spantext:
+    prefix: str
+    text: str
+    suffix: str
+
+@dataclass(frozen=True)
+class extent:
+    begin2: int
+    end2: int
+    begin: int
+    end: int
+    text2: str
+    text: str
+    anchors: list[anchor]
+
+@dataclass(frozen=True)
+class alignment:
+    begin2: int
+    end2: int
+    begin: int
+    end: int
+    text2: str
+    text: str
+    anchors: list[anchor]
+    alg: str
+    alg2: str
+    matches: int
+
+def align_passages(src, trg, n=20, floating_ngrams=False, gap=600, min_align=0,
+                   pcopy=0.8, beam=20, complete_lines=True):
+    src_map = {k:v for (k, v) in getPostings(src, n, floating_ngrams)}
+    trg_post = getPostings(trg, n, floating_ngrams)
+
+    hits = [post(v, 2, [alg(1, src_map[k])]) for (k, v) in trg_post if k in src_map]
+
+    matches = [pmatch(uid, begin2, end2, begin, end, [anchor(*a) for a in anchors])
+               for (uid, begin2, end2, begin, end, anchors)
+               in vitSrc(hits, {1: 1}, n, gap, min_align)]
+
+    edged = [edge(*e) for e in spanEdge(matches, gap)]
+
+    psrc = [(e,
+             spantext(src[e.left:e.begin], src[e.begin:(e.end - n)], src[(e.end - n):e.right]),
+             spantext(trg[e.left2:e.begin2], trg[e.begin2:(e.end2-n)], trg[(e.end2-n):e.right2]))
+            for e in edged]
+
+    algedge = [(*p,
+                beamAnchorAlign(p[1].prefix, p[2].prefix, 'left',
+                                pcopy, beam, complete_lines, floating_ngrams),
+                beamAnchorAlign(p[1].suffix, p[2].suffix, 'right',
+                                pcopy, beam, complete_lines, floating_ngrams))
+               for p in psrc]
+
+    extents = [extent(e[0].begin2 - len(e[3][1]),
+                      e[0].end2 + len(e[4][1]),
+                      e[0].begin - len(e[3][0]),
+                      e[0].end + len(e[4][0]),
+                      e[3][1] + e[2].text + e[4][1],
+                      e[3][0] + e[1].text + e[4][0],
+                      e[0].anchors) for e in algedge]
+    extents.sort()
+
+    res = [alignment(e.begin2, e.end2, e.begin, e.end, e.text2, e.text, e.anchors,
+                     *chunkAlign(e.begin, e.begin2, e.text, e.text2, e.anchors, pcopy, beam, 20))
+           for e in spliceExtents(extents)]
+
+    return res
+
 def passLocs(self, corpus, locsCol, newCol, uidCol, begin, end):
     if locsCol not in corpus.columns:
         return self

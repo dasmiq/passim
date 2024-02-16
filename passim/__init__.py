@@ -1,3 +1,4 @@
 from .seriatim import (
-    main
+    main,
+    align_passages
 )
