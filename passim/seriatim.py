@@ -17,6 +17,8 @@ from graphframes import GraphFrame
 
 from dataclasses import dataclass
 
+TB = 0.001                      # small log-scale score to break ties
+
 def getPostings(text, n, floating_ngrams):
     tf = dict()
     posts = list()
@@ -186,12 +188,13 @@ def spliceExtents(extents):
     for ex in extents:
         if cur == None:
             cur = ex
-        elif ex.begin2 < cur.end2 < ex.end2 and cur.begin < ex.begin < cur.end < ex.end:
+        elif ex.begin2 <= cur.end2 < ex.end2 and cur.begin < ex.begin <= cur.end < ex.end:
             cur = Row(begin2=cur.begin2, end2=ex.end2,
                       begin=cur.begin, end=ex.end,
                       text2=(cur.text2 + ex.text2[(cur.end2 - ex.begin2):]),
                       text=(cur.text + ex.text[(cur.end - ex.begin):]),
-                      anchors=(cur.anchors + ex.anchors))
+                      anchors=(cur.anchors +
+                               [a for a in ex.anchors if a.pos2 > cur.end2 and a.pos > cur.end]))
         else:
             res.append(cur)
             cur = ex
@@ -248,7 +251,7 @@ def beamAnchorAlign(s1, s2, side,
                 hq.heappush(cur, (score - lpedit, s + 1))
                 if t < len(s2):
                     if s1[s].lower() == s2[t].lower() or (s1[s].isspace() and s2[t].isspace()): #copy
-                        hq.heappush(suc, (score - lpcopy, s + 1))
+                        hq.heappush(suc, (score - lpcopy + (0 if s1[s] == s2[t] else TB), s + 1))
                     elif s1[s] != '\n' and s2[t] != '\n': # newlines can't rewrite as printable
                         hq.heappush(suc, (score - lpedit, s + 1))
             if t < len(s2):     # insert
@@ -307,7 +310,8 @@ def anchorAlign(s1, s2, side,
             cand.append((score - lpedit, (s + 1, t, e1, e2)))
             if t < len(s2):
                 if s1[s].lower() == s2[t].lower() or (s1[s].isspace() and s2[t].isspace()): #copy
-                    cand.append((score - lpcopy, (s + 1, t + 1, e1, e2)))
+                    cand.append((score - lpcopy + (0 if s1[s] == s2[t] else TB),
+                                 (s + 1, t + 1, e1, e2)))
                 elif s1[s] != '\n' and s2[t] != '\n': # newlines can't rewrite as printable
                     cand.append((score - lpedit, (s + 1, t + 1, e1, e2)))
         if t < len(s2):         # insert
@@ -366,8 +370,9 @@ def levAlign(s1, s2, pcopy=0.8, beam=20, max_offset=20):
                 if s < len(s1): # delete
                     hq.heappush(cur, (score - lpedit, (s + 1, a1 + s1[s], a2 + '-')))
                     if t < len(s2):
-                        if s1[s] == s2[t] or (s1[s].isspace() and s2[t].isspace()): #copy
-                            hq.heappush(suc, (score - lpcopy, (s + 1, a1+s1[s], a2+s2[t])))
+                        if s1[s].lower() == s2[t].lower() or (s1[s].isspace() and s2[t].isspace()): #copy
+                            hq.heappush(suc, (score - lpcopy + (0 if s1[s] == s2[t] else TB),
+                                              (s + 1, a1+s1[s], a2+s2[t])))
                         elif s1[s] != '\n' and s2[t] != '\n':
                             hq.heappush(suc, (score - lpedit, (s + 1, a1+s1[s], a2+s2[t])))
                 if t < len(s2): # insert
@@ -399,8 +404,9 @@ def levAlign(s1, s2, pcopy=0.8, beam=20, max_offset=20):
             if e1 < len(s1):         # delete
                 cand.append((score - lpedit, (e1 + 1, e2)))
                 if e2 < len(s2):
-                    if s1[e1] == s2[e2] or (s1[e1].isspace() and s2[e2].isspace()): #copy
-                        cand.append((score - lpcopy, (e1 + 1, e2 + 1)))
+                    if s1[e1].lower() == s2[e2].lower() or (s1[e1].isspace() and s2[e2].isspace()): #copy
+                        cand.append((score - lpcopy + (0 if s1[e1] == s2[e2] else TB),
+                                     (e1 + 1, e2 + 1)))
                     elif s1[e1] != '\n' and s2[e2] != '\n':
                         cand.append((score - lpedit, (e1 + 1, e2 + 1)))
             if e2 < len(s2):         # insert
