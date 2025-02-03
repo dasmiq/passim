@@ -1013,7 +1013,7 @@ def main(args):
                                               col('wits'))).alias('vars')
                     ).withColumn('vars', map_from_entries(arrays_zip(col('vars.begin'),
                                                                      col('vars.wits')))
-                    ).join(corpus, 'uid'
+                    ).join(corpus, ['uid'], ('inner' if not config.linewise else 'right_outer')
                     ).withColumn('lines', text_lines('text')
                     ).withColumn('lines',
                                  expr('transform(lines, r -> struct(r.begin as begin, r.text as text, vars[r.begin] as wits))')
