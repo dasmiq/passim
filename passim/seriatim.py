@@ -1038,7 +1038,7 @@ def main(args):
 
             lines.passRegions(corpus, config.pages, config.pages,
                               'uid', col('begin'), col('begin') + length('text'), True
-                ).passRegions(corpus, config.oages, config.pages + '2',
+                ).passRegions(corpus, config.pages, config.pages + '2',
                               'uid2', col('begin2'), col('begin2') + length('text2'), True
                 ).write.mode('ignore').format(config.output_format).save(outFname)
             spark.stop()
