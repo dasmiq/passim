@@ -743,6 +743,7 @@ def main(args):
     parser.add_argument('--pairwise', action='store_true', help='Output pairwise alignments')
     parser.add_argument('--docwise', action='store_true', help='Output docwise alignments')
     parser.add_argument('--linewise', action='store_true', help='Output linewise alignments')
+    parser.add_argument('--to-index', action='store_true', help='Output index and stop')    
     parser.add_argument('--to-pairs', action='store_true', help='Output pairs and stop')    
     parser.add_argument('--to-extents', action='store_true', help='Output extents and stop')    
     parser.add_argument('--link-model', type=str, default=None,
@@ -803,6 +804,9 @@ def main(args):
                  ).filter( (col('df') >= config.minDF) & (col('df') <= config.maxDF) )
 
         posts.join(df, 'feat').write.mode('ignore').save(dfpostFname)
+        if config.to_index:
+            spark.stop()
+            return(0)
     
     dfpost = spark.read.load(dfpostFname)
 
@@ -974,18 +978,22 @@ def main(args):
                           chunkAlign(begin, begin2, text, text2, anchors,
                                      config.pcopy, config.beam, config.max_offset),
                           'struct<s1: string, s2: string, matches: int>')
-        extentSet = set(extents.columns).difference(['uid'])
-        simpleFields = [f['name'] for f in json.loads(corpus.schema.json())['fields']
-                        if (isinstance(f['type'], str) and f['name'] not in extentSet)]
-        
         extents.withColumn('alg', chunk_align('begin', 'begin2', 'text', 'text2', 'anchors')
             ).drop('anchors', 'text', 'text2'
             ).write.mode('ignore').parquet(psgFname)
 
         psg = spark.read.load(psgFname)
 
-        passalg = psg.join(corpus.select(*simpleFields), 'uid'
-                    ).join(corpus.selectExpr(*[f'{n} as {n}2' for n in simpleFields]), 'uid2')
+        if config.pairwise:
+            # all non-structured (i.e., simplex) fields
+            extentSet = set(extents.columns).difference(['uid'])
+            algFields = [f['name'] for f in json.loads(corpus.schema.json())['fields']
+                         if (isinstance(f['type'], str) and f['name'] not in extentSet)]
+        else:
+            algFields = ['uid', config.id]
+
+        passalg = psg.join(corpus.select(*algFields), 'uid'
+                    ).join(corpus.selectExpr(*[f'{n} as {n}2' for n in algFields]), 'uid2')
 
         if config.pairwise:
             passalg.select('*', 'alg.*'
