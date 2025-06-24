@@ -742,6 +742,7 @@ def main(args):
                         help='Compute alignments for all pairs.')
     parser.add_argument('--pairwise', action='store_true', help='Output pairwise alignments')
     parser.add_argument('--docwise', action='store_true', help='Output docwise alignments')
+    parser.add_argument('--refpref', action='store_true', help='Reference texts aligned separately')
     parser.add_argument('--linewise', action='store_true', help='Output linewise alignments')
     parser.add_argument('--to-index', action='store_true', help='Output index and stop')    
     parser.add_argument('--to-pairs', action='store_true', help='Output pairs and stop')    
@@ -821,6 +822,9 @@ def main(args):
         metaVal = 'struct(1 AS meta)'
         metaFields2 = ['uid2']
 
+    if config.refpref:
+        metaFields2.append('ref')
+
     apos = dfpost.join(dfpost.toDF(*[f + ('2' if f != 'feat' else '') for f in dfpost.columns]),
                        'feat'
                 ).filter(config.filterpairs
@@ -846,7 +850,7 @@ def main(args):
         return(0)
     
     vit_src = udf(lambda post, prior: vitSrc(post, prior,
-                                      config.n, config.gap, config.min_align),
+                                             config.n, config.gap, config.min_align),
                   'array<struct<uid: bigint, begin2: int, end2: int, begin: int, end: int, anchors: array<struct<pos2: int, pos: int>>>>')
 
     if not os.path.exists(srcFname):
