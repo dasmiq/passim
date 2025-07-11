@@ -801,8 +801,6 @@ def main(args):
                         help='Compute alignments for all pairs.')
     parser.add_argument('--pairwise', action='store_true', help='Output pairwise alignments')
     parser.add_argument('--docwise', action='store_true', help='Output docwise alignments')
-    parser.add_argument('--minimaxmem', action='store_true',
-                        help='Avoid aggregation to minimize maximum block size.')
     parser.add_argument('--refpref', action='store_true', help='Reference texts aligned separately')
     parser.add_argument('--linewise', action='store_true', help='Output linewise alignments')
     parser.add_argument('--to-index', action='store_true', help='Output index and stop')    
@@ -998,46 +996,34 @@ def main(args):
     spanFields += [f + '2' for f in spanFields]
 
     if not os.path.exists(extentsFname):
-        exres = srcmap.select('uid2', span_edge('src').alias('src')
-                     ).join(termCorpus.toDF(*[f + '2' for f in termCorpus.columns]), 'uid2'
-                     ).withColumnRenamed(config.text + '2', 'text2'
-                     ).withColumn('text2', grab_spans2('src', 'text2')
-                     ).withColumn('src', arrays_zip('src', 'text2')
-                     ).drop('text2'
-                     ).select(*f2, explode('src').alias('src')
-                     ).select(*f2, col('src.src.*'), col('src.text2.*'))
-        if config.minimaxmem:
-            exres = exres.select('uid', *f2, *spanFields, 'prefix2', 'text2', 'suffix2', 'anchors')
-        else:
-            exres = exres.groupBy('uid'
-                        ).agg(collect_list(struct(*f2, *spanFields, 'prefix2', 'text2', 'suffix2',
-                                                  'anchors')).alias('src'))
-        exres = exres.join(termCorpus.withColumnRenamed(config.text, 'text'), 'uid')
-        if config.minimaxmem:
-            exres = exres.withColumn('prefix', col('text').substr(col('left') + 1,
-                                                                  col('begin')-col('left')+pad)
-                        ).withColumn('suffix', col('text').substr(col('end') - pad + 1,
-                                                                  col('right')-col('end')+pad)
-                        ).withColumn('text', col('text').substr(col('begin') + pad + 1,
-                                                                col('end')-col('begin')-2*pad)
-                        ).repartition(*f1, *f2)
-        else:
-            exres = exres.withColumn('text', grab_spans('src', 'text')
-                        ).withColumn('src', arrays_zip('src', 'text')
-                        ).drop('text'
-                        ).select(*f1, explode('src').alias('src')
-                        ).select(*f1, col('src.src.*'), col('src.text.*'))
-        exres.withColumn('lalg', anchor_align('prefix', 'prefix2', lit('left'))
-            ).withColumn('ralg', anchor_align('suffix', 'suffix2', lit('right'))
-            ).withColumn('text', f.concat(col('lalg.s1'), col('text'), col('ralg.s1'))
-            ).withColumn('text2', f.concat(col('lalg.s2'), col('text2'), col('ralg.s2'))
-            ).withColumn('begin', col('begin') - length('lalg.s1') + pad
-            ).withColumn('end', col('end') + length('ralg.s1') - pad
-            ).withColumn('begin2', col('begin2') - length('lalg.s2') + pad
-            ).withColumn('end2', col('end2') + length('ralg.s2') - pad
-            ).drop('lalg', 'ralg', 'prefix', 'prefix2', 'suffix', 'suffix2' # debug fields
-            ).drop('left', 'right', 'left2', 'right2'
-            ).write.mode('ignore').parquet(extentsFname)
+        srcmap.select('uid2', span_edge('src').alias('src')
+             ).join(termCorpus.toDF(*[f + '2' for f in termCorpus.columns]), 'uid2'
+             ).withColumnRenamed(config.text + '2', 'text2'
+             ).withColumn('text2', grab_spans2('src', 'text2')
+             ).withColumn('src', arrays_zip('src', 'text2')
+             ).drop('text2'
+             ).select(*f2, explode('src').alias('src')
+             ).select(*f2, col('src.src.*'), col('src.text2.*')
+             ).groupBy('uid'
+             ).agg(collect_list(struct(*f2, *spanFields, 'prefix2', 'text2', 'suffix2',
+                                       'anchors')).alias('src')
+             ).join(termCorpus.withColumnRenamed(config.text, 'text'), 'uid'
+             ).withColumn('text', grab_spans('src', 'text')
+             ).withColumn('src', arrays_zip('src', 'text')
+             ).drop('text'
+             ).select(*f1, explode('src').alias('src')
+             ).select(*f1, col('src.src.*'), col('src.text.*')
+             ).withColumn('lalg', anchor_align('prefix', 'prefix2', lit('left'))
+             ).withColumn('ralg', anchor_align('suffix', 'suffix2', lit('right'))
+             ).withColumn('text', f.concat(col('lalg.s1'), col('text'), col('ralg.s1'))
+             ).withColumn('text2', f.concat(col('lalg.s2'), col('text2'), col('ralg.s2'))
+             ).withColumn('begin', col('begin') - length('lalg.s1') + pad
+             ).withColumn('end', col('end') + length('ralg.s1') - pad
+             ).withColumn('begin2', col('begin2') - length('lalg.s2') + pad
+             ).withColumn('end2', col('end2') + length('ralg.s2') - pad
+             ).drop('lalg', 'ralg', 'prefix', 'prefix2', 'suffix', 'suffix2' # debug fields
+             ).drop('left', 'right', 'left2', 'right2'
+             ).write.mode('ignore').parquet(extentsFname)
 
     if config.to_extents:
         spark.stop()
