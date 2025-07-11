@@ -1,6 +1,6 @@
 import argparse
 import heapq as hq
-import json, os, sys
+import bisect, json, os, sys
 from collections import deque
 from intervaltree import Interval, IntervalTree
 from math import ceil, log, inf
@@ -268,7 +268,16 @@ def beamAnchorAlign(s1, s2, side,
     
     # It might be worth deleting small numbers of characters trailing (leading) a newline.
     if side == 'left':
-        return (s1[e1-1::-1], s2[e2-1::-1])
+        alg1 = s1[e1-1::-1]
+        alg2 = s2[e2-1::-1]
+        while len(alg1) > 0 and len(alg2) > 0 and alg1[0].isspace() and alg2[0].isspace():
+            alg1 = alg1[1:]
+            alg2 = alg2[1:]
+        # while e1 > 0 and e2 > 0 and s1[e1-1].isspace() and s2[e2-1].isspace():
+        #     e1 -= 1
+        #     e2 -= 1
+        # return (s1[e1-1::-1], s2[e2-1::-1])
+        return (alg1, alg2)
     else:
         return (s1[0:e1], s2[0:e2])
 
@@ -489,6 +498,22 @@ def textLines(text):
         off += len(line)
     return lines
 
+def addWits(lines, wits):
+    res = []
+    i = 0
+    j = 0
+    for line in lines:
+        cur = []
+        while (j < len(wits) and wits[j].begin >= line.begin # assumes wits is sorted
+               and wits[j].begin < (line.begin + len(line.text))):
+            cur.append(wits[j].wit)
+            j += 1
+        if len(cur) == 0:
+            cur = None
+        res.append((line.begin, line.text, cur))
+        i += 1
+    return res
+
 def loverlap(s1, s2):
     return max(0, min(s1.end, s2.end) - max(s1.begin, s2.begin))
 
@@ -550,16 +575,49 @@ def mergeSpans(spans, uid):
         res.append((curBegin, curEnd, boiler, src))
     return res
 
+def lineLocs(lines, locs):
+    if locs == None or len(locs) < 1 or lines == None or len(lines) < 1:
+        return lines
+    left = lines[0].begin
+    i = max(0, bisect.bisect_right(locs, left, key=lambda r: r.start) - 1)
+    res = []
+    for line in lines:
+        while (i < len(locs)) and ((locs[i].start + locs[i].length) <= line.begin):
+            i += 1
+        cur = []
+        end = line.begin + len(line.alg.replace('-', ''))
+        while (i < len(locs)) and (locs[i].start < end):
+            cur.append(locs[i].loc)
+            i += 1
+        if i > 0:
+            i -= 1
+        if len(cur) < 1:
+            cur = None
+        res.append((line.begin, line.begin2, line.alg, line.alg2, line.matches, cur))
+    return res
+
+def mergeLocs(self, corpus, locsCol):
+    if locsCol not in corpus.columns:
+        return self
+    line_locs = udf(lambda lines, locs: lineLocs(lines, locs),
+                    'array<struct<begin: int, begin2: int, alg: string, alg2: string, matches: int, locs: array<string>>>').asNondeterministic()
+    return self.join(corpus.select('uid', locsCol), 'uid'
+              ).repartition('uid2'
+              ).withColumn('lines', line_locs('lines', locsCol)
+              ).drop(locsCol)
+
 def passLocs(self, corpus, locsCol, newCol, uidCol, begin, end):
     if locsCol not in corpus.columns:
         return self
 
     pinfo = corpus.select('uid', explode(locsCol).alias('locs')
-                ).select('uid', 'locs.*')
+                ).select('uid', 'locs.*'
+                ).withColumn('stop', col('start') + col('length')
+                ).repartitionByRange('uid', 'start', 'stop')
 
     return self.join(pinfo, [self[uidCol] == pinfo.uid,
                              end > pinfo.start,
-                             begin < (pinfo.start + pinfo.length)],
+                             begin < pinfo.stop],
                      'left_outer'
             ).drop(pinfo.uid
             ).groupBy(*self.columns
@@ -600,6 +658,7 @@ def passRegions(self, corpus, pageCol, newCol, uidCol, begin, end, keeptokens=Fa
         res = res.drop(newCol + 'Tokens')
     return res
 
+setattr(DataFrame, 'mergeLocs', mergeLocs)
 setattr(DataFrame, 'passLocs', passLocs)
 setattr(DataFrame, 'passRegions', passRegions)
 
@@ -658,7 +717,7 @@ setattr(DataFrame, 'clusterExtents', clusterExtents)
 def clusterJoin(self, config, corpus):
     out = self.join(corpus, 'uid'
             ).withColumn(config.text,
-                         col(config.text).substr(col('begin'), col('end') - col('begin')))
+                         col(config.text).substr(col('begin')+1, col('end') - col('begin')))
 
     if config.locs in out.columns:
         out = out.withColumn(config.locs,
@@ -742,6 +801,8 @@ def main(args):
                         help='Compute alignments for all pairs.')
     parser.add_argument('--pairwise', action='store_true', help='Output pairwise alignments')
     parser.add_argument('--docwise', action='store_true', help='Output docwise alignments')
+    parser.add_argument('--minimaxmem', action='store_true',
+                        help='Avoid aggregation to minimize maximum block size.')
     parser.add_argument('--refpref', action='store_true', help='Reference texts aligned separately')
     parser.add_argument('--linewise', action='store_true', help='Output linewise alignments')
     parser.add_argument('--to-index', action='store_true', help='Output index and stop')    
@@ -791,7 +852,8 @@ def main(args):
     f1 = [f for f in termCorpus.columns if f != config.text]
     f2 = [f + '2' for f in f1]
 
-    spark.conf.set('spark.sql.shuffle.partitions', corpus.rdd.getNumPartitions())
+    corpusPartitions = corpus.rdd.getNumPartitions()
+    spark.conf.set('spark.sql.shuffle.partitions', corpusPartitions)
 
     if not os.path.exists(dfpostFname):
         get_postings = udf(lambda text: getPostings(text, config.n, config.floating_ngrams),
@@ -906,18 +968,20 @@ def main(args):
         spark.stop()
         return(0)
 
+    pad = int((config.n - 1)/2)
+
     span_edge = udf(lambda src: spanEdge(src, config.gap),
                     'array<struct<uid: bigint, left2: int, begin2: int, end2: int, right2: int,'
                     + ' left: int, begin: int, end: int, right: int, anchors: array<struct<pos2: int, pos: int>>>>')
 
-    grab_spans = udf(lambda src, text: ((text[s.left:s.begin],
-                                         text[s.begin:(s.end - config.n)],
-                                         text[(s.end - config.n):s.right]) for s in src),
+    grab_spans = udf(lambda src, text: ((text[s.left:(s.begin+pad)],
+                                         text[(s.begin+pad):(s.end - pad)],
+                                         text[(s.end - pad):s.right]) for s in src),
                      'array<struct<prefix: string, text: string, suffix: string>>')
 
-    grab_spans2 = udf(lambda src, text: ((text[s.left2:s.begin2],
-                                          text[s.begin2:(s.end2 - config.n)],
-                                          text[(s.end2 - config.n):s.right2]) for s in src),
+    grab_spans2 = udf(lambda src, text: ((text[s.left2:(s.begin2+pad)],
+                                          text[(s.begin2+pad):(s.end2 - pad)],
+                                          text[(s.end2 - pad):s.right2]) for s in src),
                      'array<struct<prefix2: string, text2: string, suffix2: string>>')
 
     anchor_align = udf(lambda s1, s2, side: anchorAlign(s1, s2, side, config.pcopy, config.max_offset, config.complete_lines, config.floating_ngrams),
@@ -934,33 +998,46 @@ def main(args):
     spanFields += [f + '2' for f in spanFields]
 
     if not os.path.exists(extentsFname):
-        srcmap.select('uid2', span_edge('src').alias('src')
-             ).join(termCorpus.toDF(*[f + '2' for f in termCorpus.columns]), 'uid2'
-             ).withColumnRenamed(config.text + '2', 'text2'
-             ).withColumn('text2', grab_spans2('src', 'text2')
-             ).withColumn('src', arrays_zip('src', 'text2')
-             ).drop('text2'
-             ).select(*f2, explode('src').alias('src')
-             ).select(*f2, col('src.src.*'), col('src.text2.*')
-             ).groupBy('uid'
-             ).agg(collect_list(struct(*f2, *spanFields, 'prefix2', 'text2', 'suffix2', 'anchors')).alias('src')
-             ).join(termCorpus.withColumnRenamed(config.text, 'text'), 'uid'
-             ).withColumn('text', grab_spans('src', 'text')
-             ).withColumn('src', arrays_zip('src', 'text')
-             ).drop('text'
-             ).select(*f1, explode('src').alias('src')
-             ).select(*f1, col('src.src.*'), col('src.text.*')
-             ).withColumn('lalg', anchor_align('prefix', 'prefix2', lit('left'))
-             ).withColumn('ralg', anchor_align('suffix', 'suffix2', lit('right'))
-             ).withColumn('text', f.concat(col('lalg.s1'), col('text'), col('ralg.s1'))
-             ).withColumn('text2', f.concat(col('lalg.s2'), col('text2'), col('ralg.s2'))
-             ).withColumn('begin', col('begin') - length('lalg.s1')
-             ).withColumn('end', col('end') + length('ralg.s1') - config.n
-             ).withColumn('begin2', col('begin2') - length('lalg.s2')
-             ).withColumn('end2', col('end2') + length('ralg.s2') - config.n
-             ).drop('lalg', 'ralg', 'prefix', 'prefix2', 'suffix', 'suffix2' # debug fields
-             ).drop('left', 'right', 'left2', 'right2'
-             ).write.mode('ignore').parquet(extentsFname)
+        exres = srcmap.select('uid2', span_edge('src').alias('src')
+                     ).join(termCorpus.toDF(*[f + '2' for f in termCorpus.columns]), 'uid2'
+                     ).withColumnRenamed(config.text + '2', 'text2'
+                     ).withColumn('text2', grab_spans2('src', 'text2')
+                     ).withColumn('src', arrays_zip('src', 'text2')
+                     ).drop('text2'
+                     ).select(*f2, explode('src').alias('src')
+                     ).select(*f2, col('src.src.*'), col('src.text2.*'))
+        if config.minimaxmem:
+            exres = exres.select('uid', *f2, *spanFields, 'prefix2', 'text2', 'suffix2', 'anchors')
+        else:
+            exres = exres.groupBy('uid'
+                        ).agg(collect_list(struct(*f2, *spanFields, 'prefix2', 'text2', 'suffix2',
+                                                  'anchors')).alias('src'))
+        exres = exres.join(termCorpus.withColumnRenamed(config.text, 'text'), 'uid')
+        if config.minimaxmem:
+            exres = exres.withColumn('prefix', col('text').substr(col('left') + 1,
+                                                                  col('begin')-col('left')+pad)
+                        ).withColumn('suffix', col('text').substr(col('end') - pad + 1,
+                                                                  col('right')-col('end')+pad)
+                        ).withColumn('text', col('text').substr(col('begin') + pad + 1,
+                                                                col('end')-col('begin')-2*pad)
+                        ).repartition(*f1, *f2)
+        else:
+            exres = exres.withColumn('text', grab_spans('src', 'text')
+                        ).withColumn('src', arrays_zip('src', 'text')
+                        ).drop('text'
+                        ).select(*f1, explode('src').alias('src')
+                        ).select(*f1, col('src.src.*'), col('src.text.*'))
+        exres.withColumn('lalg', anchor_align('prefix', 'prefix2', lit('left'))
+            ).withColumn('ralg', anchor_align('suffix', 'suffix2', lit('right'))
+            ).withColumn('text', f.concat(col('lalg.s1'), col('text'), col('ralg.s1'))
+            ).withColumn('text2', f.concat(col('lalg.s2'), col('text2'), col('ralg.s2'))
+            ).withColumn('begin', col('begin') - length('lalg.s1') + pad
+            ).withColumn('end', col('end') + length('ralg.s1') - pad
+            ).withColumn('begin2', col('begin2') - length('lalg.s2') + pad
+            ).withColumn('end2', col('end2') + length('ralg.s2') - pad
+            ).drop('lalg', 'ralg', 'prefix', 'prefix2', 'suffix', 'suffix2' # debug fields
+            ).drop('left', 'right', 'left2', 'right2'
+            ).write.mode('ignore').parquet(extentsFname)
 
     if config.to_extents:
         spark.stop()
@@ -1012,30 +1089,29 @@ def main(args):
             target_lines = udf(lambda begin, begin2, alg: targetLines(begin, begin2, alg),
                                'array<struct<begin: int, begin2: int, alg: string, alg2: string, matches: int>>')
             groups = passalg.withColumn('lines', target_lines('begin', 'begin2', 'alg')
-                            ).drop('alg', 'text', 'text2', 'begin', 'end', 'begin2', 'end2')
+                            ).drop('alg', 'text', 'text2', 'begin', 'end', 'begin2', 'end2'
+                            ).mergeLocs(corpus, config.locs)
             lines = groups.selectExpr(*[f for f in groups.columns if f != 'lines'], 'inline(lines)'
                         ).withColumn('text', f.translate('alg', '-', '')
-                        ).withColumn('text2', f.translate('alg2', '-', '')
-                        ).passLocs(corpus, config.locs, config.locs,
-                                   'uid', col('begin'), col('begin') + length('text'))
+                        ).withColumn('text2', f.translate('alg2', '-', ''))
 
             if config.docwise:
                 text_lines = udf(lambda text: textLines(text),
                                  'array<struct<begin: int, text: string>>')
-                lines.groupBy('uid2', 'begin2'
-                    ).agg(collect_list(struct(*[f for f in lines.columns
-                                                if ( (not f.endswith('2') or f == 'alg2')
-                                                     and f != 'uid')])).alias('wits')
-                    ).groupBy(col('uid2').alias('uid')
-                    ).agg(collect_list(struct(col('begin2').alias('begin'),
-                                              col('wits'))).alias('vars')
-                    ).withColumn('vars', map_from_entries(arrays_zip(col('vars.begin'),
-                                                                     col('vars.wits')))
+                lcol = [f for f in lines.columns
+                        if ( (not f.endswith('2') or f == 'alg2')
+                             and f != 'uid')]
+                add_wits = udf(lambda lines, wits: addWits(lines, wits),
+                               'array<struct<begin: int, text: string, wits: array<' +
+                               lines.select(*lcol).schema.simpleString() +
+                               '>>>')
+                lines.groupBy(col('uid2').alias('uid')
+                    ).agg(sort_array(collect_list(struct(col('begin2').alias('begin'),
+                                                         struct(*lcol).alias('wit')))).alias('wits')
                     ).join(corpus, ['uid'], ('inner' if not config.linewise else 'right_outer')
                     ).withColumn('lines', text_lines('text')
-                    ).withColumn('lines',
-                                 expr('transform(lines, r -> struct(r.begin as begin, r.text as text, vars[r.begin] as wits))')
-                    ).drop('vars'
+                    ).withColumn('lines', add_wits('lines', 'wits')
+                    ).drop('wits'
                     ).write.mode('ignore').format(config.output_format).save(outFname)
                 spark.stop()
                 return
@@ -1051,7 +1127,7 @@ def main(args):
     if not os.path.exists(clustersFname): # prevent creating tmpdirs in clustering 
         spark.conf.set('spark.sql.shuffle.partitions', spark.sparkContext.defaultParallelism)
         extents.clusterExtents(config).write.mode('ignore').parquet(clustersFname)
-        spark.conf.set('spark.sql.shuffle.partitions', corpus.rdd.getNumPartitions())
+        spark.conf.set('spark.sql.shuffle.partitions', corpusPartitions)
     
     spark.read.load(clustersFname
         ).clusterJoin(config, corpus
