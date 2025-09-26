@@ -2,7 +2,7 @@ import setuptools
 
 setuptools.setup(
     name='passim',
-    version='2.0.0',
+    version='2.0.1',
     author='David A. Smith',
     author_email='dasmiq@gmail.com',
     description='Detecting and analyzing text reuse',
@@ -13,12 +13,12 @@ setuptools.setup(
         'License :: OSI Approved :: MIT License',
     ],
     install_requires=[
-        'pyspark>=3.5.1',
-        'graphframes',
+        'pyspark==4.0.1',
+        'graphframes-py==0.9.3',
         'intervaltree'
     ],
     scripts=['bin/seriatim', 'bin/passim', 'bin/passim.cmd', 'bin/seriatim.cmd'],
     data_files=[('share', ['share/submit-seriatim.py']),
                 ('conf', ['conf/log4j2.properties'])],
-    python_requires='>=3.6',
+    python_requires='>=3.9',
 )

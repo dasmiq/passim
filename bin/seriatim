@@ -17,7 +17,6 @@ export SPARK_CONF_DIR="$dir"/../conf
 SPARK_SUBMIT_ARGS="$SPARK_SUBMIT_ARGS"
 
 spark-submit \
-    --repositories 'https://repos.spark-packages.org/' \
-    --packages 'graphframes:graphframes:0.8.4-spark3.5-s_2.12' \
+    --packages 'io.graphframes:graphframes-spark4_2.13:0.9.3' \
     $SPARK_SUBMIT_ARGS \
     "$script" "$@"
