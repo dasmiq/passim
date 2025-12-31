@@ -25,7 +25,7 @@ def getPostings(text, n, floating_ngrams):
     start = deque([], maxlen=n)
     chars = deque([], maxlen=n)
     for i, c in enumerate(text):
-        if c.isalnum():
+        if c.isalpha():
             prev = start[0] if len(start) == n else -2
             start.append(i)
             chars.append(c.lower())
@@ -831,6 +831,7 @@ def main(args):
     tmpdir = 'tmp'
     spark.sparkContext.setCheckpointDir(os.path.join(config.outputPath, tmpdir))
     
+    dfFname = os.path.join(config.outputPath, tmpdir, 'df.parquet')
     dfpostFname = os.path.join(config.outputPath, tmpdir, 'dfpost.parquet')
     pairsFname = os.path.join(config.outputPath, tmpdir, 'pairs.parquet')
     srcFname = os.path.join(config.outputPath, tmpdir, 'src.parquet')
@@ -853,18 +854,23 @@ def main(args):
     corpusPartitions = corpus.rdd.getNumPartitions()
     spark.conf.set('spark.sql.shuffle.partitions', corpusPartitions)
 
+    get_postings = udf(lambda text: getPostings(text, config.n, config.floating_ngrams),
+                       'array<struct<sfeat: string, post: int>>')
+
+    posts = termCorpus.select(*f1, explode(get_postings(config.text)).alias('post')
+                     ).select(*f1, col('post.*')
+                     ).withColumn('feat', xxhash64('sfeat'))
+
+    if not os.path.exists(dfFname):
+        posts.groupBy('feat'
+            ).agg(f.count('post').cast('int').alias('df')
+            ).filter( (col('df') >= config.minDF) & (col('df') <= config.maxDF)
+            ).write.mode('ignore').save(dfFname)
+
     if not os.path.exists(dfpostFname):
-        get_postings = udf(lambda text: getPostings(text, config.n, config.floating_ngrams),
-                           'array<struct<feat: string, post: int>>')
-    
-        posts = termCorpus.select(*f1, explode(get_postings(config.text)).alias('post')
-                         ).select(*f1, col('post.*')
-                         ).withColumn('feat', xxhash64('feat'))
+        df = spark.read.load(dfFname)
 
-        df = posts.groupBy('feat').count().select('feat', col('count').cast('int').alias('df')
-                 ).filter( (col('df') >= config.minDF) & (col('df') <= config.maxDF) )
-
-        posts.join(df, 'feat').write.mode('ignore').save(dfpostFname)
+        posts.drop('sfeat').join(df, 'feat').write.mode('ignore').save(dfpostFname)
         if config.to_index:
             spark.stop()
             return(0)
