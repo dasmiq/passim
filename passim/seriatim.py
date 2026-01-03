@@ -813,6 +813,8 @@ def main(args):
     parser.add_argument('--log-level', type=str, default='WARN',
                         choices=['ERROR', 'WARN', 'INFO', 'DEBUG'],
                         help='spark log level')
+    parser.add_argument('--shards', type=int, default=1,
+                        help='Index shards', metavar='N')
     parser.add_argument('--input-format', type=str, default='json',
                         help='Input format')
     parser.add_argument('--output-format', type=str, default='json',
@@ -853,6 +855,7 @@ def main(args):
 
     corpusPartitions = corpus.rdd.getNumPartitions()
     spark.conf.set('spark.sql.shuffle.partitions', corpusPartitions)
+    # spark.conf.set('spark.sql.adaptive.coalescePartitions.initialPartitionNum', corpusPartitions)
 
     get_postings = udf(lambda text: getPostings(text, config.n, config.floating_ngrams),
                        'array<struct<sfeat: string, post: int>>')
@@ -891,26 +894,30 @@ def main(args):
     if config.refpref:
         metaFields2.append('ref')
 
-    apos = dfpost.join(dfpost.toDF(*[f + ('2' if f != 'feat' else '') for f in dfpost.columns]),
-                       'feat'
-                ).filter(config.filterpairs
-                ).drop('feat', 'df2'
-                ).groupBy(*metaFields2, struct('uid', expr(metaVal)).alias('meta')
-                ).agg(collect_list(struct('post2', 'df',
-                                          array(struct('uid',
-                                                       'post')).alias('alg'))).alias('post')
-                ).filter(size('post') >= config.min_match)
+    for shard in range(config.shards):
+        targ = dfpost.toDF(*[f + ('2' if f != 'feat' else '') for f in dfpost.columns]
+                    ).filter((col('uid2') % config.shards) == shard)
+        apos = dfpost.join(targ, 'feat'
+                    ).filter(config.filterpairs
+                    ).drop('feat', 'df2'
+                    ).groupBy(*metaFields2, struct('uid', expr(metaVal)).alias('meta')
+                    ).agg(collect_list(struct('post2', 'df',
+                                              array(struct('uid',
+                                                           'post')).alias('alg'))).alias('post')
+                    ).filter(size('post') >= config.min_match)
 
-    if config.all_pairs:
-        apos = apos.withColumn('meta', map_from_entries(array('meta'))
-                  ).withColumn('post', sort_array('post'))
-    else:
-        apos = apos.groupBy(*metaFields2
-                  ).agg(map_from_entries(collect_list('meta')).alias('meta'),
-                        merge_posts(collect_list('post')).alias('post'))
+        if config.all_pairs:
+            apos = apos.withColumn('meta', map_from_entries(array('meta'))
+                      ).withColumn('post', sort_array('post'))
+        else:
+            apos = apos.groupBy(*metaFields2
+                      ).agg(map_from_entries(collect_list('meta')).alias('meta'),
+                            merge_posts(collect_list('post')).alias('post'))
 
-    if not os.path.exists(pairsFname):
-        apos.write.mode('ignore').parquet(pairsFname)
+        pout = os.path.join(pairsFname, 'shard=' + str(shard))
+        if not os.path.exists(pout):
+            apos.write.mode('ignore').parquet(pout)
+            
     if config.to_pairs:
         spark.stop()
         return(0)
@@ -919,13 +926,16 @@ def main(args):
                                              config.n, config.gap, config.min_align),
                   'array<struct<uid: bigint, begin2: int, end2: int, begin: int, end: int, anchors: array<struct<pos2: int, pos: int>>>>')
 
-    if not os.path.exists(srcFname):
-        spark.read.load(pairsFname
-            ).withColumn('prior', map_from_entries(arrays_zip(f.map_keys('meta'),
-                                                              f.array_repeat(lit(1.0),
-                                                                             size('meta'))))
-            ).withColumn('src', vit_src('post', 'prior')
-            ).write.mode('ignore').parquet(srcFname)
+    pairs = spark.read.load(pairsFname)
+    for shard in range(config.shards):
+        pout = os.path.join(srcFname, 'shard=' + str(shard))
+        if not os.path.exists(pout):
+            pairs.filter(col('shard') == shard
+                ).withColumn('prior', map_from_entries(arrays_zip(f.map_keys('meta'),
+                                                                  f.array_repeat(lit(1.0),
+                                                                                 size('meta'))))
+                ).withColumn('src', vit_src('post', 'prior')
+                ).write.mode('ignore').parquet(pout)
 
     srcmap = spark.read.load(srcFname)
 
