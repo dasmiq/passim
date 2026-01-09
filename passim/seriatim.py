@@ -870,13 +870,15 @@ def main(args):
             ).filter( (col('df') >= config.minDF) & (col('df') <= config.maxDF)
             ).write.mode('ignore').save(dfFname)
 
-    if not os.path.exists(dfpostFname):
-        df = spark.read.load(dfFname)
-
-        posts.drop('sfeat').join(df, 'feat').write.mode('ignore').save(dfpostFname)
-        if config.to_index:
-            spark.stop()
-            return(0)
+    df = spark.read.load(dfFname)
+    for shard in range(config.shards):
+        pout = os.path.join(dfpostFname, 'shard=' + str(shard))
+        if not os.path.exists(pout):
+            posts.filter(f.pmod(col('uid'), config.shards) == shard
+                ).drop('sfeat').join(df, 'feat').write.mode('ignore').save(pout)
+    if config.to_index:
+        spark.stop()
+        return(0)
     
     dfpost = spark.read.load(dfpostFname)
 
@@ -895,9 +897,11 @@ def main(args):
         metaFields2.append('ref')
 
     for shard in range(config.shards):
-        targ = dfpost.toDF(*[f + ('2' if f != 'feat' else '') for f in dfpost.columns]
-                    ).filter((col('uid2') % config.shards) == shard)
-        apos = dfpost.join(targ, 'feat'
+        targ = dfpost.filter(col('shard') == shard
+                    ).toDF(*[f + ('2' if f != 'feat' else '') for f in dfpost.columns]
+                    ).drop('shard2')
+        apos = dfpost.drop('shard'
+                    ).join(targ, 'feat'
                     ).filter(config.filterpairs
                     ).drop('feat', 'df2'
                     ).groupBy(*metaFields2, struct('uid', expr(metaVal)).alias('meta')
@@ -931,6 +935,7 @@ def main(args):
         pout = os.path.join(srcFname, 'shard=' + str(shard))
         if not os.path.exists(pout):
             pairs.filter(col('shard') == shard
+                ).drop('shard'
                 ).withColumn('prior', map_from_entries(arrays_zip(f.map_keys('meta'),
                                                                   f.array_repeat(lit(1.0),
                                                                                  size('meta'))))
@@ -1011,8 +1016,11 @@ def main(args):
     spanFields = ['left', 'begin', 'end', 'right']
     spanFields += [f + '2' for f in spanFields]
 
-    if not os.path.exists(extentsFname):
-        srcmap.select('uid2', span_edge('src').alias('src')
+    for shard in range(config.shards):
+        pout = os.path.join(extentsFname, 'shard=' + str(shard))
+        if not os.path.exists(pout):
+            srcmap.filter(col('shard') == shard
+             ).select('uid2', span_edge('src').alias('src')
              ).join(termCorpus.toDF(*[f + '2' for f in termCorpus.columns]), 'uid2'
              ).withColumnRenamed(config.text + '2', 'text2'
              ).withColumn('text2', grab_spans2('src', 'text2')
@@ -1039,7 +1047,7 @@ def main(args):
              ).withColumn('end2', col('end2') + length('ralg.s2') - pad
              ).drop('lalg', 'ralg', 'prefix', 'prefix2', 'suffix', 'suffix2' # debug fields
              ).drop('left', 'right', 'left2', 'right2'
-             ).write.mode('ignore').parquet(extentsFname)
+             ).write.mode('ignore').parquet(pout)
 
     if config.to_extents:
         spark.stop()
