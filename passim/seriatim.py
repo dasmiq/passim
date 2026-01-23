@@ -1017,6 +1017,9 @@ def main(args):
     spanFields = ['left', 'begin', 'end', 'right']
     spanFields += [f + '2' for f in spanFields]
 
+    splice_extents = udf(lambda extents: spliceExtents(extents),
+                         'array<struct<begin2: int, end2: int, begin: int, end: int, text2: string, text: string, anchors: array<struct<pos2: int, pos: int>>>>')
+
     for shard in range(config.shards):
         pout = os.path.join(extentsFname, 'shard=' + str(shard))
         if not os.path.exists(pout):
@@ -1048,31 +1051,32 @@ def main(args):
              ).withColumn('end2', col('end2') + length('ralg.s2') - pad
              ).drop('lalg', 'ralg', 'prefix', 'prefix2', 'suffix', 'suffix2' # debug fields
              ).drop('left', 'right', 'left2', 'right2'
+             ).groupBy(*f1, *f2
+             ).agg(splice_extents(sort_array(collect_list(struct('begin2', 'end2', 'begin', 'end',
+                                                                 'text2', 'text', 'anchors')))
+                                  ).alias('extents')
+             ).withColumn('extents', explode('extents')
+             ).select(*f1, *f2, col('extents.*')
              ).write.mode('ignore').parquet(pout)
 
     if config.to_extents:
         spark.stop()
         return(0)
 
-    splice_extents = udf(lambda extents: spliceExtents(extents),
-                         'array<struct<begin2: int, end2: int, begin: int, end: int, text2: string, text: string, anchors: array<struct<pos2: int, pos: int>>>>')
-
-    extents = spark.read.load(extentsFname
-         ).groupBy(*f1, *f2
-         ).agg(splice_extents(sort_array(collect_list(struct('begin2', 'end2', 'begin', 'end',
-                                                             'text2', 'text', 'anchors')))
-                              ).alias('extents')
-         ).withColumn('extents', explode('extents')
-         ).select(*f1, *f2, col('extents.*'))
+    extents = spark.read.load(extentsFname)
 
     if config.pairwise or config.docwise or config.linewise:
         chunk_align = udf(lambda begin, begin2, text, text2, anchors:
                           chunkAlign(begin, begin2, text, text2, anchors,
                                      config.pcopy, config.beam, config.max_offset),
                           'struct<s1: string, s2: string, matches: int>')
-        extents.withColumn('alg', chunk_align('begin', 'begin2', 'text', 'text2', 'anchors')
-            ).drop('anchors', 'text', 'text2'
-            ).write.mode('ignore').parquet(psgFname)
+        for shard in range(config.shards):
+            pout = os.path.join(psgFname, 'shard=' + str(shard))
+            if not os.path.exists(pout):
+                extents.filter(col('shard') == shard
+                      ).withColumn('alg', chunk_align('begin', 'begin2', 'text', 'text2', 'anchors')
+                      ).drop('anchors', 'text', 'text2', 'shard'
+                      ).write.mode('ignore').parquet(pout)
 
         psg = spark.read.load(psgFname)
 
