@@ -900,28 +900,27 @@ def main(args):
         targ = dfpost.filter(col('shard') == shard
                     ).toDF(*[f + ('2' if f != 'feat' else '') for f in dfpost.columns]
                     ).drop('shard2')
-        for subshard in range(config.shards):
-            apos = dfpost.filter(col('shard') == subshard).drop('shard'
-                        ).join(targ, 'feat'
-                        ).filter(config.filterpairs
-                        ).drop('feat', 'df2'
-                        ).groupBy(*metaFields2, struct('uid', expr(metaVal)).alias('meta')
-                        ).agg(collect_list(struct('post2', 'df',
-                                                  array(struct('uid',
-                                                               'post')).alias('alg'))).alias('post')
-                        ).filter(size('post') >= config.min_match)
+        apos = dfpost.drop('shard'
+                    ).join(targ, 'feat'
+                    ).filter(config.filterpairs
+                    ).drop('feat', 'df2'
+                    ).groupBy(*metaFields2, struct('uid', expr(metaVal)).alias('meta')
+                    ).agg(collect_list(struct('post2', 'df',
+                                              array(struct('uid',
+                                                           'post')).alias('alg'))).alias('post')
+                    ).filter(size('post') >= config.min_match)
 
-            if config.all_pairs:
-                apos = apos.withColumn('meta', map_from_entries(array('meta'))
-                          ).withColumn('post', sort_array('post'))
-            else:
-                apos = apos.groupBy(*metaFields2
-                          ).agg(map_from_entries(collect_list('meta')).alias('meta'),
-                                merge_posts(collect_list('post')).alias('post'))
+        if config.all_pairs:
+            apos = apos.withColumn('meta', map_from_entries(array('meta'))
+                      ).withColumn('post', sort_array('post'))
+        else:
+            apos = apos.groupBy(*metaFields2
+                      ).agg(map_from_entries(collect_list('meta')).alias('meta'),
+                            merge_posts(collect_list('post')).alias('post'))
 
-            pout = os.path.join(pairsFname, 'shard=' + str(shard), 'sub=' + str(subshard))
-            if not os.path.exists(os.path.join(pout, '_SUCCESS')):
-                apos.write.mode('ignore').parquet(pout)
+        pout = os.path.join(pairsFname, 'shard=' + str(shard))
+        if not os.path.exists(pout):
+            apos.write.mode('ignore').parquet(pout)
             
     if config.to_pairs:
         spark.stop()
@@ -936,7 +935,7 @@ def main(args):
         pout = os.path.join(srcFname, 'shard=' + str(shard))
         if not os.path.exists(pout):
             pairs.filter(col('shard') == shard
-                ).drop('shard', 'sub'
+                ).drop('shard'
                 ).withColumn('prior', map_from_entries(arrays_zip(f.map_keys('meta'),
                                                                   f.array_repeat(lit(1.0),
                                                                                  size('meta'))))
