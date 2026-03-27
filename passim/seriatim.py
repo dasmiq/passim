@@ -606,22 +606,21 @@ def mergeLocs(self, corpus, locsCol):
               ).withColumn('lines', line_locs('lines', locsCol)
               ).drop(locsCol)
 
+def sliceLocs(begin, end, locs):
+    if locs == None or len(locs) < 1:
+        return None
+    i = max(0, bisect.bisect_right(locs, begin, key=lambda r: r.start) - 1)
+    j = bisect.bisect_left(locs, end, lo=i, key=lambda r: (r.start+r.length)) + 1
+    return [r.loc for r in locs[i:j]]
+
 def passLocs(self, corpus, locsCol, newCol, uidCol, begin, end):
     if locsCol not in corpus.columns:
         return self
 
-    pinfo = corpus.select('uid', explode(locsCol).alias('locs')
-                ).select('uid', 'locs.*'
-                ).withColumn('stop', col('start') + col('length')
-                ).repartitionByRange('uid', 'start', 'stop')
+    slice_locs = udf(lambda begin, end, locs: sliceLocs(begin, end, locs), 'array<string>')
 
-    return self.join(pinfo, [self[uidCol] == pinfo.uid,
-                             end > pinfo.start,
-                             begin < pinfo.stop],
-                     'left_outer'
-            ).drop(pinfo.uid
-            ).groupBy(*self.columns
-            ).agg(sort_array(collect_list('loc')).alias('locs'))
+    return self.join(corpus.select(col('uid').alias(uidCol), col(locsCol).alias(newCol)), uidCol
+              ).withColumn(newCol, slice_locs(begin, end, newCol))
     
 def passRegions(self, corpus, pageCol, newCol, uidCol, begin, end, keeptokens=False):
     if pageCol not in corpus.columns:
@@ -1093,6 +1092,8 @@ def main(args):
         if config.pairwise:
             passalg.select('*', 'alg.*'
                     ).drop('alg'
+                    ).passLocs(corpus, config.locs, config.locs, 'uid', 'begin', 'end'
+                    ).passLocs(corpus, config.locs, config.locs + '2', 'uid2', 'begin2', 'end2'
                     ).passRegions(corpus, config.pages, config.pages,
                                   'uid', col('begin'), col('end')
                     ).passRegions(corpus, config.pages, config.pages + '2',
